@@ -19,7 +19,7 @@
  * @file rlm_rest/io.c
  * @brief Implement asynchronous callbacks for curl
  *
- * @copyright 2016 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2016 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 #include "rest.h"
 #include <freeradius-devel/server/rad_assert.h>
@@ -86,7 +86,7 @@ static inline void _rest_io_demux(rlm_rest_thread_t *thread, CURLM *mandle)
 			 */
 			curl_multi_remove_handle(mandle, candle);
 
-			unlang_resumable(request);
+			unlang_interpret_resumable(request);
 		}
 			break;
 
@@ -97,6 +97,35 @@ static inline void _rest_io_demux(rlm_rest_thread_t *thread, CURLM *mandle)
 			break;
 		}
 	}
+}
+
+/** libcurl's timer expired
+ *
+ * @param[in] el	the timer was inserted into.
+ * @param[in] now	The current time according to the event loop.
+ * @param[in] ctx	The rlm_rest_thread_t specific to this thread.
+ */
+static void _rest_io_timer_expired(UNUSED fr_event_list_t *el, UNUSED fr_time_t now, void *ctx)
+{
+	rlm_rest_thread_t	*t = talloc_get_type_abort(ctx, rlm_rest_thread_t);
+	CURLMcode		ret;
+	CURLM			*mandle = t->mandle;
+	int			running = 0;
+
+	t = talloc_get_type_abort(ctx, rlm_rest_thread_t);
+
+	DEBUG4("libcurl timer expired");
+
+	ret = curl_multi_socket_action(mandle, CURL_SOCKET_TIMEOUT, 0, &running);
+	if (ret != CURLM_OK) {
+		ERROR("Failed servicing curl multi-handle: %s (%i)", curl_multi_strerror(ret), ret);
+		return;
+	}
+
+	DEBUG3("multi-handle %p serviced by timer.  %i request(s) in progress, %i requests(s) to dequeue",
+	       mandle, running, t->transfers - running);
+
+	_rest_io_demux(t, mandle);
 }
 
 /** Service an IO event on a file descriptor
@@ -117,32 +146,34 @@ static inline void _rest_io_service(rlm_rest_thread_t *t, int fd, int event)
 		return;
 	}
 
-	if (fd == CURL_SOCKET_TIMEOUT) {
-		DEBUG3("multi-handle %p serviced by timer event.  %i request(s) in progress, %i requests(s) to dequeue",
-		       mandle, running, t->transfers - running);
-	} else {
-		DEBUG3("multi-handle %p serviced on fd %i event.  %i request(s) in progress, %i requests(s) to dequeue",
-		       mandle, fd, running, t->transfers - running);
+	if (DEBUG_ENABLED3) {
+		char const *event_str;
+
+		switch (event) {
+		case CURL_CSELECT_ERR:
+			event_str = "error";
+			break;
+
+		case CURL_CSELECT_OUT:
+			event_str = "socket-writable";
+			break;
+
+		case CURL_CSELECT_IN:
+			event_str = "socket-readable";
+			break;
+
+		default:
+			event_str = "<INVALID>";
+			break;
+		}
+
+		DEBUG3("multi-handle %p serviced on fd %i event (%s).  "
+		       "%i request(s) in progress, %i requests(s) to dequeue",
+		       mandle, fd, event_str, running, t->transfers - running);
 	}
 
+
 	_rest_io_demux(t, mandle);
-}
-
-/** libcurl's timer expired
- *
- * @param[in] el	the timer was inserted into.
- * @param[in] now	The current time according to the event loop.
- * @param[in] ctx	The rlm_rest_thread_t specific to this thread.
- */
-static void _rest_io_timer_expired(UNUSED fr_event_list_t *el, UNUSED struct timeval *now, void *ctx)
-{
-	rlm_rest_thread_t *t;
-
-	t = talloc_get_type_abort(ctx, rlm_rest_thread_t);
-
-	DEBUG4("libcurl timer expired");
-
-	_rest_io_service(t, CURL_SOCKET_TIMEOUT, 0);
 }
 
 /** File descriptor experienced an error
@@ -220,7 +251,6 @@ static int _rest_io_timer_modify(CURLM *mandle, long timeout_ms, void *ctx)
 	rlm_rest_thread_t	*t = talloc_get_type_abort(ctx, rlm_rest_thread_t);
 	CURLMcode		ret;
 	int			running = 0;
-	struct timeval		now, to_add, when;
 
 	if (timeout_ms == 0) {
 		ret = curl_multi_socket_action(mandle, CURL_SOCKET_TIMEOUT, 0, &running);
@@ -229,8 +259,9 @@ static int _rest_io_timer_modify(CURLM *mandle, long timeout_ms, void *ctx)
 			return -1;
 		}
 
-		DEBUG3("multi-handle %p serviced from timer_modify.  %i request(s) in progress, %i requests(s) "
-		       "to dequeue", mandle, running, t->transfers - running);
+		DEBUG3("multi-handle %p serviced from CURLMOPT_TIMERFUNCTION callback (%s).  "
+		       "%i request(s) in progress, %i requests(s) to dequeue",
+		        mandle, __FUNCTION__, running, t->transfers - running);
 		return 0;
 	}
 
@@ -243,14 +274,10 @@ static int _rest_io_timer_modify(CURLM *mandle, long timeout_ms, void *ctx)
 		return 0;
 	}
 
-	DEBUG3("multi-handle %p needs servicing in %li ms", mandle, timeout_ms);
+	DEBUG3("multi-handle %p will need servicing in %li ms", mandle, timeout_ms);
 
-	gettimeofday(&now, NULL);
-	fr_timeval_from_ms(&to_add, (uint64_t)timeout_ms);
-	fr_timeval_add(&when, &now, &to_add);
-
-	(void) fr_event_timer_insert(NULL, t->el, &t->ev,
-				     &when, _rest_io_timer_expired, t);
+	(void) fr_event_timer_in(NULL, t->el, &t->ev,
+				 fr_time_delta_from_msec(timeout_ms), _rest_io_timer_expired, t);
 
 	return 0;
 }
@@ -337,13 +364,13 @@ static int _rest_io_event_modify(UNUSED CURL *easy, curl_socket_t fd, int what, 
  * If we're signalled that the request has been cancelled (FR_SIGNAL_CANCEL).
  * Cleanup any pending state and release the connection handle back into the pool.
  *
- * @param[in] request	being cancelled.
  * @param[in] instance	of rlm_rest.
  * @param[in] thread	Thread specific module instance.
+ * @param[in] request	being cancelled.
  * @param[in] rctx	rlm_rest_handle_t currently used by the request.
  * @param[in] action	What happened.
  */
-void rest_io_module_action(REQUEST *request, void *instance, void *thread, void *rctx, fr_state_signal_t action)
+void rest_io_module_action(void *instance, void *thread, REQUEST *request, void *rctx, fr_state_signal_t action)
 {
 	rlm_rest_handle_t	*randle = talloc_get_type_abort(rctx, rlm_rest_handle_t);
 	rlm_rest_thread_t	*t = thread;
@@ -351,7 +378,7 @@ void rest_io_module_action(REQUEST *request, void *instance, void *thread, void 
 
 	if (action != FR_SIGNAL_CANCEL) return;
 
-	RDEBUG("Forcefully cancelling pending REST request");
+	RDEBUG2("Forcefully cancelling pending REST request");
 
 	ret = curl_multi_remove_handle(t->mandle, randle->candle);	/* Gracefully terminate the request */
 	if (ret != CURLM_OK) {
@@ -384,7 +411,7 @@ void rest_io_xlat_action(REQUEST *request, UNUSED void *instance, void *thread, 
 	rlm_rest_xlat_rctx_t		*our_rctx = talloc_get_type_abort(rctx, rlm_rest_xlat_rctx_t);
 	rlm_rest_handle_t		*randle = talloc_get_type_abort(our_rctx->handle, rlm_rest_handle_t);
 
-	rest_io_module_action(request, mod_inst, t, randle, action);
+	rest_io_module_action(mod_inst, t, request, randle, action);
 }
 
 /** Sends a REST (HTTP) request.
@@ -418,12 +445,19 @@ int rest_io_request_enqueue(rlm_rest_thread_t *t, REQUEST *request, void *handle
 		return -1;
 	}
 
+	/*
+	 *	Increment here, else the debug output looks
+	 *	messed up is curl_multi_add_handle triggers
+	 *      event loop modifications calls immediately.
+	 */
+	t->transfers++;
 	ret = curl_multi_add_handle(t->mandle, candle);
 	if (ret != CURLE_OK) {
+		t->transfers--;
 		REDEBUG("Request failed: %i - %s", ret, curl_easy_strerror(ret));
 		return -1;
 	}
-	t->transfers++;
+
 
 	return 0;
 }

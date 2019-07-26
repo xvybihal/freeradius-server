@@ -21,7 +21,7 @@
  * @brief Internal commands for the server
  *
  * @copyright 2018 The FreeRADIUS server project
- * @copyright 2018 Alan DeKok <aland@freeradius.org>
+ * @copyright 2018 Alan DeKok (aland@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -86,7 +86,7 @@ static int split(char **input, char **output, bool syntax_string);
 #define FR_TYPE_VARARGS		FR_TYPE_TLV
 #define FR_TYPE_OPTIONAL	FR_TYPE_STRUCT
 #define FR_TYPE_ALTERNATE	FR_TYPE_EXTENDED
-#define FR_TYPE_ALTERNATE_CHOICE FR_TYPE_LONG_EXTENDED
+#define FR_TYPE_ALTERNATE_CHOICE FR_TYPE_GROUP
 
 /** Find a command
  *
@@ -242,7 +242,7 @@ static bool fr_command_valid_syntax(fr_cmd_argv_t *argv)
 	if (uppercase) {
 		fr_type_t type;
 
-		type = fr_str2int(fr_value_box_type_names, argv->name, FR_TYPE_INVALID);
+		type = fr_str2int(fr_value_box_type_table, argv->name, FR_TYPE_INVALID);
 		switch (type) {
 		case FR_TYPE_ABINARY:
 		case FR_TYPE_VALUE_BOX:
@@ -1354,8 +1354,6 @@ int fr_command_tab_expand(TALLOC_CTX *ctx, fr_cmd_t *head, fr_cmd_info_t *info, 
 /*
  *	Magic parsing macros
  */
-#define SKIP_SPACES while (isspace((int) *word)) word++
-
 #define SKIP_NAME(name) do { p = word; q = name; while (*p && *q && (*p == *q)) { \
 				p++; \
 				q++; \
@@ -1652,6 +1650,8 @@ void fr_command_list(FILE *fp, int max_depth, fr_cmd_t *head, int options)
 	if ((max_depth <= 0) || !head) return;
 	if (max_depth > CMD_MAX_ARGV) max_depth = CMD_MAX_ARGV;
 
+	argv[0] = NULL;		/* not sure what argv is doing here... */
+
 	if ((options & FR_COMMAND_OPTION_LIST_CHILD) != 0) {
 		if (!head->child) {
 			rad_assert(head->func != NULL);
@@ -1871,7 +1871,7 @@ static char const *skip_word(char const *text)
 	char const *word = text;
 
 	if ((*word != '"') && (*word != '\'')) {
-		while (*word && !isspace((int) *word)) word++;
+		fr_skip_spaces(word);
 		return word;
 	}
 
@@ -1911,7 +1911,7 @@ static int syntax_str_to_argv(int start_argc, fr_cmd_argv_t *start, fr_cmd_info_
 	*runnable = false;
 
 	while (argv) {
-		SKIP_SPACES;
+		fr_skip_spaces(word);
 
 		if (!*word) goto done;
 
@@ -2149,12 +2149,6 @@ int fr_command_str_to_argv(fr_cmd_t *head, fr_cmd_info_t *info, char const *text
 		return -1;
 	}
 
-
-	if (!head) {
-		fr_strerror_printf("No commands to run.");
-		return -1;
-	}
-
 	/*
 	 *	Must have something to check.
 	 */
@@ -2174,7 +2168,7 @@ int fr_command_str_to_argv(fr_cmd_t *head, fr_cmd_info_t *info, char const *text
 		cmd = info->cmd[argc];
 		rad_assert(cmd != NULL);
 
-		SKIP_SPACES;
+		fr_skip_spaces(word);
 
 		if ((word[0] == '*') && isspace(word[1]) && cmd->added_name) {
 			p = word + 1;
@@ -2212,7 +2206,7 @@ skip_matched:
 	 *	Search the remaining text for matching commands.
 	 */
 	while (cmd) {
-		SKIP_SPACES;
+		fr_skip_spaces(word);
 
 		/*
 		 *	Skip commands which we shouldn't know about...
@@ -2332,7 +2326,7 @@ check_syntax:
 	 *	runnable.
 	 */
 	if (!cmd->syntax_argv) {
-		SKIP_SPACES;
+		fr_skip_spaces(word);
 
 		if (*word > 0) goto too_many;
 
@@ -2354,7 +2348,7 @@ check_syntax:
 	 *	input.
 	 */
 	if (!info->runnable && *word) {
-		SKIP_SPACES;
+		fr_skip_spaces(word);
 		if (*word) goto too_many;
 	}
 
@@ -2401,9 +2395,9 @@ void fr_command_info_init(TALLOC_CTX *ctx, fr_cmd_info_t *info)
 
 	info->argc = 0;
 	info->max_argc = CMD_MAX_ARGV;
-	info->argv = talloc_zero_array(ctx, char const *, CMD_MAX_ARGV);
-	info->box = talloc_zero_array(ctx, fr_value_box_t *, CMD_MAX_ARGV);
-	info->cmd = talloc_zero_array(ctx, fr_cmd_t *, CMD_MAX_ARGV);
+	MEM(info->argv = talloc_zero_array(ctx, char const *, CMD_MAX_ARGV));
+	MEM(info->box = talloc_zero_array(ctx, fr_value_box_t *, CMD_MAX_ARGV));
+	MEM(info->cmd = talloc_zero_array(ctx, fr_cmd_t *, CMD_MAX_ARGV));
 }
 
 
@@ -2478,7 +2472,7 @@ static int expand_syntax(fr_cmd_t *cmd, fr_cmd_info_t *info, fr_cmd_argv_t *argv
 	 *	Loop over syntax_argv, looking for matches.
 	 */
 	for (/* nothing */ ; argv != NULL; argv = argv->next) {
-		SKIP_SPACES;
+		fr_skip_spaces(word);
 
 		if (!*word) {
 			return expand_all(cmd, info, argv, count, max_expansions, expansions);
@@ -2675,7 +2669,7 @@ int fr_command_complete(fr_cmd_t *head, char const *text, int start,
 	 *	Try to do this without mangling "text".
 	 */
 	while (cmd) {
-		SKIP_SPACES;
+		fr_skip_spaces(word);
 
 		/*
 		 *	Skip commands which we shouldn't know about...
@@ -2800,7 +2794,7 @@ int fr_command_print_help(FILE *fp, fr_cmd_t *head, char const *text)
 	 *	Try to do this without mangling "text".
 	 */
 	while (cmd) {
-		SKIP_SPACES;
+		fr_skip_spaces(word);
 
 		/*
 		 *	End of the input.  Tab expand everything here.

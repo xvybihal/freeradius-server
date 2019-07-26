@@ -24,20 +24,21 @@
  *	  miquels@cistron.nl
  *
  * @copyright 2017 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
- * @copyright 2000,2006  The FreeRADIUS server project
- * @copyright 2000  Miquel van Smoorenburg <miquels@cistron.nl>
- * @copyright 2000  Alan DeKok <aland@freeradius.org>
+ * @copyright 2000,2006 The FreeRADIUS server project
+ * @copyright 2000 Miquel van Smoorenburg (miquels@cistron.nl)
+ * @copyright 2000 Alan DeKok (aland@freeradius.org)
  */
 RCSID("$Id$")
 
 #include <freeradius-devel/server/cf_file.h>
 #include <freeradius-devel/server/log.h>
-#include <freeradius-devel/server/parser.h>
+#include <freeradius-devel/server/cond.h>
 #include <freeradius-devel/server/rad_assert.h>
 #include <freeradius-devel/server/util.h>
 
 #include <freeradius-devel/util/cursor.h>
 #include <freeradius-devel/util/syserror.h>
+#include <freeradius-devel/util/misc.h>
 
 #include "cf_priv.h"
 
@@ -122,8 +123,8 @@ char const *cf_expand_variables(char const *cf, int *lineno,
 			end = strchr(ptr, '}');
 			if (end == NULL) {
 				*p = '\0';
-				INFO("%s[%d]: Variable expansion missing }",
-				     cf, *lineno);
+				INFO("%s[%d]: Variable expansion '%s' missing '}'",
+				     cf, *lineno, input);
 				return NULL;
 			}
 
@@ -606,9 +607,9 @@ typedef struct {
 /*
  *	Return 0 for keep going, 1 for stop.
  */
-static int _file_callback(void *ctx, void *data)
+static int _file_callback(void *data, void *uctx)
 {
-	cf_file_callback_t	*cb = ctx;
+	cf_file_callback_t	*cb = uctx;
 	cf_file_t		*file = data;
 	struct stat		buf;
 
@@ -779,6 +780,8 @@ static int cf_section_read(char const *filename, int *lineno, FILE *fp,
 	FR_TOKEN	t1 = T_INVALID, t2, t3;
 	bool		has_spaces = false;
 	bool		pass2;
+	bool		in_update = false;
+	bool		in_map = false;
 	char		*cbuff;
 	size_t		len;
 
@@ -815,7 +818,7 @@ static int cf_section_read(char const *filename, int *lineno, FILE *fp,
 
 		if (has_spaces) {
 			ptr = cbuff;
-			while (isspace((int) *ptr)) ptr++;
+			fr_skip_spaces(ptr);
 
 			if (ptr > cbuff) {
 				memmove(cbuff, ptr, len - (ptr - cbuff));
@@ -831,7 +834,7 @@ static int cf_section_read(char const *filename, int *lineno, FILE *fp,
 			if (at_eof) break;
 
 			ptr = buff[0];
-			while (*ptr && isspace((int) *ptr)) ptr++;
+			fr_skip_spaces(ptr);
 
 #ifdef WITH_CONF_WRITE
 			/*
@@ -1283,6 +1286,8 @@ static int cf_section_read(char const *filename, int *lineno, FILE *fp,
 
 		/*
 		 *	"map" sections have three arguments!
+		 *
+		 *	map NAME ARGUMENT { ... }
 		 */
 		if (strcmp(buff[1], "map") == 0) {
 			char const *mod;
@@ -1329,12 +1334,25 @@ static int cf_section_read(char const *filename, int *lineno, FILE *fp,
 					      filename, *lineno);
 					goto error;
 				}
-			}
 
-			if (gettoken(&ptr, buff[6], talloc_array_length(buff[6]), false) != T_LCBRACE) {
+				/*
+				 *	After the map expansion, we open a section.
+				 */
+				if (gettoken(&ptr, buff[6], talloc_array_length(buff[6]), false) != T_LCBRACE) {
+					goto map_error;
+				}
+
+			} else if (t3 != T_LCBRACE) {
+			map_error:
 				ERROR("%s[%d]: Expecting section start brace '{' in 'map' definition",
 				      filename, *lineno);
 				goto error;
+
+			} else {
+				/*
+				 *	Skip the parsed "{" token.
+				 */
+				ptr = p;
 			}
 
 			/*
@@ -1358,6 +1376,7 @@ static int cf_section_read(char const *filename, int *lineno, FILE *fp,
 				css->argc++;
 			}
 
+			in_map = true;
 			goto add_section;
 		}
 
@@ -1386,7 +1405,7 @@ static int cf_section_read(char const *filename, int *lineno, FILE *fp,
 		case T_OP_LT:
 		case T_OP_CMP_EQ:
 		case T_OP_CMP_FALSE:
-			if (!this || ((strcmp(this->name1, "update") != 0) && (strcmp(this->name1, "map") != 0))) {
+			if (!this || (!in_update && !in_map)) {
 				ERROR("%s[%d]: Invalid operator in assignment",
 				      filename, *lineno);
 				goto error;
@@ -1395,7 +1414,7 @@ static int cf_section_read(char const *filename, int *lineno, FILE *fp,
 
 		case T_OP_EQ:
 		case T_OP_SET:
-			while (isspace((int) *ptr)) ptr++;
+			fr_skip_spaces(ptr);
 
 			/*
 			 *	New parser: non-quoted strings are
@@ -1405,17 +1424,44 @@ static int cf_section_read(char const *filename, int *lineno, FILE *fp,
 			 *	word, well... too bad.
 			 */
 			switch (*ptr) {
-			case '{':
-				ERROR("%s[%d]: Syntax error: Unexpected '{'.",
-				      filename, *lineno);
-				goto error;
-
 			case '"':
 			case '\'':
 			case '`':
 			case '/':
 				t3 = getstring(&ptr, buff[3], talloc_array_length(buff[3]), false);
 				break;
+
+				/*
+				 *	As a special case, we allow sub-sections after '=', etc.
+				 *
+				 *	This syntax is only for inside
+				 *	of "update" sections, and for
+				 *	attributes of type "group".
+				 *	But the parser isn't (yet)
+				 *	smart enough to know about
+				 *	that context.  So we just
+				 *	silently allow it everywhere.
+				 */
+			case '{':
+				if (!in_update) {
+					ERROR("%s[%d]: Parse error: Invalid location for grouped attributr",
+					      filename, *lineno);
+					goto error;
+				}
+
+				if (!fr_assignment_op[t2]) {
+					ERROR("%s[%d]: Parse error: Invalid assignment operator '%s' for group",
+					      filename, *lineno, buff[2]);
+					goto error;
+				}
+
+				/*
+				 *	Now that we've peeked ahead to
+				 *	see the open brace, parse it
+				 *	for real.
+				 */
+				ptr++;
+				goto alloc_section;
 
 			default:
 			{
@@ -1489,6 +1535,23 @@ static int cf_section_read(char const *filename, int *lineno, FILE *fp,
 			cpn->pass2 = pass2;
 			cf_item_add(this, &(cpn->item));
 
+			{
+				CONF_DATA const *cd;
+				CONF_PARSER *rule;
+
+
+				cd = cf_data_find(CF_TO_ITEM(this), CONF_PARSER, buff[1]);
+				if (!cd) goto skip_on_read;
+
+				rule = cf_data_value(cd);
+				if ((rule->type & FR_TYPE_ON_READ) == 0) {
+					goto skip_on_read;
+				}
+
+				if (rule->func(this, NULL, NULL, cf_pair_to_item(cpn), rule) < 0) goto error;
+			}
+		skip_on_read:
+
 #ifdef WITH_CONF_WRITE
 			if (orig_value) cpn->orig_value = talloc_typed_strdup(cpn, orig_value);
 			orig_value = NULL;
@@ -1496,7 +1559,7 @@ static int cf_section_read(char const *filename, int *lineno, FILE *fp,
 			/*
 			 *	Require a comma, unless there's a comment.
 			 */
-			while (isspace(*ptr)) ptr++;
+			fr_skip_spaces(ptr);
 
 			if (*ptr == ',') {
 				ptr++;
@@ -1566,6 +1629,14 @@ static int cf_section_read(char const *filename, int *lineno, FILE *fp,
 			 *	The current section is now the child section.
 			 */
 			this = css;
+
+			/*
+			 *	Hack for better error messages in
+			 *	nested sections.  This information
+			 *	should really be put into a parser
+			 *	struct, as with tmpls.
+			 */
+			if (!in_map && !in_update) in_update = (strcmp(css->name1, "update") == 0);
 			break;
 
 		case T_INVALID:
@@ -1584,7 +1655,7 @@ static int cf_section_read(char const *filename, int *lineno, FILE *fp,
 		/*
 		 *	Done parsing one thing.  Skip to EOL if possible.
 		 */
-		while (isspace(*ptr)) ptr++;
+		fr_skip_spaces(ptr);
 
 		if (*ptr == '#') continue;
 
@@ -1842,6 +1913,8 @@ int cf_section_write(FILE *fp, CONF_SECTION *cs, int depth)
 {
 	CONF_ITEM	*ci;
 
+	if (!fp || !cs) return -1;
+
 	/*
 	 *	Print the section name1, etc.
 	 */
@@ -1880,14 +1953,10 @@ int cf_section_write(FILE *fp, CONF_SECTION *cs, int depth)
 	for (ci = cs->item.child; ci; ci = ci->next) {
 		switch (ci->type) {
 		case CONF_ITEM_SECTION:
-			if (!fp) continue;
-
 			cf_section_write(fp, cf_item_to_section(ci), depth + 1);
 			break;
 
 		case CONF_ITEM_PAIR:
-			if (!fp) continue;
-
 			/*
 			 *	Ignore internal things.
 			 */

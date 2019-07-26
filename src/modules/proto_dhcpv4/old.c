@@ -18,7 +18,7 @@
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
  * @copyright 2008 The FreeRADIUS server project
- * @copyright 2008,2016 Alan DeKok <aland@deployingradius.com>
+ * @copyright 2008,2016 Alan DeKok (aland@deployingradius.com)
  */
 
 /*
@@ -49,7 +49,6 @@
 #include <freeradius-devel/server/module.h>
 #include <freeradius-devel/unlang/base.h>
 #include <freeradius-devel/server/protocol.h>
-#include <freeradius-devel/server/process.h>
 #include <freeradius-devel/dhcpv4/dhcpv4.h>
 #include <freeradius-devel/server/rad_assert.h>
 
@@ -507,9 +506,7 @@ static rlm_rcode_t dhcp_process(REQUEST *request)
 				request->response_delay.tv_usec = 0;
 			}
 		} else {
-#ifndef USEC
-#define USEC 1000000
-#endif
+
 			vp = fr_pair_find_by_num(request->reply->vps, 0, FR_FREERADIUS_RESPONSE_DELAY_USEC, TAG_ANY);
 			if (vp) {
 				if (vp->vp_uint32 <= 10 * USEC) {

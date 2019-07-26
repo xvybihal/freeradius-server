@@ -1,5 +1,7 @@
 # -*- text -*-
-# Copyright (C) 2016 The FreeRADIUS Server project and contributors
+# Copyright (C) 2019 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id$
 #
 #	Attributes needed by FreeRADIUS internally
 #
@@ -7,7 +9,7 @@
 #
 #  Internal (Non-Protocol) attributes
 #
-FLAGS		internal
+FLAGS	internal
 ATTRIBUTE	EAP-SIM-Subtype				256	integer
 
 VALUE	EAP-SIM-Subtype			SIM-Start		10

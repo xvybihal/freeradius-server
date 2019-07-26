@@ -35,13 +35,19 @@ extern "C" {
 
 #include <talloc.h>
 
-void		trigger_exec_init(CONF_SECTION const *cs);
+ssize_t		trigger_xlat(UNUSED TALLOC_CTX *ctx, char **out, UNUSED size_t outlen,
+		     	     UNUSED void const *mod_inst, UNUSED void const *xlat_inst,
+			     REQUEST *request, char const *fmt);
+
+int		trigger_exec_init(CONF_SECTION const *cs);
 
 int		trigger_exec(REQUEST *request, CONF_SECTION const *cs,
 			     char const *name, bool quench, VALUE_PAIR *args)
 			     CC_HINT(nonnull (3));
 
 void		trigger_exec_free(void);
+
+bool		trigger_enabled(void);
 
 VALUE_PAIR	*trigger_args_afrom_server(TALLOC_CTX *ctx, char const *server, uint16_t port);
 

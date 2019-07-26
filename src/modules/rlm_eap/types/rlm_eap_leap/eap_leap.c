@@ -17,7 +17,7 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2003 Alan DeKok <aland@freeradius.org>
+ * @copyright 2003 Alan DeKok (aland@freeradius.org)
  * @copyright 2006 The FreeRADIUS server project
  */
 
@@ -68,7 +68,7 @@ leap_packet_t *eap_leap_extract(REQUEST *request, eap_round_t *eap_round)
 	 */
 	if (!eap_round || !eap_round->response ||
 	    ((eap_round->response->code != FR_EAP_CODE_RESPONSE) && (eap_round->response->code != FR_EAP_CODE_REQUEST)) ||
-	     (eap_round->response->type.num != FR_EAP_LEAP) || !eap_round->response->type.data ||
+	     (eap_round->response->type.num != FR_EAP_METHOD_LEAP) || !eap_round->response->type.data ||
 	     (eap_round->response->length < LEAP_HEADER_LEN) ||
 	     (eap_round->response->type.data[0] != 0x01)) {	/* version 1 */
 		REDEBUG("Corrupted data");
@@ -179,7 +179,7 @@ static int eap_leap_ntpwdhash(uint8_t *out, REQUEST *request, VALUE_PAIR *passwo
 		 */
 		fr_md4_calc(out, ucs2_password, len);
 	} else {		/* MUST be NT-Password */
-		uint8_t *p = NULL;
+		uint8_t	*p = NULL;
 
 		if (password->vp_length == 32) {
 			p = talloc_array(password, uint8_t, 16);
@@ -191,7 +191,7 @@ static int eap_leap_ntpwdhash(uint8_t *out, REQUEST *request, VALUE_PAIR *passwo
 		}
 
 		if (p) {
-			fr_pair_value_memcpy(password, p, 16);
+			fr_pair_value_memcpy(password, p, 16, password->data.tainted);
 			talloc_free(p);
 		}
 
@@ -401,7 +401,7 @@ int eap_leap_compose(REQUEST *request, eap_round_t *eap_round, leap_packet_t *re
 	switch (reply->code) {
 	case FR_EAP_CODE_REQUEST:
 	case FR_EAP_CODE_RESPONSE:
-		eap_round->request->type.num = FR_EAP_LEAP;
+		eap_round->request->type.num = FR_EAP_METHOD_LEAP;
 		eap_round->request->type.length = reply->length;
 
 		eap_round->request->type.data = talloc_array(eap_round->request, uint8_t, reply->length);

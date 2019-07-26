@@ -1,7 +1,5 @@
 /*
- * @copyright (c) Dan Harkins, 2012
- *
- *  @copyright holder grants permission for redistribution and use in source
+ *  Copyright holder grants permission for redistribution and use in source
  *  and binary forms, with or without modification, provided that the
  *  following conditions are met:
  *     1. Redistribution of source code must retain the above copyright
@@ -29,6 +27,8 @@
  * This license and distribution terms cannot be changed. In other words,
  * this code cannot simply be copied and put under a different distribution
  * license (including the GNU public license).
+ *
+ * @copyright (c) Dan Harkins, 2012
  */
 RCSID("$Id$")
 USES_APPLE_DEPRECATED_API	/* OpenSSL API has been deprecated by Apple */
@@ -84,7 +84,7 @@ fr_dict_attr_autoload_t rlm_eap_pwd_dict_attr[] = {
 	{ NULL }
 };
 
-static int send_pwd_request(pwd_session_t *session, eap_round_t *eap_round)
+static int send_pwd_request(REQUEST *request, pwd_session_t *session, eap_round_t *eap_round)
 {
 	size_t		len;
 	uint16_t	totlen;
@@ -93,7 +93,7 @@ static int send_pwd_request(pwd_session_t *session, eap_round_t *eap_round)
 	len = (session->out_len - session->out_pos) + sizeof(pwd_hdr);
 	rad_assert(len > 0);
 	eap_round->request->code = FR_EAP_CODE_REQUEST;
-	eap_round->request->type.num = FR_EAP_PWD;
+	eap_round->request->type.num = FR_EAP_METHOD_PWD;
 	eap_round->request->type.length = (len > session->mtu) ? session->mtu : len;
 	eap_round->request->type.data = talloc_zero_array(eap_round->request, uint8_t, eap_round->request->type.length);
 	hdr = (pwd_hdr *)eap_round->request->type.data;
@@ -112,7 +112,7 @@ static int send_pwd_request(pwd_session_t *session, eap_round_t *eap_round)
 		break;
 
 	default:
-		ERROR("PWD state is invalid.  Can't send request");
+		REDEBUG("PWD state is invalid.  Can't send request");
 		return -1;
 	}
 
@@ -154,11 +154,10 @@ static int send_pwd_request(pwd_session_t *session, eap_round_t *eap_round)
 	return 0;
 }
 
-static rlm_rcode_t CC_HINT(nonnull) mod_process(void *instance, eap_session_t *eap_session);
-static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
+static rlm_rcode_t mod_process(void *instance, UNUSED void *thread, REQUEST *request)
 {
 	rlm_eap_pwd_t	*inst = talloc_get_type_abort(instance, rlm_eap_pwd_t);
-	REQUEST		*request;
+	eap_session_t	*eap_session = eap_session_get(request);
 
 	pwd_session_t	*session;
 
@@ -197,7 +196,7 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 	 */
 	if (session->out_pos) {
 		if (in_len) REDEBUG("PWD got something more than an ACK for a fragment");
-		if (send_pwd_request(session, eap_round) < 0) return RLM_MODULE_FAIL;
+		if (send_pwd_request(request, session, eap_round) < 0) return RLM_MODULE_FAIL;
 
 		return RLM_MODULE_OK;
 	}
@@ -218,7 +217,10 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 		}
 
 		session->in_len = ntohs(in[0] * 256 | in[1]);
-		if (!session->in_len) return RLM_MODULE_FAIL;
+		if (!session->in_len) {
+			DEBUG("EAP-PWD malformed packet (input length)");
+			return RLM_MODULE_FAIL;
+		}
 
 		MEM(session->in = talloc_zero_array(session, uint8_t, session->in_len));
 
@@ -232,7 +234,10 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 	 *	buffer those fragments!
 	 */
 	if (EAP_PWD_GET_MORE_BIT(hdr)) {
-		rad_assert(session->in != NULL);
+		if (!session->in) {
+			RDEBUG2("Unexpected fragment.");
+			return 0;
+		}
 
 		if ((session->in_pos + in_len) > session->in_len) {
 			REDEBUG("Fragment overflows packet");
@@ -247,7 +252,7 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 		 */
 		exch = EAP_PWD_GET_EXCHANGE(hdr);
 		eap_round->request->code = FR_EAP_CODE_REQUEST;
-		eap_round->request->type.num = FR_EAP_PWD;
+		eap_round->request->type.num = FR_EAP_METHOD_PWD;
 		eap_round->request->type.length = sizeof(pwd_hdr);
 
 		MEM(eap_round->request->type.data = talloc_array(eap_round->request, uint8_t, sizeof(pwd_hdr)));
@@ -277,7 +282,7 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 		BIGNUM	*x = NULL, *y = NULL;
 
 		if (EAP_PWD_GET_EXCHANGE(hdr) != EAP_PWD_EXCH_ID) {
-			RDEBUG2("PWD exchange is incorrect, Not ID");
+			REDEBUG("PWD exchange is incorrect, Not ID");
 			return RLM_MODULE_INVALID;
 		}
 
@@ -321,11 +326,11 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 			return RLM_MODULE_REJECT;
 		}
 
-		if (compute_password_element(session, session->group_num,
+		if (compute_password_element(request, session, session->group_num,
 					     vp->vp_strvalue, vp->vp_length,
 					     inst->server_id, strlen(inst->server_id),
 					     session->peer_id, strlen(session->peer_id),
-					     &session->token)) {
+					     &session->token, inst->bnctx)) {
 			REDEBUG("Failed to obtain password element");
 			return RLM_MODULE_FAIL;
 		}
@@ -333,7 +338,7 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 		/*
 		 *	Compute our scalar and element
 		 */
-		if (compute_scalar_element(session, inst->bnctx)) {
+		if (compute_scalar_element(request, session, inst->bnctx)) {
 			REDEBUG("Failed to compute server's scalar and element");
 			return RLM_MODULE_FAIL;
 		}
@@ -372,28 +377,28 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 		BN_bn2bin(session->my_scalar, ptr + offset);
 
 		session->state = PWD_STATE_COMMIT;
-		rcode = send_pwd_request(session, eap_round) < 0 ? RLM_MODULE_FAIL : RLM_MODULE_OK;
+		rcode = send_pwd_request(request, session, eap_round) < 0 ? RLM_MODULE_FAIL : RLM_MODULE_OK;
 	}
 		break;
 
 	case PWD_STATE_COMMIT:
 		if (EAP_PWD_GET_EXCHANGE(hdr) != EAP_PWD_EXCH_COMMIT) {
-			RDEBUG2("PWD exchange is incorrect, not commit!");
+			REDEBUG("PWD exchange is incorrect, not commit!");
 			return RLM_MODULE_INVALID;
 		}
 
 		/*
 		 *	Process the peer's commit and generate the shared key, k
 		 */
-		if (process_peer_commit(session, in, in_len, inst->bnctx)) {
-			RDEBUG2("Failed processing peer's commit");
+		if (process_peer_commit(request, session, in, in_len, inst->bnctx)) {
+			REDEBUG("Failed processing peer's commit");
 			return RLM_MODULE_FAIL;
 		}
 
 		/*
 		 *	Compute our confirm blob
 		 */
-		if (compute_server_confirm(session, session->my_confirm, inst->bnctx)) {
+		if (compute_server_confirm(request, session, session->my_confirm, inst->bnctx)) {
 			REDEBUG("Failed computing confirm");
 			return RLM_MODULE_FAIL;
 		}
@@ -408,7 +413,7 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 		memcpy(session->out, session->my_confirm, SHA256_DIGEST_LENGTH);
 
 		session->state = PWD_STATE_CONFIRM;
-		rcode = send_pwd_request(session, eap_round) < 0 ? RLM_MODULE_FAIL : RLM_MODULE_OK;
+		rcode = send_pwd_request(request, session, eap_round) < 0 ? RLM_MODULE_FAIL : RLM_MODULE_OK;
 		break;
 
 	case PWD_STATE_CONFIRM:
@@ -418,10 +423,10 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 		}
 
 		if (EAP_PWD_GET_EXCHANGE(hdr) != EAP_PWD_EXCH_CONFIRM) {
-			RDEBUG2("PWD exchange is incorrect, not commit");
+			REDEBUG("PWD exchange is incorrect, not commit");
 			return RLM_MODULE_INVALID;
 		}
-		if (compute_peer_confirm(session, peer_confirm, inst->bnctx)) {
+		if (compute_peer_confirm(request, session, peer_confirm, inst->bnctx)) {
 			REDEBUG("Cannot compute peer's confirm");
 			return RLM_MODULE_FAIL;
 		}
@@ -429,7 +434,7 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 			REDEBUG("PWD exchange failed, peer confirm is incorrect");
 			return RLM_MODULE_FAIL;
 		}
-		if (compute_keys(session, peer_confirm, msk, emsk)) {
+		if (compute_keys(request, session, peer_confirm, msk, emsk)) {
 			REDEBUG("Failed generating (E)MSK");
 			return RLM_MODULE_FAIL;
 		}
@@ -438,14 +443,14 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 		/*
 		 *	Return the MSK (in halves).
 		 */
-		eap_add_reply(eap_session->request, attr_ms_mppe_recv_key, msk, MPPE_KEY_LEN);
-		eap_add_reply(eap_session->request, attr_ms_mppe_send_key, msk + MPPE_KEY_LEN, MPPE_KEY_LEN);
+		eap_add_reply(request, attr_ms_mppe_recv_key, msk, MPPE_KEY_LEN);
+		eap_add_reply(request, attr_ms_mppe_send_key, msk + MPPE_KEY_LEN, MPPE_KEY_LEN);
 
-		rcode = RLM_MODULE_FAIL;
+		rcode = RLM_MODULE_OK;
 		break;
 
 	default:
-		RDEBUG2("Unknown PWD state");
+		REDEBUG("Unknown PWD state");
 		return RLM_MODULE_FAIL;
 	}
 
@@ -476,10 +481,11 @@ static int _free_pwd_session(pwd_session_t *session)
 	return 0;
 }
 
-static rlm_rcode_t mod_session_init(void *instance, eap_session_t *eap_session)
+static rlm_rcode_t mod_session_init(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	pwd_session_t		*session;
 	rlm_eap_pwd_t		*inst = talloc_get_type_abort(instance, rlm_eap_pwd_t);
+	eap_session_t		*eap_session = eap_session_get(request);
+	pwd_session_t		*session;
 	VALUE_PAIR		*vp;
 	pwd_id_packet_t		*packet;
 
@@ -494,7 +500,7 @@ static rlm_rcode_t mod_session_init(void *instance, eap_session_t *eap_session)
 	 *	The admin can dynamically change the MTU.
 	 */
 	session->mtu = inst->fragment_size;
-	vp = fr_pair_find_by_da(eap_session->request->packet->vps, attr_framed_mtu, TAG_ANY);
+	vp = fr_pair_find_by_da(request->packet->vps, attr_framed_mtu, TAG_ANY);
 
 	/*
 	 *	session->mtu is *our* MTU.  We need to subtract off the EAP
@@ -526,7 +532,7 @@ static rlm_rcode_t mod_session_init(void *instance, eap_session_t *eap_session)
 	packet->prep = EAP_PWD_PREP_NONE;
 	memcpy(packet->identity, inst->server_id, session->out_len - sizeof(pwd_id_packet_t) );
 
-	if (send_pwd_request(session, eap_session->this_round) < 0) return RLM_MODULE_FAIL;
+	if (send_pwd_request(request, session, eap_session->this_round) < 0) return RLM_MODULE_FAIL;
 
 	eap_session->process = mod_process;
 
@@ -562,7 +568,7 @@ static int mod_instantiate(void *instance, CONF_SECTION *cs)
 		break;
 
 	default:
-		cf_log_err_by_name(cs, "group", "Group %i is not supported", inst->group);
+		cf_log_err_by_child(cs, "group", "Group %i is not supported", inst->group);
 		return -1;
 	}
 
@@ -580,7 +586,7 @@ rlm_eap_submodule_t rlm_eap_pwd = {
 	.name		= "eap_pwd",
 	.magic		= RLM_MODULE_INIT,
 
-	.provides	= { FR_EAP_PWD },
+	.provides	= { FR_EAP_METHOD_PWD },
 	.inst_size	= sizeof(rlm_eap_pwd_t),
 	.config		= submodule_config,
 	.instantiate	= mod_instantiate,	/* Create new submodule instance */

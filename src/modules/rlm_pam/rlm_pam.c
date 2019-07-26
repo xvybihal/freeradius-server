@@ -24,9 +24,9 @@
  *	That, in fact, was again based on the original stuff from
  *	Jeph Blaize <jblaize@kiva.net> done in May 1997.
  *
- * @copyright 2000,2006  The FreeRADIUS server project
- * @copyright 1997  Jeph Blaize <jblaize@kiva.net>
- * @copyright 1999  miguel a.l. paraz <map@iphil.net>
+ * @copyright 2000,2006 The FreeRADIUS server project
+ * @copyright 1997 Jeph Blaize (jblaize@kiva.net)
+ * @copyright 1999 miguel a.l. paraz (map@iphil.net)
  */
 RCSID("$Id$")
 
@@ -258,8 +258,8 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(void *instance, UNUSED void
 	return RLM_MODULE_OK;
 }
 
-extern rad_module_t rlm_pam;
-rad_module_t rlm_pam = {
+extern module_t rlm_pam;
+module_t rlm_pam = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "pam",
 	.type		= RLM_TYPE_THREAD_UNSAFE,	/* The PAM libraries are not thread-safe */

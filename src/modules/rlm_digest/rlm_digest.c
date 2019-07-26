@@ -19,8 +19,8 @@
  * @file rlm_digest.c
  * @brief Handles SIP digest authentication requests from Cisco SIP servers.
  *
- * @copyright 2002,2006  The FreeRADIUS server project
- * @copyright 2002  Alan DeKok <aland@freeradius.org>
+ * @copyright 2002,2006 The FreeRADIUS server project
+ * @copyright 2002 Alan DeKok (aland@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -105,7 +105,7 @@ static int digest_fix(REQUEST *request)
 	/*
 	 *	Check for proper format of the Digest-Attributes
 	 */
-	RDEBUG("Checking for correctly formatted Digest-Attributes");
+	RDEBUG2("Checking for correctly formatted Digest-Attributes");
 	rad_assert(attr_digest_attributes);
 
 	first = fr_cursor_iter_by_da_init(&cursor, &request->packet->vps, attr_digest_attributes);
@@ -117,7 +117,7 @@ static int digest_fix(REQUEST *request)
 		size_t attr_len;
 		uint8_t const *p = i->vp_octets, *end = i->vp_octets + i->vp_length;
 
-		RHEXDUMP(L_DBG_LVL_3, p, i->vp_length, "Validating digest attribute");
+		RHEXDUMP3(p, i->vp_length, "Validating digest attribute");
 
 		/*
 		 *	Until this stupidly encoded attribute is exhausted.
@@ -127,7 +127,7 @@ static int digest_fix(REQUEST *request)
 			 *	The attribute type must be valid
 			 */
 			if ((p[0] == 0) || (p[0] > 10)) {
-				RDEBUG("Not formatted as Digest-Attributes: subtlv (%u) invalid", (unsigned int) p[0]);
+				RDEBUG2("Not formatted as Digest-Attributes: subtlv (%u) invalid", (unsigned int) p[0]);
 				return RLM_MODULE_NOOP;
 			}
 
@@ -137,7 +137,7 @@ static int digest_fix(REQUEST *request)
 			 *	Too short.
 			 */
 			if (attr_len < 3) {
-				RDEBUG("Not formatted as Digest-Attributes: TLV too short");
+				RDEBUG2("Not formatted as Digest-Attributes: TLV too short");
 				return RLM_MODULE_NOOP;
 			}
 
@@ -145,12 +145,12 @@ static int digest_fix(REQUEST *request)
 			 *	Too long.
 			 */
 			if (p + attr_len > end) {
-				RDEBUG("Not formatted as Digest-Attributes: TLV too long)");
+				RDEBUG2("Not formatted as Digest-Attributes: TLV too long)");
 				return RLM_MODULE_NOOP;
 			}
 
 
-			RHEXDUMP(L_DBG_LVL_3, p, attr_len, "Found valid sub TLV %u, length %zu", p[0], attr_len);
+			RHEXDUMP3(p, attr_len, "Found valid sub TLV %u, length %zu", p[0], attr_len);
 
 			p += attr_len;
 		} /* loop over this one attribute */
@@ -159,7 +159,7 @@ static int digest_fix(REQUEST *request)
 	/*
 	 *	Convert them to something sane.
 	 */
-	RDEBUG("Digest-Attributes validated, unpacking into interal attributes");
+	RDEBUG2("Digest-Attributes validated, unpacking into interal attributes");
 	fr_cursor_head(&cursor);
 	for (i = fr_cursor_head(&cursor);
 	     i;
@@ -221,7 +221,6 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(void *instance, UNUSED void *t
  */
 static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(UNUSED void *instance, UNUSED void *thread, REQUEST *request)
 {
-	int i;
 	size_t a1_len, a2_len, kd_len;
 	uint8_t a1[(FR_MAX_STRING_LEN + 1) * 5]; /* can be 5 attributes */
 	uint8_t a2[(FR_MAX_STRING_LEN + 1) * 3]; /* can be 3 attributes */
@@ -473,15 +472,8 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(UNUSED void *instance, UNUS
 	}
 	fr_bin2hex((char *) kd, hash, sizeof(hash));
 
-#ifndef NRDEBUG
-	if (RDEBUG_ENABLED2) {
-		fr_printf_log("H(A1) = ");
-		for (i = 0; i < 16; i++) {
-			fr_printf_log("%02x", hash[i]);
-		}
-		fr_printf_log("\n");
-	}
-#endif
+	RHEXDUMP_INLINE3(hash, sizeof(hash), "H(A1)");
+
 	kd_len = 32;
 
 	kd[kd_len] = ':';
@@ -542,15 +534,8 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(UNUSED void *instance, UNUS
 
 	fr_bin2hex((char *) kd + kd_len, hash, sizeof(hash));
 
-#ifndef NRDEBUG
-	if (RDEBUG_ENABLED2) {
-		fr_printf_log("H(A2) = ");
-		for (i = 0; i < 16; i++) {
-			fr_printf_log("%02x", hash[i]);
-		}
-		fr_printf_log("\n");
-	}
-#endif
+	RHEXDUMP_INLINE3(hash, sizeof(hash), "H(A2)");
+
 	kd_len += 32;
 
 	kd[kd_len] = 0;
@@ -619,12 +604,13 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_digest;
-rad_module_t rlm_digest = {
+extern module_t rlm_digest;
+module_t rlm_digest = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "digest",
 	.inst_size	= sizeof(rlm_digest_t),
 	.bootstrap	= mod_bootstrap,
+	.dict		= &dict_radius,
 	.methods = {
 		[MOD_AUTHENTICATE]	= mod_authenticate,
 		[MOD_AUTHORIZE]		= mod_authorize

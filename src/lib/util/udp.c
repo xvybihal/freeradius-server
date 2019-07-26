@@ -18,7 +18,7 @@
  *
  * @file src/lib/util/udp.c
  *
- * @copyright 2000-2003,2006  The FreeRADIUS server project
+ * @copyright 2000-2003,2006 The FreeRADIUS server project
  */
 RCSID("$Id$")
 
@@ -176,7 +176,7 @@ ssize_t udp_recv_peek(int sockfd, void *data, size_t data_len, int flags, fr_ipa
 ssize_t udp_recv(int sockfd, void *data, size_t data_len, int flags,
 		 fr_ipaddr_t *src_ipaddr, uint16_t *src_port,
 		 fr_ipaddr_t *dst_ipaddr, uint16_t *dst_port, int *if_index,
-		 struct timeval *when)
+		 fr_time_t *when)
 {
 	int			sock_flags = 0;
 	struct sockaddr_storage	src;
@@ -188,10 +188,7 @@ ssize_t udp_recv(int sockfd, void *data, size_t data_len, int flags,
 
 	if ((flags & UDP_FLAGS_PEEK) != 0) sock_flags |= MSG_PEEK;
 
-	if (when) {
-		when->tv_sec = 0;
-		when->tv_usec = 0;
-	}
+	if (when) *when = 0;
 
 	/*
 	 *	Connected sockets already know src/dst IP/port
@@ -252,7 +249,11 @@ done:
 		return received;
 	}
 
-	if (when && !when->tv_sec) gettimeofday(when, NULL);
+	/*
+	 *	We didn't get it from the kernel
+	 *	so use our own time source.
+	 */
+	if (when && !*when) *when = fr_time();
 
 	return received;
 }

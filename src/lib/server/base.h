@@ -21,7 +21,7 @@
  * @file lib/server/base.h
  * @brief Structures, prototypes and global variables for the FreeRADIUS server.
  *
- * @copyright 1999-2018  The FreeRADIUS server project
+ * @copyright 1999-2018 The FreeRADIUS server project
  */
 RCSIDH(base_h, "$Id$")
 
@@ -37,12 +37,13 @@ RCSIDH(base_h, "$Id$")
 #include <freeradius-devel/server/connection.h>
 #include <freeradius-devel/server/crypt.h>
 #include <freeradius-devel/server/dependency.h>
-#include <freeradius-devel/server/dl.h>
+#include <freeradius-devel/server/dl_module.h>
 #include <freeradius-devel/server/exec.h>
 #include <freeradius-devel/server/exfile.h>
 #include <freeradius-devel/server/listen.h>
 #include <freeradius-devel/server/log.h>
 #include <freeradius-devel/server/main_config.h>
+#include <freeradius-devel/server/main_loop.h>
 #include <freeradius-devel/server/map_proc_priv.h>
 #include <freeradius-devel/server/map_proc.h>
 #include <freeradius-devel/server/map.h>
@@ -50,13 +51,11 @@ RCSIDH(base_h, "$Id$")
 #include <freeradius-devel/server/pair.h>
 #include <freeradius-devel/server/paircmp.h>
 #include <freeradius-devel/server/pairmove.h>
-#include <freeradius-devel/server/parser.h>
+#include <freeradius-devel/server/cond.h>
 #include <freeradius-devel/server/pool.h>
-#include <freeradius-devel/server/process.h>
 #include <freeradius-devel/server/protocol.h>
 #include <freeradius-devel/server/regex.h>
 #include <freeradius-devel/server/rcode.h>
-#include <freeradius-devel/server/realms.h>
 #include <freeradius-devel/server/request.h>
 #include <freeradius-devel/server/state.h>
 #include <freeradius-devel/server/stats.h>
@@ -66,6 +65,7 @@ RCSIDH(base_h, "$Id$")
 #include <freeradius-devel/server/trigger.h>
 #include <freeradius-devel/server/users_file.h>
 #include <freeradius-devel/server/util.h>
+#include <freeradius-devel/server/virtual_servers.h>
 #include <freeradius-devel/server/xlat.h>
 
 #include <freeradius-devel/util/base.h>

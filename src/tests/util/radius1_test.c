@@ -17,7 +17,7 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2016  Alan DeKok <aland@freeradius.org>
+ * @copyright 2016 Alan DeKok (aland@freeradius.org)
  */
 
 RCSID("$Id$")
@@ -496,7 +496,7 @@ static void master_process(TALLOC_CTX *ctx)
 			if (!workers[i].worker) num_outstanding--;
 		}
 
-		if ((now - last_checked) > (NANOSEC / 10)) {
+		if ((now - last_checked) > (NSEC / 10)) {
 			MPRINT1("still num_outstanding %d\n", num_outstanding);
 		}
 

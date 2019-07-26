@@ -21,8 +21,8 @@
  * @file protocols/dhcpv4/dhcpv4.h
  * @brief Implementation of the DHCPv4 protocol.
  *
- * @copyright 2008  The FreeRADIUS server project
- * @copyright 2008  Alan DeKok <aland@deployingradius.com>
+ * @copyright 2008 The FreeRADIUS server project
+ * @copyright 2008 Alan DeKok (aland@deployingradius.com)
  */
 RCSIDH(dhcp_h, "$Id$")
 
@@ -77,8 +77,6 @@ typedef struct {
 	uint32_t	option_format; /* 236 */
 	uint8_t		options[DHCP_VEND_LEN];
 } dhcp_packet_t;
-
-#define DHCP_MAGIC_VENDOR (54)
 
 /*
  *	Some clients silently ignore responses less than 300 bytes.
@@ -143,7 +141,7 @@ int8_t		fr_dhcpv4_attr_cmp(void const *a, void const *b);
 
 bool		fr_dhcpv4_ok(uint8_t const *data, ssize_t data_len, uint8_t *message_type, uint32_t *xid);
 RADIUS_PACKET	*fr_dhcpv4_packet_alloc(uint8_t const *data, ssize_t data_len);
-ssize_t		fr_dhcpv4_encode(uint8_t *buffer, size_t buflen, int code, uint32_t xid, VALUE_PAIR *vps);
+ssize_t		fr_dhcpv4_encode(uint8_t *buffer, size_t buflen, dhcp_packet_t *original, int code, uint32_t xid, VALUE_PAIR *vps);
 int		fr_dhcpv4_global_init(void);
 void		fr_dhcpv4_global_free(void);
 void		fr_dhcpv4_print_hex(FILE *fp, uint8_t const *packet, size_t packet_len);

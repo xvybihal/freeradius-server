@@ -21,7 +21,7 @@
  *
  * @author Arran Cudbard-Bell
  *
- * @copyright 2015 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2015 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  * @copyright 2015 The FreeRADIUS server project
  */
 RCSID("$Id$")
@@ -224,7 +224,9 @@ static void NEVER_RETURNS usage(int ret) {
 	INFO("  -h                     Print this help message and exit");
 	INFO("  -x                     Increase the verbosity level");
 //	INFO("  -o attr=value          Set option, these are specific to the backends [NYI]");
-	INFO("  -f file                Load connection options from a FreeRADIUS (radisud) format config file");
+	INFO("  -f file                Load connection options from a FreeRADIUS format config file");
+	INFO("                         This file should contain a pool { ... } section and one or more");
+	INFO("                         `server = <fqdn>` pairs`");
 	INFO(" ");
 	INFO("<range> is range \"127.0.0.1-127.0.0.254\" or CIDR network \"127.0.0.1/24\" or host \"127.0.0.1\"");
 	INFO("CIDR host bits set start address, e.g. 127.0.0.200/24 -> 127.0.0.200-127.0.0.254");
@@ -458,20 +460,22 @@ static int driver_do_lease(void *out, void *instance, ippool_tool_operation_t co
 	fr_redis_rcode_t		status;
 
 	fr_ipaddr_t			ipaddr = op->start;
-	int				s_ret = REDIS_RCODE_SUCCESS;
-	REQUEST				*request = request_alloc(inst);
+	fr_redis_rcode_t		s_ret = REDIS_RCODE_SUCCESS;
+	REQUEST				*request;
 	redisReply			**replies = NULL;
 
 	unsigned int			pipelined = 0;
 
+	request = request_alloc(inst);
 	while (more) {
-		fr_ipaddr_t	acked = ipaddr; 		/* Record our progress */
+		fr_ipaddr_t	acked = ipaddr; 	/* Record our progress */
 		size_t		reply_cnt = 0;
 
 		for (s_ret = fr_redis_cluster_state_init(&state, &conn, inst->cluster, request,
 							 op->pool, op->pool_len, false);
 		     s_ret == REDIS_RCODE_TRY_AGAIN;
 		     s_ret = fr_redis_cluster_state_next(&state, &conn, inst->cluster, request, status, &replies[0])) {
+		     	more = true;	/* Reset to true, may have errored last loop */
 			status = REDIS_RCODE_SUCCESS;
 
 			/*
@@ -863,8 +867,10 @@ static ssize_t driver_get_pools(TALLOC_CTX *ctx, uint8_t **out[], void *instance
 	redis_driver_conf_t	*inst = talloc_get_type_abort(instance, redis_driver_conf_t);
 	uint8_t			key[IPPOOL_MAX_POOL_KEY_SIZE];
 	uint8_t			*key_p = key;
-	REQUEST			*request = request_alloc(inst);
+	REQUEST			*request;
 	uint8_t 		**result;
+
+	request = request_alloc(inst);
 
 	IPPOOL_BUILD_KEY(key, key_p, "*}:pool", 1);
 
@@ -924,7 +930,7 @@ static ssize_t driver_get_pools(TALLOC_CTX *ctx, uint8_t **out[], void *instance
 
 			reply_error:
 				fr_pool_connection_release(pool, request, conn);
-				fr_redis_reply_free(reply);
+				fr_redis_reply_free(&reply);
 				goto error;
 			}
 
@@ -938,7 +944,7 @@ static ssize_t driver_get_pools(TALLOC_CTX *ctx, uint8_t **out[], void *instance
 			if (reply->elements != 2) {
 				ERROR("Failed retrieving result, expected array with two elements, got %zu elements",
 				      reply->elements);
-				fr_redis_reply_free(reply);
+				fr_redis_reply_free(&reply);
 				goto reply_error;
 			}
 
@@ -970,20 +976,16 @@ static ssize_t driver_get_pools(TALLOC_CTX *ctx, uint8_t **out[], void *instance
 				/*
 				 *	Skip over things which are not pool names
 				 */
-				if (pool_key->len < 7) { /* { + [<name>] + }:pool */
-				skip:
-					fr_redis_reply_free(reply);
-					continue;
-				}
+				if (pool_key->len < 7) continue; /* { + [<name>] + }:pool */
 
-				if ((pool_key->str[0]) != '{') goto skip;
+				if ((pool_key->str[0]) != '{') continue;
 				p = memchr(pool_key->str + 1, '}', pool_key->len - 1);
-				if (!p) goto skip;
+				if (!p) continue;
 
 				len = (pool_key->len - ((p + 1) - pool_key->str));
-				if (len != (sizeof(IPPOOL_POOL_KEY) - 1) + 1) goto skip;
+				if (len != (sizeof(IPPOOL_POOL_KEY) - 1) + 1) continue;
 				if (memcmp(p + 1, ":" IPPOOL_POOL_KEY, (sizeof(IPPOOL_POOL_KEY) - 1) + 1) != 0) {
-					goto skip;
+					continue;
 				}
 
 				/*
@@ -992,7 +994,7 @@ static ssize_t driver_get_pools(TALLOC_CTX *ctx, uint8_t **out[], void *instance
 				result[used++] = talloc_memdup(result, pool_key->str + 1, (p - pool_key->str) - 1);
 			}
 
-			fr_redis_reply_free(reply);
+			fr_redis_reply_free(&reply);
 		} while (!((cursor[0] == '0') && (cursor[1] == '\0')));	/* Cursor value of 0 means no more results */
 
 		fr_pool_connection_release(pool, request, conn);
@@ -1048,10 +1050,10 @@ static int driver_get_stats(ippool_tool_stats_t *out, void *instance, uint8_t co
 
 	fr_redis_cluster_state_t	state;
 	fr_redis_rcode_t		status;
-	struct timeval			now;
+	fr_time_t			now;
 
 	int				s_ret = REDIS_RCODE_SUCCESS;
-	REQUEST				*request = request_alloc(inst);
+	REQUEST				*request;
 	redisReply			**replies = NULL, *reply;
 	unsigned int			pipelined = 0;		/* Update if additional commands added */
 
@@ -1059,11 +1061,13 @@ static int driver_get_stats(ippool_tool_stats_t *out, void *instance, uint8_t co
 
 #define STATS_COMMANDS_TOTAL 8
 
+	request = request_alloc(inst);
+
 	IPPOOL_BUILD_KEY(key, key_p, key_prefix, key_prefix_len);
 
 	MEM(replies = talloc_zero_array(inst, redisReply *, STATS_COMMANDS_TOTAL));
 
-	gettimeofday(&now, NULL);
+	now = fr_time();
 
 	for (s_ret = fr_redis_cluster_state_init(&state, &conn, inst->cluster, request, key, key_p - key, false);
 	     s_ret == REDIS_RCODE_TRY_AGAIN;
@@ -1073,15 +1077,15 @@ static int driver_get_stats(ippool_tool_stats_t *out, void *instance, uint8_t co
 		redisAppendCommand(conn->handle, "MULTI");
 		redisAppendCommand(conn->handle, "ZCARD %b", key, key_p - key);		/* Total */
 		redisAppendCommand(conn->handle, "ZCOUNT %b -inf %i",
-				   key, key_p - key, now.tv_sec);			/* Free */
+				   key, key_p - key, fr_time_to_sec(now));		/* Free */
 		redisAppendCommand(conn->handle, "ZCOUNT %b -inf %i",
-				   key, key_p - key, now.tv_sec + 60);			/* Free in next 60s */
+				   key, key_p - key, fr_time_to_sec(now) + 60);		/* Free in next 60s */
 		redisAppendCommand(conn->handle, "ZCOUNT %b -inf %i",
-				   key, key_p - key, now.tv_sec + (60 * 30));		/* Free in next 30 mins */
+				   key, key_p - key, fr_time_to_sec(now) + (60 * 30));	/* Free in next 30 mins */
 		redisAppendCommand(conn->handle, "ZCOUNT %b -inf %i",
-				   key, key_p - key, now.tv_sec + (60 * 60));		/* Free in next 60 mins */
+				   key, key_p - key, fr_time_to_sec(now) + (60 * 60));	/* Free in next 60 mins */
 		redisAppendCommand(conn->handle, "ZCOUNT %b -inf %i",
-				   key, key_p - key, now.tv_sec + (60 * 60 * 24));	/* Free in next day */
+				   key, key_p - key, fr_time_to_sec(now) + (60 * 60 * 24));	/* Free in next day */
 		redisAppendCommand(conn->handle, "EXEC");
 		if (!replies) return -1;
 
@@ -1353,6 +1357,7 @@ int main(int argc, char *argv[])
 	bool				do_export = false, print_stats = false, list_pools = false;
 	bool				need_pool = false;
 	char				*do_import = NULL;
+	char const			*filename = NULL;
 
 	CONF_SECTION			*pool_cs;
 	CONF_PAIR			*cp;
@@ -1363,10 +1368,8 @@ int main(int argc, char *argv[])
 	name = argv[0];
 
 	conf = talloc_zero(NULL, ippool_tool_t);
-	conf->cs = cf_section_alloc(NULL, NULL, "main", NULL);
+	conf->cs = cf_section_alloc(conf, NULL, "main", NULL);
 	if (!conf->cs) exit(EXIT_FAILURE);
-
-	trigger_exec_init(conf->cs);
 
 #define ADD_ACTION(_action) \
 do { \
@@ -1450,7 +1453,7 @@ do { \
 			break;
 
 		case 'f':
-			if (cf_file_read(conf->cs, optarg) < 0 || (cf_section_pass2(conf->cs) < 0)) exit(EXIT_FAILURE);
+			filename = optarg;
 			break;
 
 		default:
@@ -1468,6 +1471,13 @@ do { \
 		usage(64);
 	}
 	if (argc > 3) usage(64);
+
+	/*
+	 *	Read configuration files if necessary.
+	 */
+	if (filename && (cf_file_read(conf->cs, filename) < 0 || (cf_section_pass2(conf->cs) < 0))) {
+		exit(EXIT_FAILURE);
+	}
 
 	cp = cf_pair_alloc(conf->cs, "server", argv[0], T_OP_EQ, T_BARE_WORD, T_DOUBLE_QUOTED_STRING);
 	if (!cp) {
@@ -1488,7 +1498,7 @@ do { \
 		 */
 		len = strlen(argv[1]);
 		MEM(arg = talloc_array(conf, uint8_t, len));
-		len = value_str_unescape(arg, argv[1], len, '"');
+		len = fr_value_str_unescape(arg, argv[1], len, '"');
 		rad_assert(len);
 
 		MEM(pool_arg = talloc_realloc(conf, arg, uint8_t, len));
@@ -1500,7 +1510,7 @@ do { \
 
 		len = strlen(argv[2]);
 		MEM(arg = talloc_array(conf, uint8_t, len));
-		len = value_str_unescape(arg, argv[2], len, '"');
+		len = fr_value_str_unescape(arg, argv[2], len, '"');
 		rad_assert(len);
 
 		MEM(range_arg = talloc_realloc(conf, arg, uint8_t, len));
@@ -1691,7 +1701,7 @@ do { \
 
 			leases[i] = talloc_get_type_abort(leases[i], ippool_tool_lease_t);
 
-			gettimeofday(&now, NULL);
+			now = fr_time_to_timeval(fr_time());
 			is_active = now.tv_sec <= leases[i]->next_event;
 			if (leases[i]->next_event) {
 				strftime(time_buff, sizeof(time_buff), "%b %e %Y %H:%M:%S %Z",
@@ -1749,8 +1759,6 @@ do { \
 	}
 
 	talloc_free(conf);
-
-	trigger_exec_free();
 
 	return 0;
 }

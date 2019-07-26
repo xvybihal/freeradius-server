@@ -19,7 +19,7 @@
  * @file rlm_dict.c
  * @brief Retrieve attributes from a dict.
  *
- * @copyright 2016 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2016 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -69,9 +69,9 @@ static ssize_t xlat_dict_attr_by_oid(TALLOC_CTX *ctx, char **out, UNUSED size_t 
 	fr_dict_attr_t const	*da;
 	ssize_t		ret;
 
-	ret = fr_dict_attr_by_oid(NULL, &parent, &attr, fmt);
+	ret = fr_dict_attr_by_oid(fr_dict_internal, &parent, &attr, fmt);
 	if (ret <= 0) {
-		REMARKER(fmt, -(ret), fr_strerror());
+		REMARKER(fmt, -(ret), "%s", fr_strerror());
 		return ret;
 	}
 
@@ -92,7 +92,7 @@ static ssize_t xlat_vendor(TALLOC_CTX *ctx, char **out, UNUSED size_t outlen,
 	VALUE_PAIR *vp;
 	fr_dict_vendor_t const *vendor;
 
-	while (isspace((int) *fmt)) fmt++;
+	fr_skip_spaces(fmt);
 
 	if ((xlat_fmt_get_vp(&vp, request, fmt) < 0) || !vp) return 0;
 
@@ -112,7 +112,7 @@ static ssize_t xlat_vendor_num(TALLOC_CTX *ctx, char **out, UNUSED size_t outlen
 {
 	VALUE_PAIR *vp;
 
-	while (isspace((int) *fmt)) fmt++;
+	fr_skip_spaces(fmt);
 
 	if ((xlat_fmt_get_vp(&vp, request, fmt) < 0) || !vp) return 0;
 
@@ -129,7 +129,7 @@ static ssize_t xlat_attr(TALLOC_CTX *ctx, char **out, size_t outlen,
 {
 	VALUE_PAIR *vp;
 
-	while (isspace((int) *fmt)) fmt++;
+	fr_skip_spaces(fmt);
 
 	if ((xlat_fmt_get_vp(&vp, request, fmt) < 0) || !vp) return 0;
 	strlcpy(*out, vp->da->name, outlen);
@@ -147,7 +147,7 @@ static ssize_t xlat_attr_num(TALLOC_CTX *ctx, char **out, UNUSED size_t outlen,
 {
 	VALUE_PAIR *vp;
 
-	while (isspace((int) *fmt)) fmt++;
+	fr_skip_spaces(fmt);
 
 	if ((xlat_fmt_get_vp(&vp, request, fmt) < 0) || !vp) return 0;
 
@@ -177,8 +177,8 @@ static int mod_bootstrap(void *instance, UNUSED CONF_SECTION *conf)
 	return 0;
 }
 
-extern rad_module_t rlm_dict;
-rad_module_t rlm_dict = {
+extern module_t rlm_dict;
+module_t rlm_dict = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "dict",
 	.bootstrap	= mod_bootstrap,

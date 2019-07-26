@@ -21,7 +21,7 @@
  *
  * @author Arran Cudbard-Bell
  *
- * @copyright 2017 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2017 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -31,7 +31,7 @@ USES_APPLE_DEPRECATED_API
 #include <freeradius-devel/server/module.h>
 #include <freeradius-devel/unlang/base.h>
 #include <freeradius-devel/server/protocol.h>
-#include <freeradius-devel/server/process.h>
+#include <freeradius-devel/server/main_loop.h>
 #include <freeradius-devel/server/rad_assert.h>
 #include <sys/socket.h>
 
@@ -61,17 +61,17 @@ typedef struct {
 	fr_ipaddr_t			src_ipaddr;		//!< Our src interface.
 	uint16_t			src_port;		//!< Our src port.
 
-	fr_ldap_connection_t			*conn;			//!< Our connection to the LDAP directory.
+	fr_ldap_connection_t		*conn;			//!< Our connection to the LDAP directory.
 
 	RADCLIENT			*client;		//!< Fake client representing the connection.
 
 	/*
 	 *	Per instance config
 	 */
-	struct timeval			sync_retry_interval;	//!< How long to wait before trying to re-start
+	fr_time_delta_t			sync_retry_interval;	//!< How long to wait before trying to re-start
 								//!< a sync.
 
-	struct timeval			conn_retry_interval;	//!< How long to wait before trying to re-establish
+	fr_time_delta_t			conn_retry_interval;	//!< How long to wait before trying to re-establish
 								//!< a connection.
 
 	/*
@@ -129,22 +129,22 @@ static CONF_PARSER ldap_sync_search_config[] = {
 
 static CONF_PARSER option_config[] = {
 #ifdef LDAP_OPT_X_KEEPALIVE_IDLE
-	{ FR_CONF_OFFSET("idle", FR_TYPE_UINT32, fr_ldap_config_t, keepalive_idle), .dflt = "60" },
+	{ FR_CONF_OFFSET("idle", FR_TYPE_TIME_DELTA, fr_ldap_config_t, keepalive_idle), .dflt = "60" },
 #endif
 #ifdef LDAP_OPT_X_KEEPALIVE_PROBES
 	{ FR_CONF_OFFSET("probes", FR_TYPE_UINT32, fr_ldap_config_t, keepalive_probes), .dflt = "3" },
 #endif
 #ifdef LDAP_OPT_X_KEEPALIVE_INTERVAL
-	{ FR_CONF_OFFSET("interval", FR_TYPE_UINT32, fr_ldap_config_t, keepalive_interval), .dflt = "30" },
+	{ FR_CONF_OFFSET("interval", FR_TYPE_TIME_DELTA, fr_ldap_config_t, keepalive_interval), .dflt = "30" },
 #endif
 	{ FR_CONF_OFFSET("dereference", FR_TYPE_STRING, fr_ldap_config_t, dereference_str) },
 	/* allow server unlimited time for search (server-side limit) */
-	{ FR_CONF_OFFSET("srv_timelimit", FR_TYPE_UINT32, fr_ldap_config_t, srv_timelimit), .dflt = "20" },
+	{ FR_CONF_OFFSET("srv_timelimit", FR_TYPE_TIME_DELTA, fr_ldap_config_t, srv_timelimit), .dflt = "20" },
 	/* timeout for search results */
-	{ FR_CONF_OFFSET("res_timeout", FR_TYPE_TIMEVAL, fr_ldap_config_t, res_timeout), .dflt = "20" },
+	{ FR_CONF_OFFSET("res_timeout", FR_TYPE_TIME_DELTA, fr_ldap_config_t, res_timeout), .dflt = "20" },
 #ifdef LDAP_OPT_NETWORK_TIMEOUT
 	/* timeout on network activity */
-	{ FR_CONF_DEPRECATED("net_timeout", FR_TYPE_UINT32, fr_ldap_config_t, net_timeout), .dflt = "10" },
+	{ FR_CONF_DEPRECATED("net_timeout", FR_TYPE_TIME_DELTA, fr_ldap_config_t, net_timeout), .dflt = "10" },
 #endif
 
 	CONF_PARSER_TERMINATOR
@@ -181,8 +181,8 @@ static const CONF_PARSER module_config[] = {
 	{ FR_CONF_OFFSET("password", FR_TYPE_STRING | FR_TYPE_SECRET, proto_ldap_inst_t, handle_config.admin_password) },
 	{ FR_CONF_OFFSET("sasl", FR_TYPE_SUBSECTION, proto_ldap_inst_t, handle_config.admin_sasl), .subcs = (void const *) sasl_mech_static },
 
-	{ FR_CONF_OFFSET("sync_retry_interval", FR_TYPE_TIMEVAL, proto_ldap_inst_t, sync_retry_interval), .dflt = "5" },
-	{ FR_CONF_OFFSET("conn_retry_interval", FR_TYPE_TIMEVAL, proto_ldap_inst_t, conn_retry_interval), .dflt = "5" },
+	{ FR_CONF_OFFSET("sync_retry_interval", FR_TYPE_TIME_DELTA, proto_ldap_inst_t, sync_retry_interval), .dflt = "5" },
+	{ FR_CONF_OFFSET("conn_retry_interval", FR_TYPE_TIME_DELTA, proto_ldap_inst_t, conn_retry_interval), .dflt = "5" },
 
 	/*
 	 *	Areas of the DIT to listen on
@@ -415,13 +415,13 @@ static void request_running(REQUEST *request, fr_state_signal_t action)
 
 		RDEBUG("Running '%s %s' from file %s", cf_section_name1(unlang),
 		       cf_section_name2(unlang), cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_RECV;
 		/* FALL-THROUGH */
 
 	case REQUEST_RECV:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) goto done;
 
@@ -510,7 +510,8 @@ static REQUEST *proto_ldap_request_setup(rad_listen_t *listen, proto_ldap_inst_t
 	packet->src_port = inst->dst_port;
 	packet->dst_ipaddr = inst->src_ipaddr;
 	packet->dst_port = inst->src_port;
-	gettimeofday(&packet->timestamp, NULL);
+
+	packet->timestamp = fr_time();
 
 	request = request_setup(ctx, listen, packet, inst->client, NULL);
 	if (!request) return NULL;
@@ -565,23 +566,25 @@ static int proto_ldap_attributes_add(REQUEST *request, sync_config_t const *conf
  * @param[in] now	current time.
  * @param[in] user_ctx	Sync config.
  */
-static void proto_ldap_sync_reinit(fr_event_list_t *el, struct timeval *now, void *user_ctx)
+static void proto_ldap_sync_reinit(fr_event_list_t *el, fr_time_t now, void *user_ctx)
 {
 	sync_config_t		*config = talloc_get_type_abort(user_ctx, sync_config_t);
 	proto_ldap_inst_t	*inst = talloc_get_type_abort(config->user_ctx, proto_ldap_inst_t);
-	struct timeval		when;
 
 	/*
 	 *	Reinitialise the sync
 	 */
 	if (sync_state_init(inst->conn, config, NULL, true) == 0) return;
 
-	PERROR("Failed reinitialising sync, will retry in %pT seconds", &inst->sync_retry_interval);
+	PERROR("Failed reinitialising sync, will retry in %pV seconds", fr_box_time_delta(inst->sync_retry_interval));
 
-	fr_timeval_add(&when, now, &inst->sync_retry_interval);
-	if (fr_event_timer_insert(inst, el, &inst->sync_retry_ev,
-				  &when, proto_ldap_sync_reinit, user_ctx) < 0) {
-		log_fatal("Failed inserting event: %s", fr_strerror());
+	/*
+	 *	We want the time from when we were called
+	 */
+	if (fr_event_timer_at(inst, el, &inst->sync_retry_ev,
+			      now + inst->sync_retry_interval,
+			      proto_ldap_sync_reinit, user_ctx) < 0) {
+		FATAL("Failed inserting event: %s", fr_strerror());
 	}
 }
 
@@ -597,7 +600,7 @@ static void proto_ldap_sync_reinit(fr_event_list_t *el, struct timeval *now, voi
  * @param[in] now	current time.
  * @param[in] user_ctx	Listener.
  */
-static void proto_ldap_connection_init(UNUSED fr_event_list_t *el, UNUSED struct timeval *now, UNUSED void *user_ctx)
+static void proto_ldap_connection_init(UNUSED fr_event_list_t *el, UNUSED fr_time_t now, UNUSED void *user_ctx)
 {
 	return;
 }
@@ -621,7 +624,6 @@ static int _proto_ldap_refresh_required(fr_ldap_connection_t *conn, sync_config_
 {
 	rad_listen_t		*listen = talloc_get_type_abort(user_ctx, rad_listen_t);
 	proto_ldap_inst_t	*inst = talloc_get_type_abort(listen->data, proto_ldap_inst_t);;
-	struct timeval		now;
 	void 			*ctx;
 
 	sync_state_destroy(conn, sync_id);	/* Destroy the old state */
@@ -629,8 +631,7 @@ static int _proto_ldap_refresh_required(fr_ldap_connection_t *conn, sync_config_
 	DEBUG2("Refresh required");
 
 	memcpy(&ctx, &config, sizeof(ctx));
-	gettimeofday(&now, NULL);
-	proto_ldap_sync_reinit(inst->el, &now, ctx);
+	proto_ldap_sync_reinit(inst->el, fr_time(), ctx);
 
 	return 0;
 }
@@ -691,7 +692,7 @@ static int _proto_ldap_cookie_store(UNUSED fr_ldap_connection_t *conn, sync_conf
 	proto_ldap_attributes_add(request, config);
 
 	MEM(pair_update_request(&vp, attr_ldap_sync_cookie) >= 0);
-	fr_pair_value_memcpy(vp, cookie, talloc_array_length(cookie));
+	fr_pair_value_memcpy(vp, cookie, talloc_array_length(cookie), true);
 
 	request->packet->code = LDAP_SYNC_CODE_COOKIE_STORE;
 
@@ -746,7 +747,7 @@ static int _proto_ldap_entry(fr_ldap_connection_t *conn, sync_config_t const *co
 		ldap_memfree(entry_dn);
 
 		MEM(pair_update_request(&vp, attr_ldap_sync_entry_uuid) >= 0);
-		fr_pair_value_memcpy(vp, uuid, SYNC_UUID_LENGTH);
+		fr_pair_value_memcpy(vp, uuid, SYNC_UUID_LENGTH, true);
 	}
 
 	/*
@@ -909,7 +910,6 @@ static int proto_ldap_socket_recv(rad_listen_t *listen)
 	int			sync_id;
  	void			*ctx;
  	sync_config_t const	*config;
- 	struct timeval		now, when;
 
 	/*
 	 *	Demultiplex drains any outstanding messages from the socket,
@@ -923,7 +923,7 @@ static int proto_ldap_socket_recv(rad_listen_t *listen)
 		return 1;
 
  	case -1:
-		PERROR("Sync failed - will retry in %pT seconds", &inst->sync_retry_interval);
+		PERROR("Sync failed - will retry in %pV seconds", fr_box_time_delta(inst->sync_retry_interval));
 
  		config = sync_state_config_get(inst->conn, sync_id);
 		sync_state_destroy(inst->conn, sync_id);	/* Destroy the old state */
@@ -932,26 +932,24 @@ static int proto_ldap_socket_recv(rad_listen_t *listen)
 		 *	Schedule sync reinit, but don't perform it immediately.
 		 */
 		memcpy(&ctx, &config, sizeof(ctx));
-		gettimeofday(&now, 0);
-		fr_timeval_add(&when, &now, &inst->sync_retry_interval);
-		if (fr_event_timer_insert(inst, inst->el, &inst->sync_retry_ev,
-					  &when, proto_ldap_sync_reinit, ctx) < 0) {
-			log_fatal("Failed inserting event: %s", fr_strerror());
+		if (fr_event_timer_in(inst, inst->el, &inst->sync_retry_ev,
+				      inst->sync_retry_interval,
+				      proto_ldap_sync_reinit, ctx) < 0) {
+			FATAL("Failed inserting event: %s", fr_strerror());
 		}
  		return 1;
 
  	case -2:
- 		PERROR("Connection failed - will retry in %pT seconds", &inst->conn_retry_interval);
+ 		PERROR("Connection failed - will retry in %pV seconds", fr_box_time_delta(inst->conn_retry_interval));
 
 		/*
 		 *	Schedule conn reinit, but don't perform it immediately
 		 */
  		memcpy(&ctx, &config, sizeof(ctx));
-		gettimeofday(&now, 0);
-		fr_timeval_add(&when, &now, &inst->conn_retry_interval);
-		if (fr_event_timer_insert(inst, inst->el, &inst->conn_retry_ev,
-					  &when, proto_ldap_connection_init, listen) < 0) {
-			log_fatal("Failed inserting event: %s", fr_strerror());
+		if (fr_event_timer_in(inst, inst->el, &inst->conn_retry_ev,
+				      inst->conn_retry_interval,
+				      proto_ldap_connection_init, listen) < 0) {
+			FATAL("Failed inserting event: %s", fr_strerror());
 		}
 
  		return 0;
@@ -980,7 +978,7 @@ static int proto_ldap_socket_open(UNUSED CONF_SECTION *cs, rad_listen_t *listen)
 	/*
 	 *	Fixme - Should be the network thread's event loop?
 	 */
-	inst->el = fr_global_event_list();
+	inst->el = main_loop_event_list();
 
 	/*
 	 *	Destroys any existing syncs and connections
@@ -998,9 +996,6 @@ static int proto_ldap_socket_open(UNUSED CONF_SECTION *cs, rad_listen_t *listen)
 	if (inst->conn->config->start_tls) {
 		if (ldap_start_tls_s(inst->conn->handle, NULL, NULL) != LDAP_SUCCESS) {
 			int		ldap_errno;
-			struct timeval	now, when;
-
-			gettimeofday(&now, NULL);
 
 			ldap_get_option(inst->conn->handle, LDAP_OPT_ERROR_NUMBER, &ldap_errno);
 
@@ -1009,14 +1004,13 @@ static int proto_ldap_socket_open(UNUSED CONF_SECTION *cs, rad_listen_t *listen)
 		error:
 			TALLOC_FREE(inst->conn);
 
-			PERROR("Failed (re)initialising connection, will retry in %pT seconds",
-			      &inst->conn_retry_interval);
+			PERROR("Failed (re)initialising connection, will retry in %pV seconds",
+			       fr_box_time_delta(inst->conn_retry_interval));
 
-			fr_timeval_add(&when, &now, &inst->conn_retry_interval);
-
-			if (fr_event_timer_insert(inst, inst->el, &inst->conn_retry_ev,
-						  &when, proto_ldap_connection_init, listen) < 0) {
-				log_fatal("Failed inserting event: %s", fr_strerror());
+			if (fr_event_timer_in(inst, inst->el, &inst->conn_retry_ev,
+					      inst->conn_retry_interval,
+					      proto_ldap_connection_init, listen) < 0) {
+				FATAL("Failed inserting event: %s", fr_strerror());
 			}
 
 			return -1;
@@ -1027,7 +1021,7 @@ static int proto_ldap_socket_open(UNUSED CONF_SECTION *cs, rad_listen_t *listen)
 			      &inst->conn,
 			      inst->conn->config->admin_identity, inst->conn->config->admin_password,
 			      &(inst->conn->config->admin_sasl),
-			      NULL,
+			      0,
 			      NULL, NULL);
 	if (status != LDAP_PROC_SUCCESS) goto error;
 

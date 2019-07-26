@@ -21,9 +21,9 @@
  * @file src/bin/radsnmp.c
  *
  * @copyright 2015-2016 The FreeRADIUS server project
- * @copyright 2015-2016 Network RADIUS SARL <info@networkradius.com>
+ * @copyright 2015-2016 Network RADIUS SARL (info@networkradius.com)
  *
- * @author Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -46,11 +46,11 @@ static char const *radsnmp_version = RADIUSD_VERSION_STRING_BUILD("radsnmp");
 static bool stop;
 
 #undef DEBUG
-#define DEBUG(fmt, ...)		if (fr_log_fp && (fr_debug_lvl > 0)) fprintf(fr_log_fp, "radsnmp (debug): " fmt "\n", ## __VA_ARGS__)
+#define DEBUG(fmt, ...)		if (fr_debug_lvl >= L_DBG_LVL_1) fr_log(&default_log, L_DBG, __FILE__, __LINE__, "radsnmp (debug): " fmt, ## __VA_ARGS__)
 #undef DEBUG2
-#define DEBUG2(fmt, ...)	if (fr_log_fp && (fr_debug_lvl > 1)) fprintf(fr_log_fp, "radsnmp (debug): " fmt "\n", ## __VA_ARGS__)
+#define DEBUG2(fmt, ...)	if (fr_debug_lvl >= L_DBG_LVL_2) fr_log(&default_log, L_DBG, __FILE__, __LINE__, "radsnmp (debug): " fmt, ## __VA_ARGS__)
 
-#define ERROR(fmt, ...)		if (fr_log_fp) fprintf(fr_log_fp, "radsnmp (error): " fmt "\n", ## __VA_ARGS__)
+#define ERROR(fmt, ...)		fr_log(&default_log, L_DBG,  __FILE__, __LINE__, "radsnmp (error): " fmt, ## __VA_ARGS__)
 
 typedef enum {
 	RADSNMP_UNKNOWN = -1,				//!< Unknown command.
@@ -88,7 +88,7 @@ typedef struct {
 	uint16_t		server_port;		//!< Port to send requests to.
 
 	unsigned int		retries;		//!< Number of retries.
-	struct timeval		timeout;
+	fr_time_t		timeout;
 	char			*secret;		//!< Shared secret.
 } radsnmp_conf_t;
 
@@ -139,7 +139,7 @@ static void NEVER_RETURNS usage(void)
 	fprintf(stderr, "  -v                     Show program version information.\n");
 	fprintf(stderr, "  -x                     Increase debug level.\n");
 
-	exit(EXIT_FAILURE);
+	exit(EXIT_SUCCESS);
 }
 
 #define RESPOND_STATIC(_cmd) \
@@ -329,7 +329,7 @@ static ssize_t radsnmp_pair_from_oid(TALLOC_CTX *ctx, radsnmp_conf_t *conf, fr_c
 			/* FALL-THROUGH */
 
 		case FR_TYPE_OCTETS:
-			fr_pair_value_memcpy(vp, (uint8_t const *)"\0", 1);
+			fr_pair_value_memcpy(vp, (uint8_t const *)"\0", 1, true);
 			break;
 
 		case FR_TYPE_STRING:
@@ -765,7 +765,7 @@ static int radsnmp_send_recv(radsnmp_conf_t *conf, int fd)
 		 *	request will be rejected.
 		 */
 		MEM(vp = fr_pair_afrom_da(request, attr_message_authenticator));
-		fr_pair_value_memcpy(vp, (uint8_t const *)"\0", 1);
+		fr_pair_value_memcpy(vp, (uint8_t const *)"\0", 1, true);
 		fr_cursor_append(&cursor, vp);
 
 		/*
@@ -792,10 +792,10 @@ static int radsnmp_send_recv(radsnmp_conf_t *conf, int fd)
 			/*
 			 *	Print the attributes we're about to send
 			 */
-			if (fr_log_fp) fr_packet_header_print(fr_log_fp, request, false);
-			if (fr_debug_lvl > 0) fr_pair_list_fprint(fr_log_fp, request->vps);
+			fr_packet_header_log(&default_log, request, false);
+			if (fr_debug_lvl >= L_DBG_LVL_1) fr_pair_list_log(&default_log, request->vps);
 #ifndef NDEBUG
-			if (fr_log_fp && (fr_debug_lvl > 3)) fr_radius_packet_print_hex(request);
+			if (fr_debug_lvl >= L_DBG_LVL_4) fr_radius_packet_log_hex(&default_log, request);
 #endif
 
 			FD_ZERO(&set); /* clear the set */
@@ -813,7 +813,7 @@ static int radsnmp_send_recv(radsnmp_conf_t *conf, int fd)
 					return EXIT_FAILURE;
 				}
 
-				rcode = select(fd + 1, &set, NULL, NULL, &conf->timeout);
+				rcode = select(fd + 1, &set, NULL, NULL, &fr_time_delta_to_timeval(conf->timeout));
 				switch (rcode) {
 				case -1:
 					ERROR("Select failed: %s", fr_syserror(errno));
@@ -855,10 +855,10 @@ static int radsnmp_send_recv(radsnmp_conf_t *conf, int fd)
 			/*
 			 *	Print the attributes we received in response
 			 */
-			if (fr_log_fp) fr_packet_header_print(fr_log_fp, reply, true);
-			if (fr_debug_lvl > 0) fr_pair_list_fprint(fr_log_fp, reply->vps);
+			fr_packet_header_log(&default_log, reply, true);
+			if (fr_debug_lvl >= L_DBG_LVL_1) fr_pair_list_log(&default_log, reply->vps);
 #ifndef NDEBUG
-			if (fr_log_fp && (fr_debug_lvl > 3)) fr_radius_packet_print_hex(reply);
+			if (fr_debug_lvl >= L_DBG_LVL_4) fr_radius_packet_log_hex(&default_log, reply);
 #endif
 
 			switch (command) {
@@ -912,14 +912,12 @@ int main(int argc, char **argv)
 	int		sockfd;
 	TALLOC_CTX	*autofree = talloc_autofree_context();
 
-	fr_log_fp = stderr;
-
 	conf = talloc_zero(autofree, radsnmp_conf_t);
 	conf->proto = IPPROTO_UDP;
 	conf->dict_dir = DICTDIR;
 	conf->raddb_dir = RADDBDIR;
 	conf->secret = talloc_strdup(conf, "testing123");
-	conf->timeout.tv_sec = 3;
+	conf->timeout = fr_time_delta_from_sec(3);
 	conf->retries = 5;
 
 #ifndef NDEBUG
@@ -929,6 +927,10 @@ int main(int argc, char **argv)
 	}
 #endif
 
+	/*
+	 *	Need to log to stderr because net-snmp will interpret stdout
+	 */
+	default_log.dst = L_DST_STDERR;
 	talloc_set_log_stderr();
 
 	while ((c = getopt(argc, argv, "46c:d:D:f:Fhi:l:n:p:P:qr:sS:t:vx")) != -1) switch (c) {
@@ -949,22 +951,18 @@ int main(int argc, char **argv)
 			break;
 
 		case 'l':
-		{
-			int log_fd;
-
-			if (strcmp(optarg, "stderr") == 0) {
-				fr_log_fp = stderr;	/* stdout goes to netsnmp */
+			if (strcmp(optarg, "stdout") == 0) {	/* stdout goes to net-snmp, so need to switch */
+				default_log.dst = L_DST_STDERR;
 				break;
 			}
 
-			log_fd = open(optarg, O_WRONLY | O_APPEND | O_CREAT, 0640);
-			if (log_fd < 0) {
+			default_log.dst = L_DST_FILES;
+			default_log.fd = open(optarg, O_WRONLY | O_APPEND | O_CREAT, 0640);
+			if (default_log.fd < 0) {
 				fprintf(stderr, "radsnmp: Failed to open log file %s: %s\n",
 					optarg, fr_syserror(errno));
 				exit(EXIT_FAILURE);
 			}
-			fr_log_fp = fdopen(log_fd, "a");
-		}
 			break;
 
 		case 'P':
@@ -1014,7 +1012,7 @@ int main(int argc, char **argv)
 		       break;
 
 		case 't':
-			if (fr_timeval_from_str(&conf->timeout, optarg) < 0) {
+			if (fr_time_delta_from_str(&conf->timeout, optarg, FR_TIME_RES_SEC) < 0) {
 				ERROR("Failed parsing timeout value %s", fr_strerror());
 				exit(EXIT_FAILURE);
 			}
@@ -1062,8 +1060,6 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 	fr_strerror();	/* Clear the error buffer */
-
-	if (fr_log_fp) setvbuf(fr_log_fp, NULL, _IONBF, 0);
 
 	/*
 	 *	Get the request type
@@ -1147,8 +1143,6 @@ int main(int argc, char **argv)
 	DEBUG("Read loop done");
 
 finish:
-	if (fr_log_fp) fflush(fr_log_fp);
-
 	/*
 	 *	Everything should be parented from conf
 	 */

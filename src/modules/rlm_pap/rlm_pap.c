@@ -19,9 +19,9 @@
  * @file rlm_pap.c
  * @brief Hashes plaintext passwords to compare against a prehashed reference.
  *
- * @copyright 2001-2012  The FreeRADIUS server project.
- * @copyright 2012       Matthew Newton <matthew@newtoncomputing.co.uk>
- * @copyright 2001       Kostas Kalevras <kkalev@noc.ntua.gr>
+ * @copyright 2001-2012 The FreeRADIUS server project.
+ * @copyright 2012 Matthew Newton (matthew@newtoncomputing.co.uk)
+ * @copyright 2001 Kostas Kalevras (kkalev@noc.ntua.gr)
  */
 RCSID("$Id$")
 USES_APPLE_DEPRECATED_API
@@ -160,7 +160,7 @@ static const FR_NAME_NUMBER header_names[] = {
 	{ "{ssha256}",		FR_SSHA2_256_PASSWORD },
 	{ "{ssha384}",		FR_SSHA2_384_PASSWORD },
 	{ "{ssha512}",		FR_SSHA2_512_PASSWORD },
-#  ifdef HAVE_EVP_SHA3_512
+#  if OPENSSL_VERSION_NUMBER >= 0x10101000L
 	{ "{ssha3-224}",	FR_SSHA3_224_PASSWORD },
 	{ "{ssha3-256}",	FR_SSHA3_256_PASSWORD },
 	{ "{ssha3-384}",	FR_SSHA3_384_PASSWORD },
@@ -187,7 +187,7 @@ static const FR_NAME_NUMBER pbkdf2_crypt_names[] = {
 	{ "HMACSHA2+256",	FR_SSHA2_256_PASSWORD },
 	{ "HMACSHA2+384",	FR_SSHA2_384_PASSWORD },
 	{ "HMACSHA2+512",	FR_SSHA2_512_PASSWORD },
-#  ifdef HAVE_EVP_SHA3_512
+#if OPENSSL_VERSION_NUMBER >= 0x10101000L
 	{ "HMACSHA3+224",	FR_SSHA3_224_PASSWORD },
 	{ "HMACSHA3+256",	FR_SSHA3_256_PASSWORD },
 	{ "HMACSHA3+384",	FR_SSHA3_384_PASSWORD },
@@ -234,13 +234,15 @@ static void normify(REQUEST *request, VALUE_PAIR *vp, size_t min_len)
 	 *	twice the minimum length.
 	 */
 	if (!(vp->vp_length & 0x01) && vp->vp_length >= (2 * min_len)) {
-		size_t decoded;
+		bool	tainted = vp->data.tainted;
+		size_t	decoded;
+
 
 		decoded = fr_hex2bin(buffer, sizeof(buffer), vp->vp_strvalue, vp->vp_length);
 		if (decoded == (vp->vp_length >> 1)) {
 			RDEBUG2("Normalizing %s from hex encoding, %zu bytes -> %zu bytes",
 				vp->da->name, vp->vp_length, decoded);
-			fr_pair_value_memcpy(vp, buffer, decoded);
+			fr_pair_value_memcpy(vp, buffer, decoded, tainted);
 			return;
 		}
 	}
@@ -254,9 +256,11 @@ static void normify(REQUEST *request, VALUE_PAIR *vp, size_t min_len)
 		decoded = fr_base64_decode(buffer, sizeof(buffer), vp->vp_strvalue, vp->vp_length);
 		if (decoded < 0) return;
 		if (decoded >= (ssize_t) min_len) {
+			bool tainted = vp->data.tainted;
+
 			RDEBUG2("Normalizing %s from base64 encoding, %zu bytes -> %zu bytes",
 				vp->da->name, vp->vp_length, decoded);
-			fr_pair_value_memcpy(vp, buffer, decoded);
+			fr_pair_value_memcpy(vp, buffer, decoded, tainted);
 			return;
 		}
 	}
@@ -410,7 +414,7 @@ redo:
 				RDEBUG3("Unknown header {%s} in Password-With-Header = \"%s\", re-writing to "
 					"Cleartext-Password", buffer, vp->vp_strvalue);
 			} else {
-				RDEBUG("Unknown header {%s} in Password-With-Header, re-writing to "
+				RDEBUG2("Unknown header {%s} in Password-With-Header, re-writing to "
 				       "Cleartext-Password", buffer);
 			}
 			goto unknown_header;
@@ -419,7 +423,7 @@ redo:
 		new = fr_pair_afrom_da(ctx, da);
 		switch (da->type) {
 		case FR_TYPE_OCTETS:
-			fr_pair_value_memcpy(new, (uint8_t const *)q + 1, len - hlen);
+			fr_pair_value_memcpy(new, (uint8_t const *)q + 1, len - hlen, true);
 			break;
 
 		case FR_TYPE_STRING:
@@ -463,7 +467,7 @@ redo:
 		RDEBUG3("No {...} in &Password-With-Header = \"%s\", re-writing to Cleartext-Password",
 			vp->vp_strvalue);
 	} else {
-		RDEBUG("No {...} in &Password-With-Header, re-writing to Cleartext-Password");
+		RDEBUG2("No {...} in &Password-With-Header, re-writing to Cleartext-Password");
 	}
 unknown_header:
 	new = fr_pair_afrom_da(request, attr_cleartext_password);
@@ -548,7 +552,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(void *instance, UNUSED void *t
 			if (inst->normify) normify(request, vp, 64); /* ensure it's in the right format */
 			found_pw = true;
 		}
-#  ifdef HAVE_EVP_SHA3_512
+#  if OPENSSL_VERSION_NUMBER >= 0x10101000L
 		else if (vp->da == attr_sha3_password) {
 			if (inst->normify) normify(request, vp, 28); /* ensure it's in the right format */
 			found_pw = true;
@@ -619,7 +623,7 @@ static rlm_rcode_t CC_HINT(nonnull) pap_auth_clear(UNUSED rlm_pap_t const *inst,
 	if (RDEBUG_ENABLED3) {
 		RDEBUG3("Comparing with \"known good\" Cleartext-Password \"%s\" (%zd)", vp->vp_strvalue, vp->vp_length);
 	} else {
-		RDEBUG("Comparing with \"known good\" Cleartext-Password");
+		RDEBUG2("Comparing with \"known good\" Cleartext-Password");
 	}
 
 	if ((vp->vp_length != request->password->vp_length) ||
@@ -638,7 +642,7 @@ static rlm_rcode_t CC_HINT(nonnull) pap_auth_crypt(UNUSED rlm_pap_t const *inst,
 	if (RDEBUG_ENABLED3) {
 		RDEBUG3("Comparing with \"known good\" Crypt-Password \"%s\"", vp->vp_strvalue);
 	} else {
-		RDEBUG("Comparing with \"known-good\" Crypt-password");
+		RDEBUG2("Comparing with \"known-good\" Crypt-password");
 	}
 
 	if (fr_crypt_check(request->password->vp_strvalue, vp->vp_strvalue) != 0) {
@@ -653,7 +657,7 @@ static rlm_rcode_t CC_HINT(nonnull) pap_auth_md5(rlm_pap_t const *inst, REQUEST 
 {
 	uint8_t digest[128];
 
-	RDEBUG("Comparing with \"known-good\" MD5-Password");
+	RDEBUG2("Comparing with \"known-good\" MD5-Password");
 
 	if (inst->normify) {
 		normify(request, vp, MD5_DIGEST_LENGTH);
@@ -682,7 +686,7 @@ static rlm_rcode_t CC_HINT(nonnull) pap_auth_smd5(rlm_pap_t const *inst, REQUEST
 	fr_md5_ctx_t *md5_ctx;
 	uint8_t digest[128];
 
-	RDEBUG("Comparing with \"known-good\" SMD5-Password");
+	RDEBUG2("Comparing with \"known-good\" SMD5-Password");
 
 	if (inst->normify) normify(request, vp, MD5_DIGEST_LENGTH);
 	if (vp->vp_length <= MD5_DIGEST_LENGTH) {
@@ -715,7 +719,7 @@ static rlm_rcode_t CC_HINT(nonnull) pap_auth_sha(rlm_pap_t const *inst, REQUEST 
 	fr_sha1_ctx sha1_context;
 	uint8_t digest[128];
 
-	RDEBUG("Comparing with \"known-good\" SHA-Password");
+	RDEBUG2("Comparing with \"known-good\" SHA-Password");
 
 	if (inst->normify) normify(request, vp, SHA1_DIGEST_LENGTH);
 
@@ -744,7 +748,7 @@ static rlm_rcode_t CC_HINT(nonnull) pap_auth_ssha(rlm_pap_t const *inst, REQUEST
 	fr_sha1_ctx sha1_context;
 	uint8_t digest[128];
 
-	RDEBUG("Comparing with \"known-good\" SSHA-Password");
+	RDEBUG2("Comparing with \"known-good\" SSHA-Password");
 
 	if (inst->normify) normify(request, vp, SHA1_DIGEST_LENGTH);
 
@@ -784,7 +788,7 @@ static rlm_rcode_t CC_HINT(nonnull) pap_auth_sha_evp(rlm_pap_t const *inst, REQU
 	if (inst->normify) normify(request, vp, SHA224_DIGEST_LENGTH);
 
 	if (vp->da == attr_sha2_password) {
-		RDEBUG("Comparing with \"known-good\" SHA2-Password");
+		RDEBUG2("Comparing with \"known-good\" SHA2-Password");
 
 		/*
 		 *	All the SHA-2 algorithms produce digests of different lengths,
@@ -821,9 +825,9 @@ static rlm_rcode_t CC_HINT(nonnull) pap_auth_sha_evp(rlm_pap_t const *inst, REQU
 			return RLM_MODULE_INVALID;
 		}
 	}
-# ifdef HAVE_EVP_SHA3_512
+#  if OPENSSL_VERSION_NUMBER >= 0x10101000L
 	else if (vp->da == attr_sha3_password) {
-		RDEBUG("Comparing with \"known-good\" SHA3-Password");
+		RDEBUG2("Comparing with \"known-good\" SHA3-Password");
 		/*
 		 *	All the SHA-3 algorithms produce digests of different lengths,
 		 *	so it's trivial to determine which EVP_MD to use.
@@ -909,7 +913,7 @@ static rlm_rcode_t CC_HINT(nonnull) pap_auth_ssha_evp(rlm_pap_t const *inst, REQ
 		min_len = SHA512_DIGEST_LENGTH;
 		md = EVP_sha512();
 	}
-#ifdef HAVE_EVP_SHA3_512
+#if OPENSSL_VERSION_NUMBER >= 0x10101000L
 	else if (vp->da == attr_ssha3_224_password) {
 		name = "SSHA3-224";
 		md = EVP_sha3_224();
@@ -933,7 +937,7 @@ static rlm_rcode_t CC_HINT(nonnull) pap_auth_ssha_evp(rlm_pap_t const *inst, REQ
 		return RLM_MODULE_INVALID;
 	}
 
-	RDEBUG("Comparing with \"known-good\" %s-Password", name);
+	RDEBUG2("Comparing with \"known-good\" %s-Password", name);
 
 	/*
 	 *	Unlike plain SHA2/3 we already know what length
@@ -1002,7 +1006,7 @@ static inline rlm_rcode_t CC_HINT(nonnull) pap_auth_pbkdf2_parse(REQUEST *reques
 	uint8_t			hash[EVP_MAX_MD_SIZE];
 	uint8_t			digest[EVP_MAX_MD_SIZE];
 
-	RDEBUG("Comparing with \"known-good\" PBKDF2-Password");
+	RDEBUG2("Comparing with \"known-good\" PBKDF2-Password");
 
 	if (len <= 1) {
 		REDEBUG("PBKDF2-Password is too short");
@@ -1048,7 +1052,7 @@ static inline rlm_rcode_t CC_HINT(nonnull) pap_auth_pbkdf2_parse(REQUEST *reques
 		digest_len = SHA512_DIGEST_LENGTH;
 		break;
 
-#  ifdef HAVE_EVP_SHA3_512
+#  if OPENSSL_VERSION_NUMBER >= 0x10101000L
 	case FR_SSHA3_224_PASSWORD:
 		evp_md = EVP_sha3_224();
 		digest_len = SHA224_DIGEST_LENGTH;
@@ -1158,7 +1162,7 @@ static inline rlm_rcode_t CC_HINT(nonnull) pap_auth_pbkdf2_parse(REQUEST *reques
 		REDEBUG("PBKDF2-Password hash component length is incorrect for hash type, expected %zu, got %zd",
 			digest_len, slen);
 
-		RHEXDUMP(L_DBG_LVL_2, hash, slen, "hash component");
+		RHEXDUMP2(hash, slen, "hash component");
 
 		goto finish;
 	}
@@ -1259,7 +1263,7 @@ static rlm_rcode_t CC_HINT(nonnull) pap_auth_nt(rlm_pap_t const *inst, REQUEST *
 	uint8_t digest[MD4_DIGEST_LENGTH];
 	uint8_t ucs2_password[512];
 
-	RDEBUG("Comparing with \"known-good\" NT-Password");
+	RDEBUG2("Comparing with \"known-good\" NT-Password");
 
 	rad_assert(request->password != NULL);
 	rad_assert(request->password->da == attr_user_password);
@@ -1296,7 +1300,7 @@ static rlm_rcode_t CC_HINT(nonnull) pap_auth_lm(rlm_pap_t const *inst, REQUEST *
 	char	charbuf[32 + 1];
 	ssize_t	len;
 
-	RDEBUG("Comparing with \"known-good\" LM-Password");
+	RDEBUG2("Comparing with \"known-good\" LM-Password");
 
 	if (inst->normify) normify(request, vp, MD4_DIGEST_LENGTH);
 
@@ -1325,7 +1329,7 @@ static rlm_rcode_t CC_HINT(nonnull) pap_auth_ns_mta_md5(UNUSED rlm_pap_t const *
 	uint8_t buff[FR_MAX_STRING_LEN];
 	uint8_t buff2[FR_MAX_STRING_LEN + 50];
 
-	RDEBUG("Using NT-MTA-MD5-Password");
+	RDEBUG2("Using NT-MTA-MD5-Password");
 
 	if (vp->vp_length != 64) {
 		REDEBUG("\"known good\" NS-MTA-MD5-Password has incorrect length, expected 64 got %zu", vp->vp_length);
@@ -1406,7 +1410,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(void *instance, UNUSED void
 		RDEBUG3("Login attempt with password \"%s\" (%zd)",
 			request->password->vp_strvalue, request->password->vp_length);
 	} else {
-		RDEBUG("Login attempt with password");
+		RDEBUG2("Login attempt with password");
 	}
 
 	/*
@@ -1432,7 +1436,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(void *instance, UNUSED void
 		}
 #ifdef HAVE_OPENSSL_EVP_H
 		else if (vp->da == attr_sha2_password
-#  ifdef HAVE_EVP_SHA3_512
+#  if OPENSSL_VERSION_NUMBER >= 0x10101000L
 			 || (vp->da == attr_sha3_password)
 #  endif
 			) {
@@ -1441,7 +1445,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(void *instance, UNUSED void
 		    (vp->da == attr_ssha2_256_password) ||
 		    (vp->da == attr_ssha2_384_password) ||
 		    (vp->da == attr_ssha2_512_password)
-#  ifdef HAVE_EVP_SHA3_512
+#  if OPENSSL_VERSION_NUMBER >= 0x10101000L
 		    || (vp->da == attr_ssha3_224_password) ||
 		    (vp->da == attr_ssha3_256_password) ||
 		    (vp->da == attr_ssha3_384_password) ||
@@ -1483,7 +1487,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(void *instance, UNUSED void
 
 	if (rc == RLM_MODULE_REJECT) REDEBUG("Passwords don't match");
 
-	if (rc == RLM_MODULE_OK) RDEBUG("User authenticated successfully");
+	if (rc == RLM_MODULE_OK) RDEBUG2("User authenticated successfully");
 
 	return rc;
 }
@@ -1519,8 +1523,8 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_pap;
-rad_module_t rlm_pap = {
+extern module_t rlm_pap;
+module_t rlm_pap = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "pap",
 	.inst_size	= sizeof(rlm_pap_t),

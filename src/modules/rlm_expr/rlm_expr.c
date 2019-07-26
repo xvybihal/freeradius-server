@@ -19,8 +19,8 @@
  * @file rlm_expr.c
  * @brief Register an xlat expansion to perform basic mathematical operations.
  *
- * @copyright 2001,2006  The FreeRADIUS server project
- * @copyright 2002  Alan DeKok <aland@freeradius.org>
+ * @copyright 2001,2006 The FreeRADIUS server project
+ * @copyright 2002 Alan DeKok (aland@freeradius.org)
  */
 RCSID("$Id$")
 USES_APPLE_DEPRECATED_API
@@ -167,7 +167,7 @@ static bool get_number(REQUEST *request, char const **string, int64_t *answer)
 	/*
 	 *	Look for a number.
 	 */
-	while (isspace((int) *p)) p++;
+	fr_skip_spaces(p);
 
 	/*
 	 *	~1 == 0xff...ffe
@@ -205,7 +205,7 @@ static bool get_number(REQUEST *request, char const **string, int64_t *answer)
 		VALUE_PAIR	*vp;
 		fr_cursor_t	cursor;
 
-		slen = tmpl_afrom_attr_substr(request, &vpt, p, &(vp_tmpl_rules_t){ .dict_def = request->dict });
+		slen = tmpl_afrom_attr_substr(request, NULL, &vpt, p, &(vp_tmpl_rules_t){ .dict_def = request->dict });
 		if (slen <= 0) {
 			RPEDEBUG("Failed parsing attribute name '%s'", p);
 			return false;
@@ -287,7 +287,7 @@ static bool get_number(REQUEST *request, char const **string, int64_t *answer)
 		if (!get_expression(request, &p, &x, TOKEN_NONE)) return false;
 
 		if (*p != ')') {
-			RDEBUG("No trailing ')'");
+			REDEBUG("No trailing ')'");
 			return false;
 		}
 		p++;
@@ -295,7 +295,7 @@ static bool get_number(REQUEST *request, char const **string, int64_t *answer)
 	}
 
 	if ((*p < '0') || (*p > '9')) {
-		RDEBUG2("Not a number at \"%s\"", p);
+		REDEBUG("Not a number at \"%s\"", p);
 		return false;
 	}
 
@@ -353,7 +353,7 @@ static bool calc_result(REQUEST *request, int64_t lhs, expr_token_t op, int64_t 
 
 	case TOKEN_REMAINDER:
 		if (rhs == 0) {
-			RDEBUG("Division by zero!");
+			REDEBUG("Division by zero!");
 			return false;
 		}
 
@@ -366,7 +366,7 @@ static bool calc_result(REQUEST *request, int64_t lhs, expr_token_t op, int64_t 
 
 	case TOKEN_LSHIFT:
 		if (rhs > 62) {
-			RDEBUG("Shift must be less than 62 (was %lld)", (long long int) rhs);
+			REDEBUG("Shift must be less than 62 (was %lld)", (long long int) rhs);
 			return false;
 		}
 
@@ -375,7 +375,7 @@ static bool calc_result(REQUEST *request, int64_t lhs, expr_token_t op, int64_t 
 
 	case TOKEN_RSHIFT:
 		if (rhs > 62) {
-			RDEBUG("Shift must be less than 62 (was %lld)", (long long int) rhs);
+			REDEBUG("Shift must be less than 62 (was %lld)", (long long int) rhs);
 			return false;
 		}
 
@@ -453,7 +453,7 @@ static bool get_expression(REQUEST *request, char const **string, int64_t *answe
 	if (!get_number(request, &p, &lhs)) return false;
 
 redo:
-	while (isspace((int) *p)) p++;
+	fr_skip_spaces(p);
 
 	/*
 	 *	A number by itself is OK.
@@ -519,7 +519,7 @@ static ssize_t expr_xlat(UNUSED TALLOC_CTX *ctx, char **out, size_t outlen,
 	}
 
 	if (*p) {
-		RDEBUG("Invalid text after expression: %s", p);
+		REDEBUG("Invalid text after expression: %s", p);
 		return -1;
 	}
 
@@ -560,8 +560,8 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_expr;
-rad_module_t rlm_expr = {
+extern module_t rlm_expr;
+module_t rlm_expr = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "expr",
 	.inst_size	= sizeof(rlm_expr_t),

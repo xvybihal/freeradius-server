@@ -20,8 +20,8 @@
  * @file exfile.c
  * @brief Allow multiple threads to write to the same set of files.
  *
- * @author Alan DeKok <aland@freeradius.org>
- * @copyright 2014  The FreeRADIUS server project
+ * @author Alan DeKok (aland@freeradius.org)
+ * @copyright 2014 The FreeRADIUS server project
  */
 #include <freeradius-devel/server/base.h>
 #include <freeradius-devel/server/rad_assert.h>
@@ -204,7 +204,7 @@ void exfile_enable_triggers(exfile_t *ef, CONF_SECTION *conf, char const *trigge
 
 	if (!trigger_args) return;
 
-	fr_pair_list_copy(ef, &ef->trigger_args, trigger_args);
+	(void) fr_pair_list_copy(ef, &ef->trigger_args, trigger_args);
 }
 
 
@@ -230,6 +230,7 @@ static int exfile_open_mkdir(exfile_t *ef, char const *filename, mode_t permissi
 		p = strrchr(dir, FR_DIR_SEP);
 		if (!p) {
 			fr_strerror_printf("No '/' in '%s'", filename);
+			talloc_free(dir);
 			return -1;
 		}
 		*p = '\0';
@@ -423,27 +424,25 @@ try_lock:
 	 *	locked it.  So, we close the current file, re-open it,
 	 *	and try again/
 	 */
-	if (ef->locking) {
-		for (tries = 0; tries < MAX_TRY_LOCK; tries++) {
-			if (rad_lockfd_nonblock(ef->entries[i].fd, 0) >= 0) break;
+	for (tries = 0; tries < MAX_TRY_LOCK; tries++) {
+		if (rad_lockfd_nonblock(ef->entries[i].fd, 0) >= 0) break;
 
-			if (errno != EAGAIN) {
-				fr_strerror_printf("Failed to lock file %s: %s", filename, fr_syserror(errno));
-				goto error;
-			}
-
-			close(ef->entries[i].fd);
-			ef->entries[i].fd = open(filename, O_RDWR | O_CREAT, permissions);
-			if (ef->entries[i].fd < 0) {
-				fr_strerror_printf("Failed to open file %s: %s", filename, fr_syserror(errno));
-				goto error;
-			}
-		}
-
-		if (tries >= MAX_TRY_LOCK) {
-			fr_strerror_printf("Failed to lock file %s: too many tries", filename);
+		if (errno != EAGAIN) {
+			fr_strerror_printf("Failed to lock file %s: %s", filename, fr_syserror(errno));
 			goto error;
 		}
+
+		close(ef->entries[i].fd);
+		ef->entries[i].fd = open(filename, O_RDWR | O_CREAT, permissions);
+		if (ef->entries[i].fd < 0) {
+			fr_strerror_printf("Failed to open file %s: %s", filename, fr_syserror(errno));
+			goto error;
+		}
+	}
+
+	if (tries >= MAX_TRY_LOCK) {
+		fr_strerror_printf("Failed to lock file %s: too many tries", filename);
+		goto error;
 	}
 
 	/*
@@ -466,6 +465,33 @@ try_lock:
 	 */
 	ef->entries[i].st_dev = st.st_dev;
 	ef->entries[i].st_ino = st.st_ino;
+
+	/*
+	 *	Sometimes the file permissions are changed externally.
+	 *	just be sure to update the permission if necessary.
+	 */
+	if ((st.st_mode & ~S_IFMT)  != permissions) {
+		char str_need[10], oct_need[5];
+		char str_have[10], oct_have[5];
+
+		rad_mode_to_oct(oct_need, permissions);
+		rad_mode_to_str(str_need, permissions);
+
+		rad_mode_to_oct(oct_have, st.st_mode & ~S_IFMT);
+		rad_mode_to_str(str_have, st.st_mode & ~S_IFMT);
+
+		WARN("File %s permissions are %s (%s) not %s (%s))", filename,
+		     oct_have, str_have, oct_need, str_need);
+
+		if (((st.st_mode | permissions) != st.st_mode) &&
+		    (fchmod(ef->entries[i].fd, (st.st_mode & ~S_IFMT) | permissions) < 0)) {
+			rad_mode_to_oct(oct_need, (st.st_mode & ~S_IFMT) | permissions);
+			rad_mode_to_str(str_need, (st.st_mode & ~S_IFMT) | permissions);
+			
+			WARN("Failed resetting file %s permissions to %s (%s): %s",
+			     filename, oct_need, str_need, fr_syserror(errno));
+		}
+	}
 
 	/*
 	 *	Seek to the end of the file before returning the FD to

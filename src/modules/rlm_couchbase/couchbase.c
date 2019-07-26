@@ -20,7 +20,7 @@
  * @brief Wrapper functions around the libcouchbase Couchbase client driver.
  * @file couchbase.c
  *
- * @author Aaron Hurt <ahurt@anbcs.com>
+ * @author Aaron Hurt (ahurt@anbcs.com)
  * @copyright 2013-2014 The FreeRADIUS Server Project.
  */
 RCSID("$Id$")
@@ -28,8 +28,6 @@ RCSID("$Id$")
 #define LOG_PREFIX "rlm_couchbase - "
 
 #include <freeradius-devel/server/base.h>
-
-#include <libcouchbase/couchbase.h>
 #include <freeradius-devel/json/base.h>
 
 #include "couchbase.h"
@@ -189,12 +187,14 @@ void couchbase_http_data_callback(lcb_http_request_t request, lcb_t instance, co
  * @param instance Empty (un-allocated) Couchbase instance object.
  * @param host       The Couchbase server or list of servers.
  * @param bucket     The Couchbase bucket to associate with the instance.
+ * @param user       The Couchbase bucket user (NULL if none).
  * @param pass       The Couchbase bucket password (NULL if none).
  * @param timeout    Maximum time to wait for obtaining the initial configuration.
+ * @param opts       Extra options to configure the libcouchbase.
  * @return           Couchbase error object.
  */
-lcb_error_t couchbase_init_connection(lcb_t *instance, const char *host, const char *bucket, const char *pass,
-				      lcb_uint32_t timeout)
+lcb_error_t couchbase_init_connection(lcb_t *instance, const char *host, const char *bucket, const char *user, const char *pass,
+				      lcb_uint32_t timeout, const couchbase_opts_t *opts)
 {
 	lcb_error_t error;                      /* couchbase command return */
 	struct lcb_create_st options;           /* init create struct */
@@ -205,12 +205,8 @@ lcb_error_t couchbase_init_connection(lcb_t *instance, const char *host, const c
 	/* assign couchbase create options */
 	options.v.v0.host = host;
 	options.v.v0.bucket = bucket;
-
-	/* assign user and password if they were both passed */
-	if (bucket != NULL && pass != NULL) {
-		options.v.v0.user = bucket;
-		options.v.v0.passwd = pass;
-	}
+	options.v.v0.user = user;
+	options.v.v0.passwd = pass;
 
 	/* create couchbase connection instance */
 	error = lcb_create(instance, &options);
@@ -218,6 +214,19 @@ lcb_error_t couchbase_init_connection(lcb_t *instance, const char *host, const c
 
 	error = lcb_cntl(*instance, LCB_CNTL_SET, LCB_CNTL_CONFIGURATION_TIMEOUT, &timeout);
 	if (error != LCB_SUCCESS) return error;
+
+	/* Couchbase extra api settings */
+	if (opts != NULL) {
+		const couchbase_opts_t *o = opts;
+
+		for (; o != NULL; o = o->next) {
+			error = lcb_cntl_string(*instance, o->key, o->val);
+			if (error != LCB_SUCCESS) {
+				ERROR("Failed to configure the couchbase with %s=%s", o->key, o->val);
+				return error;
+			}
+		}
+	}
 
 	/* initiate connection */
 	error = lcb_connect(*instance);

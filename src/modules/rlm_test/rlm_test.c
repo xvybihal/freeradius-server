@@ -20,7 +20,7 @@
  * @brief test module code.
  *
  * @copyright 2013 The FreeRADIUS server project
- * @copyright 2013 your name \<your address\>
+ * @copyright 2013 your name (email@example.org)
  */
 RCSID("$Id$")
 
@@ -70,9 +70,6 @@ typedef struct {
 	time_t		date;
 	time_t		*date_m;
 
-	size_t		abinary[32/sizeof(size_t)];
-	size_t		abinary_m[32/sizeof(size_t)];
-
 	uint8_t const	*octets;
 	uint8_t const	**octets_m;
 
@@ -94,8 +91,8 @@ typedef struct {
 	uint64_t	uint64;
 	uint64_t	*uint64_m;
 
-	_timeval_t	timeval;
-	_timeval_t	*timeval_m;
+	fr_time_delta_t	time_delta;
+	fr_time_delta_t	*time_delta_m;
 } rlm_test_t;
 
 typedef struct {
@@ -136,9 +133,6 @@ static const CONF_PARSER module_config[] = {
 	{ FR_CONF_OFFSET("date", FR_TYPE_DATE, rlm_test_t, date) },
 	{ FR_CONF_OFFSET("date_m", FR_TYPE_DATE | FR_TYPE_MULTI, rlm_test_t, date_m) },
 
-	{ FR_CONF_OFFSET("abinary", FR_TYPE_ABINARY, rlm_test_t, abinary) },
-	{ FR_CONF_OFFSET("abinary_m", FR_TYPE_ABINARY | FR_TYPE_MULTI, rlm_test_t, abinary_m) },
-
 	{ FR_CONF_OFFSET("octets", FR_TYPE_OCTETS, rlm_test_t, octets) },
 	{ FR_CONF_OFFSET("octets_m", FR_TYPE_OCTETS | FR_TYPE_MULTI, rlm_test_t, octets_m) },
 
@@ -160,8 +154,8 @@ static const CONF_PARSER module_config[] = {
 	{ FR_CONF_OFFSET("uint64", FR_TYPE_UINT64, rlm_test_t, uint64) },
 	{ FR_CONF_OFFSET("uint64_m", FR_TYPE_UINT64 | FR_TYPE_MULTI, rlm_test_t, uint64_m) },
 
-	{ FR_CONF_OFFSET("timeval", FR_TYPE_TIMEVAL, rlm_test_t, timeval) },
-	{ FR_CONF_OFFSET("timeval_m", FR_TYPE_TIMEVAL | FR_TYPE_MULTI, rlm_test_t, timeval_m) },
+	{ FR_CONF_OFFSET("time_delta", FR_TYPE_TIME_DELTA, rlm_test_t, time_delta) },
+	{ FR_CONF_OFFSET("time_delta_t", FR_TYPE_TIME_DELTA | FR_TYPE_MULTI, rlm_test_t, time_delta_m) },
 
 	CONF_PARSER_TERMINATOR
 };
@@ -245,9 +239,6 @@ static int mod_instantiate(void *instance, UNUSED CONF_SECTION *conf)
 	DEBUG2("Debug2 message");
 	DEBUG3("Debug3 message");
 	DEBUG4("Debug4 message");
-	AUTH("Auth message");
-	ACCT("Acct message");
-	PROXY("Proxy message");
 
 	return 0;
 }
@@ -326,6 +317,14 @@ static rlm_rcode_t CC_HINT(nonnull) mod_accounting(UNUSED void *instance, void *
 }
 #endif
 
+/*
+ *	Write accounting information to this modules database.
+ */
+static rlm_rcode_t CC_HINT(nonnull) mod_return(UNUSED void *instance, UNUSED void *thread, UNUSED REQUEST *request)
+{
+	return RLM_MODULE_OK;
+}
+
 static int mod_detach(UNUSED void *instance)
 {
 	/* free things here */
@@ -341,8 +340,8 @@ static int mod_detach(UNUSED void *instance)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_test;
-rad_module_t rlm_test = {
+extern module_t rlm_test;
+module_t rlm_test = {
 	.magic			= RLM_MODULE_INIT,
 	.name			= "test",
 	.type			= RLM_TYPE_THREAD_SAFE,
@@ -361,4 +360,13 @@ rad_module_t rlm_test = {
 		[MOD_ACCOUNTING]	= mod_accounting,
 #endif
 	},
+	.method_names = (module_method_names_t[]){
+		{ "recv",	"Access-Challenge", mod_return },
+		{ "recv",	CF_IDENT_ANY,	mod_return },
+		{ "name1_null",	NULL,		mod_return },
+		{ "send",	CF_IDENT_ANY,	mod_return },
+		{ CF_IDENT_ANY, CF_IDENT_ANY,	mod_return },
+
+		MODULE_NAME_TERMINATOR
+	}
 };

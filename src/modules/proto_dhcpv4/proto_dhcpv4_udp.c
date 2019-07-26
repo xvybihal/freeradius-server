@@ -33,6 +33,7 @@
 #include <freeradius-devel/io/listen.h>
 #include <freeradius-devel/io/schedule.h>
 #include <freeradius-devel/server/rad_assert.h>
+#include <freeradius-devel/protocol/dhcpv4/freeradius.internal.h>
 #include "proto_dhcpv4.h"
 
 extern fr_app_io_t proto_dhcpv4_udp;
@@ -68,6 +69,9 @@ typedef struct {
 	bool				recv_buff_is_set;	//!< Whether we were provided with a receive
 								//!< buffer value.
 	bool				dynamic_clients;	//!< whether we have dynamic clients
+
+	RADCLIENT_LIST			*clients;		//!< local clients
+	RADCLIENT			*default_client;	//!< default 0/0 client
 
 	fr_trie_t			*trie;			//!< for parsed networks
 	fr_ipaddr_t			*allow;			//!< allowed networks for dynamic clients
@@ -133,7 +137,7 @@ static ssize_t mod_read(fr_listen_t *li, void **packet_ctx, fr_time_t **recv_tim
 	int				flags;
 	ssize_t				data_size;
 	size_t				packet_len;
-	struct timeval			timestamp;
+	fr_time_t			timestamp;
 	uint8_t				message_type;
 	uint32_t			xid, ipaddr;
 	dhcp_packet_t			*packet;
@@ -193,7 +197,6 @@ static ssize_t mod_read(fr_listen_t *li, void **packet_ctx, fr_time_t **recv_tim
 		return 0;
 	}
 
-	// @todo - maybe convert timestamp?
 	*recv_time_p = fr_time();
 
 	/*
@@ -259,7 +262,7 @@ static ssize_t mod_write(fr_listen_t *li, void *packet_ctx, UNUSED fr_time_t req
 		 *	This isn't available in the packet header.
 		 */
 		code = fr_dhcpv4_packet_get_option(packet, buffer_len, attr_message_type);
-		if (!code || (code[1] < 1) || (code[2] == 0) || (code[2] >= FR_DHCP_INFORM)) {
+		if (!code || (code[1] < 1) || (code[2] == 0) || (code[2] > FR_DHCP_LEASE_ACTIVE)) {
 			DEBUG("WARNING - silently discarding reply due to invalid or missing message type");
 			return 0;
 		}
@@ -299,6 +302,7 @@ static ssize_t mod_write(fr_listen_t *li, void *packet_ctx, UNUSED fr_time_t req
 		 */
 		memcpy(&ipaddr, &packet->giaddr, 4);
 		if (ipaddr != INADDR_ANY) {
+			DEBUG("Reply will be sent to giaddr.");
 			address.dst_ipaddr.addr.v4.s_addr = ipaddr;
 			address.dst_port = inst->port;
 			address.src_port = inst->port;
@@ -419,7 +423,7 @@ static ssize_t mod_write(fr_listen_t *li, void *packet_ctx, UNUSED fr_time_t req
 
 send_reply:
 	/*
-	 *	proto_radius_dhcpv4 takes care of suppressing do-not-respond, etc.
+	 *	proto_dhcpv4 takes care of suppressing do-not-respond, etc.
 	 */
 	data_size = udp_send(thread->sockfd, buffer, buffer_len, flags,
 			     &address.src_ipaddr, address.src_port,
@@ -473,6 +477,8 @@ static int mod_open(fr_listen_t *li)
 	error:
 		return -1;
 	}
+
+	li->app_io_addr = fr_app_io_socket_addr(li, IPPROTO_UDP, &inst->ipaddr, port);
 
 	/*
 	 *	Set SO_REUSEPORT before bind, so that all packets can
@@ -562,6 +568,9 @@ static int mod_bootstrap(void *instance, CONF_SECTION *cs)
 {
 	proto_dhcpv4_udp_t	*inst = talloc_get_type_abort(instance, proto_dhcpv4_udp_t);
 	size_t			num;
+	CONF_ITEM		*ci;
+	CONF_SECTION		*server_cs;
+	RADCLIENT		*client;
 
 	inst->cs = cs;
 
@@ -633,10 +642,6 @@ static int mod_bootstrap(void *instance, CONF_SECTION *cs)
 	/*
 	 *	Parse and create the trie for dynamic clients, even if
 	 *	there's no dynamic clients.
-	 *
-	 *	@todo - we could use this for source IP filtering?
-	 *	e.g. allow clients from a /16, but not from a /24
-	 *	within that /16.
 	 */
 	num = talloc_array_length(inst->allow);
 	if (!num) {
@@ -652,15 +657,58 @@ static int mod_bootstrap(void *instance, CONF_SECTION *cs)
 		}
 	}
 
+	ci = cf_parent(inst->cs); /* listen { ... } */
+	rad_assert(ci != NULL);
+	ci = cf_parent(ci);
+	rad_assert(ci != NULL);
+
+	server_cs = cf_item_to_section(ci);
+
+	/*
+	 *	Look up local clients, if they exist.
+	 *
+	 *	@todo - ensure that we only parse clients which are
+	 *	for IPPROTO_UDP, and don't require a "secret".
+	 */
+	if (cf_section_find_next(server_cs, NULL, "client", CF_IDENT_ANY)) {
+		inst->clients = client_list_parse_section(server_cs, IPPROTO_UDP, false);
+		if (!inst->clients) {
+			cf_log_err(cs, "Failed creating local clients");
+			return -1;
+		}
+	}
+
+	/*
+	 *	Create a fake client.
+	 */
+	client = inst->default_client = talloc_zero(inst, RADCLIENT);
+	if (!inst->default_client) return 0;
+
+	client->ipaddr.af = AF_INET;
+	client->ipaddr.addr.v4.s_addr = htonl(INADDR_NONE);
+	client->src_ipaddr = client->ipaddr;
+
+	client->longname = client->shortname = client->secret = talloc_strdup(client, "default");
+	client->nas_type = talloc_strdup(client, "other");
+
 	return 0;
 }
 
-// @todo - allow for "wildcard" clients, which allow anything
-// and then rely on "networks" to filter source IPs...
-// which means we probably want to filter on "networks" even if there are no dynamic clients
-static RADCLIENT *mod_client_find(UNUSED fr_listen_t *li, fr_ipaddr_t const *ipaddr, int ipproto)
+static RADCLIENT *mod_client_find(fr_listen_t *li, fr_ipaddr_t const *ipaddr, int ipproto)
 {
-	return client_find(NULL, ipaddr, ipproto);
+	proto_dhcpv4_udp_t const *inst = talloc_get_type_abort_const(li->app_io_instance, proto_dhcpv4_udp_t);
+
+	/*
+	 *	Prefer local clients.
+	 */
+	if (inst->clients) {
+		RADCLIENT *client;
+
+		client = client_find(inst->clients, ipaddr, ipproto);
+		if (client) return client;
+	}
+
+	return inst->default_client;
 }
 
 fr_app_io_t proto_dhcpv4_udp = {

@@ -21,7 +21,7 @@
  * @brief Utility to print attribute data in CSV format
  *
  * @copyright 2017 The FreeRADIUS server project
- * @copyright 2017 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2017 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -58,10 +58,12 @@ static void usage(void)
 	fprintf(stderr, "Very simple interface to extract attribute definitions from FreeRADIUS dictionaries\n");
 }
 
-static int load_dicts(TALLOC_CTX *ctx, char const *dict_dir)
+static int load_dicts(char const *dict_dir)
 {
 	DIR		*dir;
 	struct dirent	*dp;
+
+	INFO("Reading directory %s", dict_dir);
 
 	dir = opendir(dict_dir);
 	if (!dir) {
@@ -74,6 +76,11 @@ static int load_dicts(TALLOC_CTX *ctx, char const *dict_dir)
 		char *file_str;
 
 		if (dp->d_name[0] == '.') continue;
+
+		/*
+		 *	Skip the internal FreeRADIUS dictionary.
+		 */
+		if (strcmp(dp->d_name, "freeradius") == 0) continue;
 
 		file_str = talloc_asprintf(NULL, "%s/%s", dict_dir, dp->d_name);
 
@@ -106,14 +113,17 @@ static int load_dicts(TALLOC_CTX *ctx, char const *dict_dir)
 					fr_strerror_printf("Reached maximum number of dictionaries");
 					goto error;
 				}
-				INFO("Loading dictionary: %s/%s", dict_dir, dp->d_name);
-				if (fr_dict_protocol_afrom_file(dict_end++, dp->d_name) < 0) goto error;
-			/*
-			 *	...otherwise recurse to process sub-protocols (maybe?)
-			 */
-			} else {
-				if (load_dicts(ctx, file_str) < 0) goto error;
+
+				INFO("Loading dictionary: %s/dictionary", file_str);
+				if (fr_dict_protocol_afrom_file(dict_end, dp->d_name, NULL) < 0) {
+					goto error;
+				}
+				dict_end++;
 			}
+
+			/*
+			 *	For now, don't do sub-protocols.
+			 */
 		}
 		talloc_free(file_str);
 	}
@@ -129,11 +139,11 @@ static void da_print_info_td(fr_dict_t const *dict, fr_dict_attr_t const *da)
 
 	(void)fr_dict_print_attr_oid(oid_str, sizeof(oid_str), NULL, da);
 
-	fr_dict_snprint_flags(flags, sizeof(flags), &da->flags);
+	fr_dict_snprint_flags(flags, sizeof(flags), da->type, &da->flags);
 
 	/* Protocol Name Type */
 	printf("%s\t%s\t%s\t%s\t%s\n", fr_dict_root(dict)->name, oid_str, da->name,
-	       fr_int2str(fr_value_box_type_names, da->type, "?Unknown?"), flags);
+	       fr_int2str(fr_value_box_type_table, da->type, "?Unknown?"), flags);
 }
 
 static void _fr_dict_export(uint64_t *count, uintptr_t *low, uintptr_t *high, fr_dict_attr_t const *da, unsigned int lvl)
@@ -143,7 +153,7 @@ static void _fr_dict_export(uint64_t *count, uintptr_t *low, uintptr_t *high, fr
 	fr_dict_attr_t const	*p;
 	char			flags[256];
 
-	fr_dict_snprint_flags(flags, sizeof(flags), &da->flags);
+	fr_dict_snprint_flags(flags, sizeof(flags), da->type, &da->flags);
 
 	/*
 	 *	Root attributes are allocated outside of the pool
@@ -215,6 +225,7 @@ int main(int argc, char *argv[])
 		case 'h':
 		default:
 			usage();
+			found = true;
 			goto finish;
 	}
 	argc -= optind;
@@ -237,13 +248,13 @@ int main(int argc, char *argv[])
 
 	INFO("Loading dictionary: %s/%s", dict_dir, FR_DICTIONARY_FILE);
 
-	if (fr_dict_internal_afrom_file(dict_end++, NULL) < 0) {
+	if (fr_dict_internal_afrom_file(dict_end++, FR_DICTIONARY_INTERNAL_DIR) < 0) {
 		fr_perror("radict");
 		ret = 1;
 		goto finish;
 	}
 
-	if (load_dicts(autofree, dict_dir) < 0) {
+	if (load_dicts(dict_dir) < 0) {
 		fr_perror("radict");
 		ret = 1;
 		goto finish;

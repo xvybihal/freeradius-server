@@ -38,14 +38,18 @@ fr_dict_autoload_t proto_radius_coa_dict[] = {
 };
 
 static fr_dict_attr_t const *attr_packet_type;
+static fr_dict_attr_t const *attr_service_type;
+static fr_dict_attr_t const *attr_state;
 
 extern fr_dict_attr_autoload_t proto_radius_coa_dict_attr[];
 fr_dict_attr_autoload_t proto_radius_coa_dict_attr[] = {
 	{ .out = &attr_packet_type, .name = "Packet-Type", .type = FR_TYPE_UINT32, .dict = &dict_radius },
+	{ .out = &attr_service_type, .name = "Service-Type", .type = FR_TYPE_UINT32, .dict = &dict_radius },
+	{ .out = &attr_state, .name = "State", .type = FR_TYPE_OCTETS, .dict = &dict_radius },
 	{ NULL }
 };
 
-static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, fr_io_action_t action)
+static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request)
 {
 	VALUE_PAIR *vp;
 	rlm_rcode_t rcode;
@@ -53,15 +57,6 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 	fr_dict_enum_t const *dv;
 
 	REQUEST_VERIFY(request);
-
-	/*
-	 *	Pass this through asynchronously to the module which
-	 *	is waiting for something to happen.
-	 */
-	if (action != FR_IO_ACTION_RUN) {
-		unlang_signal(request, (fr_state_signal_t) action);
-		return FR_IO_DONE;
-	}
 
 	switch (request->request_state) {
 	case REQUEST_INIT:
@@ -81,6 +76,19 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 			return FR_IO_FAIL;
 		}
 
+		/*
+		 *	We require a State attribute for
+		 *	re-authorization requests.
+		 */
+		if (request->packet->code == FR_CODE_COA_REQUEST) {
+			vp = fr_pair_find_by_da(request->reply->vps, attr_service_type, TAG_ANY);
+			if (vp && !fr_pair_find_by_da(request->reply->vps, attr_state, TAG_ANY)) {
+				REDEBUG("CoA-Request with Service-Type = Authorize-Only MUST contain a State attribute");
+				request->reply->code = FR_CODE_COA_NAK;
+				goto nak;
+			}
+		}
+
 		unlang = cf_section_find(request->server_cs, "recv", dv->alias);
 		if (!unlang) {
 			REDEBUG("Failed to find 'recv %s' section", dv->alias);
@@ -88,13 +96,13 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 		}
 
 		RDEBUG("Running 'recv %s' from file %s", dv->alias, cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_RECV;
 		/* FALL-THROUGH */
 
 	case REQUEST_RECV:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
 
@@ -129,6 +137,7 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 		vp = fr_pair_find_by_da(request->reply->vps, attr_packet_type, TAG_ANY);
 		if (vp) request->reply->code = vp->vp_uint32;
 
+	nak:
 		dv = fr_dict_enum_by_value(attr_packet_type, fr_box_uint32(request->reply->code));
 		unlang = NULL;
 		if (dv) unlang = cf_section_find(request->server_cs, "send", dv->alias);
@@ -143,14 +152,14 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 		 */
 	rerun_nak:
 		RDEBUG("Running 'send %s' from file %s", cf_section_name2(unlang), cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
 		rad_assert(request->log.unlang_indent == 0);
 
 		request->request_state = REQUEST_SEND;
 		/* FALL-THROUGH */
 
 	case REQUEST_SEND:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
 
@@ -204,7 +213,7 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 		}
 
 	send_reply:
-		gettimeofday(&request->reply->timestamp, NULL);
+		request->reply->timestamp = fr_time();
 
 		/*
 		 *	Check for "do not respond".
@@ -227,10 +236,55 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 	return FR_IO_REPLY;
 }
 
+static virtual_server_compile_t compile_list[] = {
+	{
+		.name = "recv",
+		.name2 = "CoA-Request",\
+		.component = MOD_RECV_COA,
+	},
+	{
+		.name = "send",
+		.name2 = "CoA-ACK",
+		.component = MOD_SEND_COA,
+	},
+	{
+		.name = "send",.name2 = "CoA-NAK",
+		.component = MOD_SEND_COA,
+	},
+	{
+		.name = "recv",
+		.name2 = "Disconnect-Request",
+		.component = MOD_RECV_COA,
+	},
+	{
+		.name = "send",
+		.name2 = "Disconnect-ACK",
+		.component = MOD_SEND_COA,
+	},
+	{
+		.name = "send",
+		.name2 = "Disconnect-NAK",
+		.component = MOD_SEND_COA,
+	},
+	{
+		.name = "send",
+		.name2 = "Protocol-Error",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "send",
+		.name2 = "Do-Not-Respond",
+		.component = MOD_POST_AUTH,
+	},
+
+	COMPILE_TERMINATOR
+};
+
 
 extern fr_app_worker_t proto_radius_coa;
 fr_app_worker_t proto_radius_coa = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "radius_coa",
 	.entry_point	= mod_process,
+	.compile_list	= compile_list,
 };

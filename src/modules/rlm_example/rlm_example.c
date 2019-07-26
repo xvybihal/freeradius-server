@@ -20,7 +20,7 @@
  * @brief Example module code.
  *
  * @copyright 2013 The FreeRADIUS server project
- * @copyright 2013 your name \<your address\>
+ * @copyright 2013 your name (your name\@address)
  */
 RCSID("$Id$")
 
@@ -125,7 +125,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(UNUSED void *instance, UNUSED 
 	 */
 	vp = fr_pair_find_by_da(request->packet->vps, attr_state, TAG_ANY);
 	if (vp != NULL) {
-		RDEBUG("Found reply to access challenge");
+		RDEBUG2("Found reply to access challenge");
 		return RLM_MODULE_OK;
 	}
 
@@ -133,7 +133,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(UNUSED void *instance, UNUSED 
 	if (vp->vp_length == 0) fr_pair_value_strcpy(vp, "This is a challenge");
 
 	MEM(pair_add_reply(&vp, attr_state) >= 0);
-	fr_pair_value_memcpy(vp, (uint8_t *){ 0x00 }, 1);
+	fr_pair_value_memcpy(vp, (uint8_t *){ 0x00 }, 1, true);
 
 	/*
 	 *  Mark the packet as an Access-Challenge packet.
@@ -141,7 +141,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(UNUSED void *instance, UNUSED 
 	 *  The server will take care of sending it to the user.
 	 */
 	request->reply->code = FR_CODE_ACCESS_CHALLENGE;
-	RDEBUG("Sending Access-Challenge");
+	RDEBUG2("Sending Access-Challenge");
 
 	return RLM_MODULE_HANDLED;
 }
@@ -192,8 +192,8 @@ static int mod_detach(UNUSED void *instance)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_example;
-rad_module_t rlm_example = {
+extern module_t rlm_example;
+module_t rlm_example = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "example",
 	.type		= RLM_TYPE_THREAD_SAFE,

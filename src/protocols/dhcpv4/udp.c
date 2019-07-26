@@ -21,7 +21,7 @@
  * @brief Send/recv DHCP packets using udp sockets.
  *
  * @copyright 2008,2017 The FreeRADIUS server project
- * @copyright 2008 Alan DeKok <aland@deployingradius.com>
+ * @copyright 2008 Alan DeKok (aland@deployingradius.com)
  */
 #include "dhcpv4.h"
 #include "attrs.h"
@@ -153,7 +153,7 @@ RADIUS_PACKET *fr_dhcpv4_udp_packet_recv(int sockfd)
 	fr_ipaddr_t		src_ipaddr, dst_ipaddr;
 	uint16_t		src_port, dst_port;
 	int			if_index = 0;
-	struct timeval		when;
+	fr_time_t		when;
 
 	data = talloc_zero_array(NULL, uint8_t, MAX_PACKET_SIZE);
 	if (!data) {

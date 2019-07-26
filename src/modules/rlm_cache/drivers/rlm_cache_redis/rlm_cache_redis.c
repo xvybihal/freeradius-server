@@ -19,7 +19,7 @@
  * @file rlm_cache_redis.c
  * @brief redis based cache.
  *
- * @copyright 2015 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2015 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 #define LOG_PREFIX "rlm_cache_redis - "
 
@@ -64,12 +64,21 @@ fr_dict_attr_autoload_t rlm_cache_redis_dict_attr[] = {
 
 /** Create a new rlm_cache_redis instance
  *
- * @copydetails cache_instantiate_t
+ * @param instance	A uint8_t array of inst_size if inst_size > 0, else NULL,
+ *			this should contain the result of parsing the driver's
+ *			CONF_PARSER array that it specified in the interface struct.
+ * @param conf		section holding driver specific #CONF_PAIR (s).
+ * @return
+ *	- 0 on success.
+ *	- -1 on failure.
  */
-static int mod_instantiate(rlm_cache_config_t const *config, void *instance, CONF_SECTION *conf)
+static int mod_instantiate(void *instance, CONF_SECTION *conf)
 {
-	rlm_cache_redis_t	*driver = instance;
-	char			buffer[256];
+	rlm_cache_redis_t		*driver = instance;
+	char				buffer[256];
+	rlm_cache_config_t const	*config = dl_module_parent_data_by_child_data(instance);
+
+	rad_assert(config);
 
 	buffer[0] = '\0';
 
@@ -88,12 +97,12 @@ static int mod_instantiate(rlm_cache_config_t const *config, void *instance, CON
 	/*
 	 *	These never change, so do it once on instantiation
 	 */
-	if (tmpl_afrom_attr_str(driver, &driver->created_attr, "&Cache-Created", NULL) < 0) {
+	if (tmpl_afrom_attr_str(driver, NULL, &driver->created_attr, "&Cache-Created", NULL) < 0) {
 		ERROR("Cache-Created attribute not defined");
 		return -1;
 	}
 
-	if (tmpl_afrom_attr_str(driver, &driver->expires_attr, "&Cache-Expires", NULL) < 0) {
+	if (tmpl_afrom_attr_str(driver, NULL, &driver->expires_attr, "&Cache-Expires", NULL) < 0) {
 		ERROR("Cache-Expires attribute not defined");
 		return -1;
 	}
@@ -150,7 +159,7 @@ static cache_status_t cache_entry_find(rlm_cache_entry_t **out,
 		RERROR("Failed retrieving entry for key \"%pV\"", fr_box_strvalue_len((char const *)key, key_len));
 
 	error:
-		fr_redis_reply_free(reply);
+		fr_redis_reply_free(&reply);
 		return CACHE_ERROR;
 	}
 
@@ -165,7 +174,7 @@ static cache_status_t cache_entry_find(rlm_cache_entry_t **out,
 	RDEBUG3("Entry contains %zu elements", reply->elements);
 
 	if (reply->elements == 0) {
-		fr_redis_reply_free(reply);
+		fr_redis_reply_free(&reply);
 		return CACHE_MISS;
 	}
 
@@ -202,12 +211,12 @@ static cache_status_t cache_entry_find(rlm_cache_entry_t **out,
 		if (fr_redis_reply_to_map(c, last, request,
 					  reply->element[i], reply->element[i + 1], reply->element[i + 2]) < 0) {
 			talloc_free(c);
-			fr_redis_reply_free(reply);
+			fr_redis_reply_free(&reply);
 			return CACHE_ERROR;
 		}
 		last = &(*last)->next;
 	}
-	fr_redis_reply_free(reply);
+	fr_redis_reply_free(&reply);
 
 	/*
 	 *	Pull out the cache created date
@@ -270,7 +279,7 @@ static cache_status_t cache_entry_insert(UNUSED rlm_cache_config_t const *config
 
 	unsigned int		pipelined = 0;	/* How many commands pending in the pipeline */
 	redisReply		*replies[5];	/* Should have the same number of elements as pipelined commands */
-	size_t			reply_num = 0, i;
+	size_t			reply_cnt = 0, i;
 
 	int			cnt;
 
@@ -389,7 +398,7 @@ static cache_status_t cache_entry_insert(UNUSED rlm_cache_config_t const *config
 			pipelined++;
 		}
 
-		reply_num = fr_redis_pipeline_result(&pipelined, &status,
+		reply_cnt = fr_redis_pipeline_result(&pipelined, &status,
 						     replies, sizeof(replies) / sizeof(*replies),
 						     conn);
 		reply = replies[0];
@@ -403,10 +412,8 @@ static cache_status_t cache_entry_insert(UNUSED rlm_cache_config_t const *config
 
 	RDEBUG3("Command results");
 	RINDENT();
-	for (i = 0; i < reply_num; i++) {
-		fr_redis_reply_print(L_DBG_LVL_3, replies[i], request, i);
-		fr_redis_reply_free(replies[i]);
-	}
+	if (RDEBUG_ENABLED3) for (i = 0; i < reply_cnt; i++) fr_redis_reply_print(L_DBG_LVL_3, replies[i], request, i);
+	fr_redis_pipeline_free(replies, reply_cnt);
 	REXDENT();
 
 	return CACHE_OK;
@@ -437,7 +444,7 @@ static cache_status_t cache_entry_expire(UNUSED rlm_cache_config_t const *config
 	if (s_ret != REDIS_RCODE_SUCCESS) {
 		RERROR("Failed expiring entry");
 	error:
-		fr_redis_reply_free(reply);
+		fr_redis_reply_free(&reply);
 		return CACHE_ERROR;
 	}
 	if (!fr_cond_assert(reply)) goto error;
@@ -445,13 +452,13 @@ static cache_status_t cache_entry_expire(UNUSED rlm_cache_config_t const *config
 	if (reply->type == REDIS_REPLY_INTEGER) {
 		cache_status = CACHE_MISS;
 		if (reply->integer) cache_status = CACHE_OK;    /* Affected */
-		fr_redis_reply_free(reply);
+		fr_redis_reply_free(&reply);
 		return cache_status;
 	}
 
 	REDEBUG("Bad result type, expected integer, got %s",
 		fr_int2str(redis_reply_types, reply->type, "<UNKNOWN>"));
-	fr_redis_reply_free(reply);
+	fr_redis_reply_free(&reply);
 
 	return CACHE_ERROR;
 }

@@ -20,7 +20,7 @@
  * @brief Unpack binary data
  *
  * @copyright 2014 The FreeRADIUS server project
- * @copyright 2014 Alan DeKok <aland@freeradius.org>
+ * @copyright 2014 Alan DeKok (aland@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -73,7 +73,7 @@ static ssize_t unpack_xlat(UNUSED TALLOC_CTX *ctx, char **out, size_t outlen,
 	strlcpy(buffer, fmt, sizeof(buffer));
 
 	p = buffer;
-	while (isspace((int) *p)) p++; /* skip leading spaces */
+	fr_skip_spaces(p); /* skip leading spaces */
 
 	data_name = p;
 
@@ -122,7 +122,7 @@ static ssize_t unpack_xlat(UNUSED TALLOC_CTX *ctx, char **out, size_t outlen,
 		 */
 		len = strlen(data_name + 2);
 		if ((len & 0x01) != 0) {
-			RDEBUG("Invalid hex string in '%s'", data_name);
+			REDEBUG("Invalid hex string in '%s'", data_name);
 			goto nothing;
 		}
 		input = blob;
@@ -138,7 +138,7 @@ static ssize_t unpack_xlat(UNUSED TALLOC_CTX *ctx, char **out, size_t outlen,
 		goto nothing;
 	}
 
-	type = fr_str2int(fr_value_box_type_names, data_type, FR_TYPE_INVALID);
+	type = fr_str2int(fr_value_box_type_table, data_type, FR_TYPE_INVALID);
 	if (type == FR_TYPE_INVALID) {
 		REDEBUG("Invalid data type '%s'", data_type);
 		goto nothing;
@@ -223,8 +223,8 @@ static int mod_bootstrap(UNUSED void *instance, CONF_SECTION *conf)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_unpack;
-rad_module_t rlm_unpack = {
+extern module_t rlm_unpack;
+module_t rlm_unpack = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "unpack",
 	.type		= RLM_TYPE_THREAD_SAFE,

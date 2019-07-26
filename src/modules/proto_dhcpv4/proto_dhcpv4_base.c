@@ -49,7 +49,7 @@ fr_dict_attr_autoload_t proto_dhcpv4_base_dict_attr[] = {
 	{ NULL }
 };
 
-static int reply_ok[FR_DHCP_INFORM + 1] = {
+static int reply_ok[] = {
 	[0]			= FR_DHCP_MESSAGE_TYPE_VALUE_DHCP_DO_NOT_RESPOND,
 	[FR_DHCP_DISCOVER]	= FR_DHCP_OFFER,
 	[FR_DHCP_OFFER]		= FR_DHCP_OFFER,
@@ -59,9 +59,10 @@ static int reply_ok[FR_DHCP_INFORM + 1] = {
 	[FR_DHCP_NAK]		= FR_DHCP_NAK,
 	[FR_DHCP_RELEASE]	= 0,
 	[FR_DHCP_INFORM]	= FR_DHCP_ACK,
+	[FR_DHCP_LEASE_QUERY]	= FR_DHCP_LEASE_ACTIVE, /* not really correct, but whatever */
 };
 
-static int reply_fail[FR_DHCP_INFORM + 1] = {
+static int reply_fail[] = {
 	[0]			= FR_DHCP_MESSAGE_TYPE_VALUE_DHCP_DO_NOT_RESPOND,
 	[FR_DHCP_DISCOVER]	= 0,
 	[FR_DHCP_OFFER]		= FR_DHCP_NAK,
@@ -71,6 +72,7 @@ static int reply_fail[FR_DHCP_INFORM + 1] = {
 	[FR_DHCP_NAK]		= FR_DHCP_NAK,
 	[FR_DHCP_RELEASE]	= 0,
 	[FR_DHCP_INFORM]	= FR_DHCP_MESSAGE_TYPE_VALUE_DHCP_DO_NOT_RESPOND,
+	[FR_DHCP_LEASE_QUERY]	= FR_DHCP_LEASE_UNKNOWN,
 };
 
 
@@ -88,13 +90,12 @@ static void dhcpv4_packet_debug(REQUEST *request, RADIUS_PACKET *packet, bool re
 	if (!packet) return;
 	if (!RDEBUG_ENABLED) return;
 
-
-	log_request(L_DBG, L_DBG_LVL_1, request, "%s %s XID %08x from %s%s%s:%i to %s%s%s:%i "
+	log_request(L_DBG, L_DBG_LVL_1, request, __FILE__, __LINE__, "%s %s XID %08x from %s%s%s:%i to %s%s%s:%i "
 #if defined(WITH_UDPFROMTO) && defined(WITH_IFINDEX_NAME_RESOLUTION)
 		       "%s%s%s"
 #endif
 		       "",
-		       received ? "Received" : "Sent",
+		       received ? "Received" : "Sending",
 		       dhcp_message_types[packet->code],
 		       packet->id,
 		       packet->src_ipaddr.af == AF_INET6 ? "[" : "",
@@ -119,7 +120,7 @@ static void dhcpv4_packet_debug(REQUEST *request, RADIUS_PACKET *packet, bool re
 	}
 }
 
-static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, UNUSED fr_io_action_t action)
+static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request)
 {
 	rlm_rcode_t rcode;
 	CONF_SECTION *unlang;
@@ -129,7 +130,7 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 
 	REQUEST_VERIFY(request);
 	rad_assert(request->packet->code > 0);
-	rad_assert(request->packet->code <= FR_DHCP_INFORM);
+	rad_assert(request->packet->code <= FR_DHCP_LEASE_QUERY);
 
 	switch (request->request_state) {
 	case REQUEST_INIT:
@@ -151,13 +152,13 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 		}
 
 		RDEBUG("Running 'recv %s' from file %s", cf_section_name2(unlang), cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_RECV;
 		/* FALL-THROUGH */
 
 	case REQUEST_RECV:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
 
@@ -216,13 +217,13 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 
 	rerun_nak:
 		RDEBUG("Running 'send %s' from file %s", cf_section_name2(unlang), cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_SEND;
 		/* FALL-THROUGH */
 
 	case REQUEST_SEND:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
 
@@ -281,9 +282,84 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 }
 
 
+static virtual_server_compile_t compile_list[] = {
+	{
+		.name = "recv",
+		.name2 = "DHCP-Discover",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "send",
+		.name2 = "DHCP-Offer",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "recv",
+		.name2 = "DHCP-Request",
+		.component = MOD_POST_AUTH,
+	},
+
+	{
+		.name = "send",
+		.name2 = "DHCP-Ack",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "send",
+		.name2 = "DHCP-NAK",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "send",
+		.name2 = "DHCP-Decline",
+		.component = MOD_POST_AUTH,
+	},
+
+	{
+		.name = "recv",
+		.name2 = "DHCP-Release",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "recv",
+		.name2 = "DHCP-Inform",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "send",
+		.name2 = "Do-Not-Respond",
+		.component = MOD_POST_AUTH,
+	},
+
+	{
+		.name = "recv",
+		.name2 = "DHCP-Lease-Query",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "send",
+		.name2 = "DHCP-Lease-Unassigned",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "send",
+		.name2 = "DHCP-Lease-Unknown",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "send",
+		.name2 = "DHCP-Lease-Active",
+		.component = MOD_POST_AUTH,
+	},
+
+	COMPILE_TERMINATOR
+};
+
+
 extern fr_app_worker_t proto_dhcpv4_base;
 fr_app_worker_t proto_dhcpv4_base = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "dhcpv4_base",
 	.entry_point	= mod_process,
+	.compile_list	= compile_list,
 };

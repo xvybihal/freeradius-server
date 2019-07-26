@@ -20,7 +20,7 @@
  * @file protocols/radius/packet.c
  * @brief Functions to deal with RADIUS_PACKET data structures.
  *
- * @copyright 2000-2017  The FreeRADIUS server project
+ * @copyright 2000-2017 The FreeRADIUS server project
  */
 RCSID("$Id$")
 
@@ -63,6 +63,10 @@ int fr_radius_packet_encode(RADIUS_PACKET *packet, RADIUS_PACKET const *original
 	 *	A 4K packet, aligned on 64-bits.
 	 */
 	uint8_t	data[MAX_PACKET_LEN];
+
+#ifndef NDEBUG
+	if (fr_debug_lvl >= L_DBG_LVL_4) fr_radius_packet_log_hex(&default_log, packet);
+#endif
 
 	if (original) {
 		original_data = original->data;
@@ -122,6 +126,10 @@ int fr_radius_packet_decode(RADIUS_PACKET *packet, RADIUS_PACKET *original,
 					.vector = packet->vector,
 					.tunnel_password_zeros = tunnel_password_zeros
 				};
+
+#ifndef NDEBUG
+	if (fr_debug_lvl >= L_DBG_LVL_4) fr_radius_packet_log_hex(&default_log, packet);
+#endif
 
 	switch (packet->code) {
 	case FR_CODE_ACCESS_REQUEST:
@@ -443,10 +451,6 @@ RADIUS_PACKET *fr_radius_packet_recv(TALLOC_CTX *ctx, int fd, int flags, uint32_
 	 */
 	packet->vps = NULL;
 
-#ifndef NDEBUG
-	if ((fr_debug_lvl > 3) && fr_log_fp) fr_radius_packet_print_hex(packet);
-#endif
-
 	return packet;
 }
 
@@ -489,10 +493,6 @@ int fr_radius_packet_send(RADIUS_PACKET *packet, RADIUS_PACKET const *original,
 		 */
 	}
 
-#ifndef NDEBUG
-	if ((fr_debug_lvl > 3) && fr_log_fp) fr_radius_packet_print_hex(packet);
-#endif
-
 	/*
 	 *	If the socket is TCP, call write().  Calling sendto()
 	 *	is allowed on some platforms, but it's not nice.  Even
@@ -517,31 +517,65 @@ int fr_radius_packet_send(RADIUS_PACKET *packet, RADIUS_PACKET const *original,
 			&packet->dst_ipaddr, packet->dst_port);
 }
 
-
-void fr_radius_packet_print_hex(RADIUS_PACKET const *packet)
+void _fr_radius_packet_log_hex(fr_log_t *log, RADIUS_PACKET const *packet, char const *file, int line)
 {
-	if (!packet->data || !fr_log_fp) return;
+	uint8_t const *attr, *end;
+	char buffer[256];
 
-	fprintf(fr_log_fp, "  Socket:\t%d\n", packet->sockfd);
-	fprintf(fr_log_fp, "  Proto:\t%d\n", packet->proto);
+	if (!packet->data) return;
 
-	if (packet->src_ipaddr.af == AF_INET) {
-		char buffer[INET6_ADDRSTRLEN];
+	fr_log(log, L_DBG, file, line, "  Socket   : %d", packet->sockfd);
+	fr_log(log, L_DBG, file, line, "  Proto    : %d", packet->proto);
 
-		fprintf(fr_log_fp, "  Src IP:\t%s\n",
-			inet_ntop(packet->src_ipaddr.af,
-				  &packet->src_ipaddr.addr,
-				  buffer, sizeof(buffer)));
-		fprintf(fr_log_fp, "    port:\t%u\n", packet->src_port);
-
-		fprintf(fr_log_fp, "  Dst IP:\t%s\n",
-			inet_ntop(packet->dst_ipaddr.af,
-				  &packet->dst_ipaddr.addr,
-				  buffer, sizeof(buffer)));
-		fprintf(fr_log_fp, "    port:\t%u\n", packet->dst_port);
+	if ((packet->src_ipaddr.af == AF_INET) || (packet->src_ipaddr.af == AF_INET6)) {
+		fr_log(log, L_DBG, file, line, "  Src IP   : %pV", fr_box_ipaddr(packet->src_ipaddr));
+		fr_log(log, L_DBG, file, line, "  Src Port : %u", packet->src_port);
+		fr_log(log, L_DBG, file, line, "  Dst IP   : %pV", fr_box_ipaddr(packet->dst_ipaddr));
+		fr_log(log, L_DBG, file, line, "  Dst Port : %u", packet->dst_port);
 	}
 
-	fr_radius_print_hex(fr_log_fp, packet->data, packet->data_len);
+       if ((packet->data[0] > 0) && (packet->data[0] < FR_RADIUS_MAX_PACKET_CODE)) {
+               fr_log(log, L_DBG, file, line, "  Code     : %s", fr_packet_codes[packet->data[0]]);
+       } else {
+               fr_log(log, L_DBG, file, line, "  Code     : %u", packet->data[0]);
+       }
 
-	fflush(fr_log_fp);
+       fr_log(log, L_DBG, file, line, "  Id       : %u", packet->data[1]);
+       fr_log(log, L_DBG, file, line, "  Length   : %u", ((packet->data[2] << 8) | (packet->data[3])));
+       fr_log(log, L_DBG, file, line, "  Vector   : %pH", fr_box_octets(packet->data + 4, RADIUS_AUTH_VECTOR_LENGTH));
+
+       if (packet->data_len <= 20) return;
+
+       for (attr = packet->data + 20, end = packet->data + packet->data_len;
+            attr < end;
+            attr += attr[1]) {
+               int		i, len, offset = 2;
+               unsigned int	vendor = 0;
+	       char		*p;
+
+#ifndef NDEBUG
+               if (attr[1] < 2) break; /* Coverity */
+#endif
+
+	       snprintf(buffer, sizeof(buffer), "%02x %02x  ", attr[0], attr[1]);
+               if ((attr[0] == FR_VENDOR_SPECIFIC) &&
+                   (attr[1] > 6)) {
+                       vendor = (attr[2] << 25) | (attr[3] << 16) | (attr[4] << 8) | attr[5];
+
+		       snprintf(buffer + 12, sizeof(buffer) - 12, "%02x%02x%02x%02x (%u)  ",
+				attr[2], attr[3], attr[4], attr[5], vendor);
+                       offset = 6;
+               }
+	       p = buffer + strlen(buffer);
+
+	       len = attr[1] - offset;
+	       if (len > 16) len = 16;
+
+	       for (i = 0; i < len; i++) {
+		       snprintf(p, buffer + sizeof(buffer) - p, "%02x ", attr[offset + i]);
+		       p += 3;
+	       }
+
+	       fr_log(log, L_DBG, file, line, "      %s\n", buffer);
+       }
 }

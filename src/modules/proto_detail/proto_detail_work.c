@@ -30,6 +30,7 @@
 #include <freeradius-devel/io/application.h>
 #include <freeradius-devel/io/listen.h>
 #include <freeradius-devel/util/dlist.h>
+#include <freeradius-devel/util/time.h>
 #include <freeradius-devel/server/rad_assert.h>
 #include "proto_detail.h"
 
@@ -61,11 +62,10 @@ typedef struct {
 	uint8_t				*packet;		//!< for retransmissions
 	size_t				packet_len;		//!< for retransmissions
 
-	uint32_t			rt;
+	fr_time_delta_t			rt;
 	uint32_t       			count;			//!< number of retransmission tries
 
-	struct timeval			start;			//!< when we started trying to send
-	struct timeval			next;			//!< when it next fires
+	fr_time_t			start;			//!< when we started trying to send
 
 	fr_event_timer_t const		*ev;			//!< retransmission timer
 	fr_dlist_t			entry;			//!< for the retransmission list
@@ -74,8 +74,15 @@ typedef struct {
 static CONF_PARSER limit_config[] = {
 	{ FR_CONF_OFFSET("initial_retransmission_time", FR_TYPE_UINT32, proto_detail_work_t, irt), .dflt = STRINGIFY(2) },
 	{ FR_CONF_OFFSET("maximum_retransmission_time", FR_TYPE_UINT32, proto_detail_work_t, mrt), .dflt = STRINGIFY(16) },
-	{ FR_CONF_OFFSET("maximum_retransmission_count", FR_TYPE_UINT32, proto_detail_work_t, mrc), .dflt = STRINGIFY(5) },
-	{ FR_CONF_OFFSET("maximum_retransmission_duration", FR_TYPE_UINT32, proto_detail_work_t, mrd), .dflt = STRINGIFY(30) },
+
+	/*
+	 *	Retransmit indefinitely, as v2 and v3 did.
+	 */
+	{ FR_CONF_OFFSET("maximum_retransmission_count", FR_TYPE_UINT32, proto_detail_work_t, mrc), .dflt = STRINGIFY(0) },
+	/*
+	 *	...again same as v2 and v3.
+	 */
+	{ FR_CONF_OFFSET("maximum_retransmission_duration", FR_TYPE_UINT32, proto_detail_work_t, mrd), .dflt = STRINGIFY(0) },
 	{ FR_CONF_OFFSET("maximum_outstanding", FR_TYPE_UINT32, proto_detail_work_t, max_outstanding), .dflt = STRINGIFY(1) },
 	CONF_PARSER_TERMINATOR
 };
@@ -488,6 +495,7 @@ redo:
 	track->timestamp = fr_time();
 	track->id = thread->count++;
 	track->rt = inst->irt;
+	track->rt *= NSEC;
 
 	track->done_offset = done_offset;
 	if (inst->retransmit) {
@@ -540,7 +548,7 @@ done:
 }
 
 
-static void work_retransmit(UNUSED fr_event_list_t *el, UNUSED struct timeval *now, void *uctx)
+static void work_retransmit(UNUSED fr_event_list_t *el, UNUSED fr_time_t now, void *uctx)
 {
 	fr_detail_entry_t		*track = talloc_get_type_abort(uctx, fr_detail_entry_t);
 	proto_detail_work_thread_t     	*thread = track->parent;
@@ -548,7 +556,7 @@ static void work_retransmit(UNUSED fr_event_list_t *el, UNUSED struct timeval *n
 	DEBUG("%s - retransmitting packet %d", thread->name, track->id);
 	track->count++;
 
-	fr_dlist_insert_tail(&thread->list, &track);
+	fr_dlist_insert_tail(&thread->list, track);
 
 	if (thread->paused && (thread->outstanding < thread->inst->max_outstanding)) {
 		(void) fr_event_filter_update(thread->el, thread->fd, FR_EVENT_FILTER_IO, resume_read);
@@ -567,7 +575,7 @@ static void work_retransmit(UNUSED fr_event_list_t *el, UNUSED struct timeval *n
 	(void) lseek(thread->fd, 0, SEEK_SET);
 
 #ifdef __linux__
-	fr_network_listen_read(thread->nr, talloc_parent(thread->inst));
+	fr_network_listen_read(thread->nr, thread->listen);
 #endif
 }
 
@@ -584,7 +592,7 @@ static ssize_t mod_write(fr_listen_t *li, void *packet_ctx, fr_time_t request_ti
 	rad_assert(thread->fd >= 0);
 
 	if (!buffer[0]) {
-		struct timeval when, now;
+		fr_time_t now;
 
 		/*
 		 *	Cap at MRC, if required.
@@ -595,26 +603,23 @@ static ssize_t mod_write(fr_listen_t *li, void *packet_ctx, fr_time_t request_ti
 			goto fail;
 		}
 
-		gettimeofday(&now, NULL);
+		now = fr_time();
 
 		if (track->count == 0) {
-			track->rt = inst->irt * USEC;
-			fr_time_to_timeval(&track->start, request_time);
-			track->next = track->start;
-			track->next.tv_usec += track->rt;
-			track->next.tv_sec += track->next.tv_usec / USEC;
-			track->next.tv_usec %= USEC;
+			track->rt = inst->irt;
+			track->rt *= NSEC;
+			track->start = request_time;
 
 		} else {
 			/*
 			 *	Cap at MRD, if required.
 			 */
 			if (inst->mrd) {
-				struct timeval end;
+				fr_time_t end;
 
 				end = track->start;
-				end.tv_sec += inst->mrd;
-				if (timercmp(&now, &end, >=)) {
+				end += ((fr_time_t) inst->mrd) * NSEC;
+				if (now >= end) {
 					DEBUG("%s - packet %d failed after %u seconds",
 					      thread->name, track->id, inst->mrd);
 					goto fail;
@@ -625,15 +630,11 @@ static ssize_t mod_write(fr_listen_t *li, void *packet_ctx, fr_time_t request_ti
 
 		} /* we're on retransmission N */
 
-		when.tv_sec = track->rt / USEC;
-		when.tv_usec = track->rt % USEC;
-
 		DEBUG("%s - packet %d failed during processing.  Will retransmit in %d.%06ds",
-		      thread->name, track->id, (int) when.tv_sec, (int) when.tv_usec);
+		      thread->name, track->id, (int) (track->rt / NSEC), (int) ((track->rt % NSEC) / 1000));
 
-		fr_timeval_add(&when, &now, &when);
-
-		if (fr_event_timer_insert(thread, thread->el, &track->ev, &when, work_retransmit, track) < 0) {
+		if (fr_event_timer_at(thread, thread->el, &track->ev,
+				      now + track->rt, work_retransmit, track) < 0) {
 			ERROR("%s - Failed inserting retransmission timeout", thread->name);
 		fail:
 			if (inst->track_progress && (track->done_offset > 0)) goto mark_done;
@@ -866,14 +867,14 @@ static int mod_instantiate(void *instance, UNUSED CONF_SECTION *cs)
 static int mod_bootstrap(void *instance, CONF_SECTION *cs)
 {
 	proto_detail_work_t	*inst = talloc_get_type_abort(instance, proto_detail_work_t);
-	dl_instance_t const	*dl_inst;
+	dl_module_inst_t const	*dl_inst;
 
 	/*
-	 *	Find the dl_instance_t holding our instance data
+	 *	Find the dl_module_inst_t holding our instance data
 	 *	so we can find out what the parent of our instance
 	 *	was.
 	 */
-	dl_inst = dl_instance_find(instance);
+	dl_inst = dl_module_instance_by_data(instance);
 	rad_assert(dl_inst);
 
 	inst->parent = talloc_get_type_abort(dl_inst->parent->data, proto_detail_t);

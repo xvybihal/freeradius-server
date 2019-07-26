@@ -19,8 +19,8 @@
  * @file rlm_expiration.c
  * @brief Lockout user accounts based on control attributes.
  *
- * @copyright 2001,2006  The FreeRADIUS server project
- * @copyright 2004  Kostas Kalevras <kkalev@noc.ntua.gr>
+ * @copyright 2001,2006 The FreeRADIUS server project
+ * @copyright 2004 Kostas Kalevras (kkalev@noc.ntua.gr)
  */
 RCSID("$Id$")
 
@@ -70,14 +70,14 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(UNUSED void *instance, UNUSED 
 		*      and add our own Reply-Message, saying
 		*      why they're being rejected.
 		*/
-		if (((time_t) check_item->vp_date) <= request->packet->timestamp.tv_sec) {
+		if (((time_t) check_item->vp_date) <= fr_time_to_sec(request->packet->timestamp)) {
 			REDEBUG("Account expired at '%pV'", &check_item->data);
 
 			return RLM_MODULE_USERLOCK;
 		}
-		RDEBUG("Account will expire at '%pV'", &check_item->data);
+		RDEBUG2("Account will expire at '%pV'", &check_item->data);
 
-		left = (uint32_t)(((time_t) check_item->vp_date) - request->packet->timestamp.tv_sec);
+		left = (uint32_t)(((time_t) check_item->vp_date) - fr_time_to_sec(request->packet->timestamp));
 
 		/*
 		 *	Else the account hasn't expired, but it may do so
@@ -88,13 +88,13 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(UNUSED void *instance, UNUSED 
 			/* just update... */
 			if (vp->vp_uint32 > (uint32_t)left) {
 				vp->vp_uint32 = (uint32_t)left;
-				RDEBUG("&reply:Session-Timeout := %pV", &vp->data);
+				RDEBUG2("&reply:Session-Timeout := %pV", &vp->data);
 			}
 			break;
 
 		case 0:	/* no pre-existing */
 			vp->vp_uint32 = (uint32_t)left;
-			RDEBUG("&reply:Session-Timeout := %pV", &vp->data);
+			RDEBUG2("&reply:Session-Timeout := %pV", &vp->data);
 			break;
 
 		default: /* malloc failure */
@@ -115,7 +115,7 @@ static int expirecmp(UNUSED void *instance, REQUEST *req, UNUSED VALUE_PAIR *req
 {
 	time_t now = 0;
 
-	now = (req) ? req->packet->timestamp.tv_sec : time(NULL);
+	now = (req) ? fr_time_to_sec(req->packet->timestamp) : time(NULL);
 
 	if (now <= ((time_t) check->vp_date)) return 0;
 
@@ -151,8 +151,8 @@ static int mod_instantiate(void *instance, UNUSED CONF_SECTION *conf)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_expiration;
-rad_module_t rlm_expiration = {
+extern module_t rlm_expiration;
+module_t rlm_expiration = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "expiration",
 	.type		= RLM_TYPE_THREAD_SAFE,

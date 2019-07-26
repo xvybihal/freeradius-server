@@ -21,7 +21,7 @@
  * @file lib/server/xlat.h
  * @brief xlat expansion parsing and evaluation API.
  *
- * @copyright 2015  The FreeRADIUS server project
+ * @copyright 2015 The FreeRADIUS server project
  */
 RCSIDH(xlat_h, "$Id$")
 
@@ -48,6 +48,7 @@ typedef struct xlat_exp xlat_exp_t;
 #include <freeradius-devel/server/signal.h>
 
 #include <freeradius-devel/util/cursor.h>
+#include <freeradius-devel/util/time.h>
 #include <freeradius-devel/util/pair.h>
 #include <freeradius-devel/util/value.h>
 
@@ -70,6 +71,8 @@ struct xlat_thread_inst {
 	uint64_t		active_callers; //! number of active callers.  i.e. number of current yields
 };
 
+typedef struct xlat_s xlat_t;
+
 extern FR_NAME_NUMBER const xlat_action_table[];
 
 typedef size_t (*xlat_escape_t)(REQUEST *request, char *out, size_t outlen, char const *in, void *arg);
@@ -79,24 +82,24 @@ typedef size_t (*xlat_escape_t)(REQUEST *request, char *out, size_t outlen, char
  * Used when a xlat needs wait for an event.
  * Typically the callback is set, and then the xlat returns unlang_xlat_yield().
  *
- * @note The callback is automatically removed on unlang_resumable(), i.e. if an event
+ * @note The callback is automatically removed on unlang_interpret_resumable(), i.e. if an event
  *	on a registered FD occurs before the timeout event fires.
  *
  * @param[in] request		the request.
- * @param[in] instance		the xlat instance.
- * @param[in] thread		data specific to this xlat instance.
+ * @param[in] xlat_inst		the xlat instance.
+ * @param[in] xlat_thread_inst	data specific to this xlat instance.
  * @param[in] rctx		Resume ctx provided when the xlat last yielded.
  * @param[in] fired		the time the timeout event actually fired.
  */
-typedef	void (*fr_unlang_xlat_timeout_t)(REQUEST *request, void *instance, void *thread, void *rctx,
-					 struct timeval *fired);
+typedef	void (*fr_unlang_xlat_timeout_t)(REQUEST *request, void *xlat_inst,
+					 void *xlat_thread_inst, void *rctx, fr_time_t fired);
 
 /** A callback when the FD is ready for reading
  *
  * Used when a xlat needs to read from an FD.  Typically the callback is set, and then the
  * xlat returns unlang_xlat_yield().
  *
- * @note The callback is automatically removed on unlang_resumable(), so
+ * @note The callback is automatically removed on unlang_interpret_resumable(), so
  *
  * @param[in] request		the current request.
  * @param[in] xlat_inst		the xlat instance.
@@ -104,7 +107,8 @@ typedef	void (*fr_unlang_xlat_timeout_t)(REQUEST *request, void *instance, void 
  * @param[in] rctx		Resume ctx provided when the xlat last yielded.
  * @param[in] fd		the file descriptor.
  */
-typedef void (*fr_unlang_xlat_fd_event_t)(REQUEST *request, void *xlat_inst, void *xlat_thread_inst, void *rctx, int fd);
+typedef void (*fr_unlang_xlat_fd_event_t)(REQUEST *request, void *xlat_inst,
+					  void *xlat_thread_inst, void *rctx, int fd);
 
 /** xlat callback function
  *
@@ -177,7 +181,7 @@ typedef xlat_action_t (*xlat_func_resume_t)(TALLOC_CTX *ctx, fr_cursor_t *out,
 
 /** A callback when the request gets a fr_state_signal_t.
  *
- * @note The callback is automatically removed on unlang_resumable().
+ * @note The callback is automatically removed on unlang_interpret_resumable().
  *
  * @param[in] request		The current request.
  * @param[in] xlat_inst		the xlat instance.
@@ -247,6 +251,9 @@ typedef int (*xlat_thread_detach_t)(void *xlat_thread_inst, void *uctx);
 int		xlat_fmt_get_vp(VALUE_PAIR **out, REQUEST *request, char const *name);
 int		xlat_fmt_copy_vp(TALLOC_CTX *ctx, VALUE_PAIR **out, REQUEST *request, char const *name);
 
+int		xlat_fmt_to_cursor(TALLOC_CTX *ctx, fr_cursor_t **out,
+				   bool *tainted, REQUEST *requst, char const *fmt);
+
 ssize_t		xlat_eval(char *out, size_t outlen, REQUEST *request, char const *fmt, xlat_escape_t escape,
 			  void const *escape_ctx)
 			  CC_HINT(nonnull (1 ,3 ,4));
@@ -268,8 +275,7 @@ int		xlat_eval_pair(REQUEST *request, VALUE_PAIR *vp);
 ssize_t		xlat_tokenize_ephemeral(TALLOC_CTX *ctx, xlat_exp_t **head, REQUEST *request,
 					char const *fmt, vp_tmpl_rules_t const *rules);
 
-ssize_t		xlat_tokenize(TALLOC_CTX *ctx, xlat_exp_t **head, char const **error,
-			      char *fmt, vp_tmpl_rules_t const *rules);
+ssize_t		xlat_tokenize(TALLOC_CTX *ctx, xlat_exp_t **head, char *fmt, vp_tmpl_rules_t const *rules);
 
 size_t		xlat_snprint(char *buffer, size_t bufsize, xlat_exp_t const *node);
 
@@ -280,24 +286,22 @@ int		xlat_register(void *mod_inst, char const *name,
 			      xlat_instantiate_t instantiate, size_t inst_size,
 			      size_t buf_len, bool async_safe);
 
-#define		xlat_async_register(_ctx, \
-				     _name, _func, \
-				    _instantiate, _inst_struct, _detach, \
-				    _thread_instantiate, _thread_inst_struct, _thread_detach, _uctx) \
-		_xlat_async_register(_ctx, \
-				     _name, _func, \
-				     _instantiate, #_inst_struct, sizeof(_inst_struct), _detach, \
-				     _thread_instantiate, #_thread_inst_struct, sizeof(_thread_inst_struct), _thread_detach, \
-				     _uctx)
+xlat_t const *xlat_async_register(TALLOC_CTX *ctx, char const *name, xlat_func_async_t func);
 
-int		_xlat_async_register(TALLOC_CTX *ctx,
-				     char const *name, xlat_func_async_t func,
-				     xlat_instantiate_t instantiate, char const *inst_name, size_t inst_size,
-				     xlat_detach_t detach,
-				     xlat_thread_instantiate_t thread_instantiate, char const *thread_inst_name,
-				     size_t thread_inst_size,
-				     xlat_thread_detach_t thread_detach,
-				     void *uctx);
+#define	xlat_async_instantiate_set(_xlat, _instantiate, _inst_struct, _detach, _uctx) \
+	_xlat_async_instantiate_set(_xlat, _instantiate, #_inst_struct, sizeof(_inst_struct), _detach, _uctx)
+void _xlat_async_instantiate_set(xlat_t const *xlat,
+				        xlat_instantiate_t instantiate, char const *inst_type, size_t inst_size,
+				        xlat_detach_t detach,
+				        void *uctx);
+
+#define	xlat_async_thread_instantiate_set(_xlat, _instantiate, _inst_struct, _detach, _uctx) \
+	_xlat_async_thread_instantiate_set(_xlat, _instantiate, #_inst_struct, sizeof(_inst_struct), _detach, _uctx)
+void _xlat_async_thread_instantiate_set(xlat_t const *xlat,
+					xlat_thread_instantiate_t thread_instantiate,
+				        char const *thread_inst_type, size_t thread_inst_size,
+				        xlat_thread_detach_t thread_detach,
+					void *uctx);
 
 void		xlat_unregister(char const *name);
 void		xlat_unregister_module(void *instance);
@@ -331,7 +335,9 @@ void		xlat_instances_free(void);
  *	unlang/xlat.c
  */
 int		unlang_xlat_event_timeout_add(REQUEST *request, fr_unlang_xlat_timeout_t callback,
-					      void const *ctx, struct timeval *when);
+					      void const *ctx, fr_time_t when);
+
+int		unlang_xlat_event_timeout_delete(REQUEST *request, void *ctx);
 
 void		unlang_xlat_push(TALLOC_CTX *ctx, fr_value_box_t **out,
 				 REQUEST *request, xlat_exp_t const *exp, bool top_frame);

@@ -19,8 +19,8 @@
  *
  * @file src/lib/util/event.h
  *
- * @copyright 2007  The FreeRADIUS server project
- * @copyright 2007  Alan DeKok <aland@deployingradius.com>
+ * @copyright 2007 The FreeRADIUS server project
+ * @copyright 2007 Alan DeKok (aland@deployingradius.com)
  */
 RCSIDH(event_h, "$Id$")
 
@@ -30,6 +30,7 @@ extern "C" {
 
 #include <freeradius-devel/build.h>
 #include <freeradius-devel/missing.h>
+#include <freeradius-devel/util/time.h>
 
 #include <stdbool.h>
 #include <sys/event.h>
@@ -107,9 +108,9 @@ typedef struct {
 /** Called when a timer event fires
  *
  * @param[in] now	The current time.
- * @param[in] uctx	User ctx passed to #fr_event_timer_insert.
+ * @param[in] uctx	User ctx passed to #fr_event_timer_in or #fr_event_timer_at.
  */
-typedef	void (*fr_event_cb_t)(fr_event_list_t *el, struct timeval *now, void *uctx);
+typedef	void (*fr_event_cb_t)(fr_event_list_t *el, fr_time_t now, void *uctx);
 
 /** Called after each event loop cycle
  *
@@ -118,7 +119,7 @@ typedef	void (*fr_event_cb_t)(fr_event_list_t *el, struct timeval *now, void *uc
  * @param[in] now	The current time.
  * @param[in] uctx	User ctx passed to #fr_event_list_alloc.
  */
-typedef	int (*fr_event_status_cb_t)(void *uctx, struct timeval *now);
+typedef	int (*fr_event_status_cb_t)(void *uctx, fr_time_t now);
 
 /** Called when an IO event occurs on a file descriptor
  *
@@ -191,7 +192,7 @@ typedef union {
 int		fr_event_list_num_fds(fr_event_list_t *el);
 int		fr_event_list_num_timers(fr_event_list_t *el);
 int		fr_event_list_kq(fr_event_list_t *el);
-int		fr_event_list_time(struct timeval *when, fr_event_list_t *el);
+fr_time_t	fr_event_list_time(fr_event_list_t *el);
 
 int		fr_event_fd_delete(fr_event_list_t *el, int fd, fr_event_filter_t filter);
 
@@ -213,10 +214,12 @@ int		fr_event_fd_insert(TALLOC_CTX *ctx, fr_event_list_t *el, int fd,
 int		fr_event_pid_wait(TALLOC_CTX *ctx, fr_event_list_t *el, fr_event_pid_t const **ev_p,
 				  pid_t pid, fr_event_pid_cb_t wait_fn, void *uctx) CC_HINT(nonnull(2,5));
 
-int		fr_event_timer_insert(TALLOC_CTX *ctx, fr_event_list_t *el, fr_event_timer_t const **ev,
-				      struct timeval *when, fr_event_cb_t callback, void const *uctx);
+int		fr_event_timer_at(TALLOC_CTX *ctx, fr_event_list_t *el, fr_event_timer_t const **ev,
+				  fr_time_t when, fr_event_cb_t callback, void const *uctx);
+int		fr_event_timer_in(TALLOC_CTX *ctx, fr_event_list_t *el, fr_event_timer_t const **ev,
+				  fr_time_delta_t delta, fr_event_cb_t callback, void const *uctx);
 int		fr_event_timer_delete(fr_event_list_t *el, fr_event_timer_t const **ev);
-int		fr_event_timer_run(fr_event_list_t *el, struct timeval *when);
+int		fr_event_timer_run(fr_event_list_t *el, fr_time_t *when);
 
 uintptr_t      	fr_event_user_insert(fr_event_list_t *el, fr_event_user_handler_t user, void *uctx) CC_HINT(nonnull(1,2));
 int		fr_event_user_delete(fr_event_list_t *el, fr_event_user_handler_t user, void *uctx) CC_HINT(nonnull(1,2));

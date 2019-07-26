@@ -19,8 +19,8 @@
  * @file lib/ldap/sasl.c
  * @brief Functions to perform SASL binds against an LDAP directory.
  *
- * @author Arran Cudbard-Bell <a.cudbardb@freeradius.org>
- * @copyright 2015 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
+ * @copyright 2015 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  * @copyright 2015 The FreeRADIUS Server Project.
  */
 RCSID("$Id$")
@@ -112,7 +112,7 @@ fr_ldap_rcode_t  fr_ldap_sasl_interactive(REQUEST *request,
 					  fr_ldap_connection_t *conn, char const *identity,
 					  char const *password, fr_ldap_sasl_t const *sasl,
 					  LDAPControl **serverctrls, LDAPControl **clientctrls,
-					  struct timeval const *timeout)
+					  fr_time_delta_t timeout)
 {
 	fr_ldap_rcode_t			status;
 	int				ret = 0;

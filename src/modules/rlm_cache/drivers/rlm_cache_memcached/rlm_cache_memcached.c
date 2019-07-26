@@ -61,7 +61,7 @@ static int _mod_conn_free(rlm_cache_memcached_handle_t *mandle)
 /** Create a new memcached handle
  *
  */
-static void *mod_conn_create(TALLOC_CTX *ctx, void *instance, struct timeval const *timeout)
+static void *mod_conn_create(TALLOC_CTX *ctx, void *instance, fr_time_delta_t timeout)
 {
 	rlm_cache_memcached_t		*driver = instance;
 	rlm_cache_memcached_handle_t	*mandle;
@@ -76,7 +76,7 @@ static void *mod_conn_create(TALLOC_CTX *ctx, void *instance, struct timeval con
 		return NULL;
 	}
 
-	ret = memcached_behavior_set(sandle, MEMCACHED_BEHAVIOR_CONNECT_TIMEOUT, (uint64_t)FR_TIMEVAL_TO_MS(timeout));
+	ret = memcached_behavior_set(sandle, MEMCACHED_BEHAVIOR_CONNECT_TIMEOUT, fr_time_delta_to_msec(timeout));
 	if (ret != MEMCACHED_SUCCESS) {
 		ERROR("%s: %s", memcached_strerror(sandle, ret), memcached_last_error_message(sandle));
 	error:
@@ -99,14 +99,22 @@ static void *mod_conn_create(TALLOC_CTX *ctx, void *instance, struct timeval con
 
 /** Create a new rlm_cache_memcached instance
  *
- * @copydetails cache_instantiate_t
+ * @param instance	A uint8_t array of inst_size if inst_size > 0, else NULL,
+ *			this should contain the result of parsing the driver's
+ *			CONF_PARSER array that it specified in the interface struct.
+ * @param conf		section holding driver specific #CONF_PAIR (s).
+ * @return
+ *	- 0 on success.
+ *	- -1 on failure.
  */
-static int mod_instantiate(rlm_cache_config_t const *config, void *instance, CONF_SECTION *conf)
+static int mod_instantiate(void *instance, CONF_SECTION *conf)
 {
-	rlm_cache_memcached_t	*driver = instance;
-	memcached_return_t	ret;
+	rlm_cache_memcached_t		*driver = instance;
+	memcached_return_t		ret;
+	char				buffer[256];
+	rlm_cache_config_t const	*config = dl_module_parent_data_by_child_data(instance);
 
-	char			buffer[256];
+	rad_assert(config);
 
 	snprintf(buffer, sizeof(buffer), "rlm_cache (%s)", config->name);
 
@@ -185,6 +193,8 @@ static cache_status_t cache_entry_find(rlm_cache_entry_t **out,
 		return CACHE_ERROR;
 	}
 	c->key = talloc_memdup(c, key, key_len);
+	c->key_len = key_len;
+
 	*out = c;
 
 	return CACHE_OK;

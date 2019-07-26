@@ -11,6 +11,7 @@ SOURCES		:= \
 		   cursor.c \
 		   debug.c \
 		   dict.c \
+		   dl.c \
 		   event.c \
 		   fifo.c \
 		   fring.c \
@@ -46,6 +47,8 @@ SOURCES		:= \
 		   syserror.c \
 		   talloc.c \
 		   token.c \
+		   time.c \
+		   timeval.c \
 		   trie.c \
 		   udp.c \
 		   udpfromto.c \

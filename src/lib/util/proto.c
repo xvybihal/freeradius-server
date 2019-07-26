@@ -20,86 +20,58 @@
  *
  * @copyright 2015 The FreeRADIUS server project
  */
-#include "proto.h"
-
-static unsigned int proto_log_indent = 30;
-static char spaces[] = "                                                 ";
+#include <freeradius-devel/util/print.h>
+#include <freeradius-devel/util/proto.h>
 
 void fr_proto_print(char const *file, int line, char const *fmt, ...)
 {
 	va_list		ap;
-	size_t		len;
-	char		prefix[256];
-
-	len = snprintf(prefix, sizeof(prefix), "%s:%i", file, line);
-	if (len > proto_log_indent) proto_log_indent = len;
-
-	fprintf(fr_log_fp, "msg: %s%.*s: ", prefix, (int)(proto_log_indent - len), spaces);
+	char		*buff;
 
 	va_start(ap, fmt);
-	vfprintf(fr_log_fp, fmt, ap);
+	buff = talloc_vasprintf(NULL, fmt, ap);
 	va_end(ap);
 
-	fprintf(fr_log_fp, "\n");
-	fflush(fr_log_fp);
+	fr_log(&default_log, L_DBG, file, line, "msg: %pV", fr_box_strvalue_buffer(buff));
+
+	talloc_free(buff);
 }
 
 DIAG_OFF(format-nonliteral)
 void fr_proto_print_hex_data(char const *file, int line, uint8_t const *data, size_t data_len, char const *fmt, ...)
 {
 	va_list		ap;
-	size_t		i;
-	size_t		len;
-	char		prefix[256];
-	char		msg[256];
-
-	len = snprintf(prefix, sizeof(prefix), "%s:%i", file, line);
-	if (len > proto_log_indent) proto_log_indent = len;
+	char		*msg;
 
 	if (fmt) {
 		va_start(ap, fmt);
-		vsnprintf(msg, sizeof(msg), fmt, ap);
+		msg = talloc_vasprintf(NULL, fmt, ap);
 		va_end(ap);
-		fprintf(fr_log_fp, "hex: %s%.*s: -- %s --\n",
-			prefix, (int)(proto_log_indent - len), spaces, msg);
+		fr_log(&default_log, L_DBG, file, line, "hex: -- %s --", msg);
+		talloc_free(msg);
 	}
-
-	for (i = 0; i < data_len; i++) {
-		if ((i & 0x0f) == 0) fprintf(fr_log_fp, "hex: %s%.*s: %04x: ", prefix,
-					     (int)(proto_log_indent - len), spaces, (unsigned int) i);
-		fprintf(fr_log_fp, "%02x ", data[i]);
-		if (((i & 0x0f) == 0x0f) && ((i + 1) < data_len)) fprintf(fr_log_fp, "\n");
-	}
-	if ((data_len == 0x0f) || ((data_len & 0x0f) != 0x0f)) fprintf(fr_log_fp, "\n");
-	fflush(fr_log_fp);
+	fr_log_hex(&default_log, L_DBG, file, line, data, data_len, "hex: ");
 }
 DIAG_ON(format-nonliteral)
 
 void fr_proto_tlv_stack_print(char const *file, int line, char const *func, fr_dict_attr_t const **tlv_stack, unsigned int depth)
 {
 	int		i;
-	char		prefix[256];
-	size_t		len;
-
-	len = snprintf(prefix, sizeof(prefix), "%s:%i", file, line);
-	if (len > proto_log_indent) proto_log_indent = len;
 
 	for (i = 0; (i < FR_DICT_MAX_TLV_STACK) && tlv_stack[i]; i++);
 	if (!i) return;
 
-	fprintf(fr_log_fp, "stk: %s%.*s: Currently in %s\n",
-		prefix, (int)(proto_log_indent - len), spaces, func);
+	fr_log(&default_log, L_DBG, file, line, "stk: Currently in %s", func);
 	for (i--; i >= 0; i--) {
-		fprintf(fr_log_fp, "stk: %s%.*s: %s [%i] %s: %s, vendor: 0x%x (%u), attr: 0x%x (%u)\n",
-			prefix, (int)(proto_log_indent - len), spaces, (i == (int)depth) ? ">" : " ", i,
-			fr_int2str(fr_value_box_type_names, tlv_stack[i]->type, "?Unknown?"),
-			tlv_stack[i]->name,
-			fr_dict_vendor_num_by_da(tlv_stack[i]), fr_dict_vendor_num_by_da(tlv_stack[i]),
-			tlv_stack[i]->attr, tlv_stack[i]->attr);
+		fr_log(&default_log, L_DBG, file, line,
+		       "stk: %s [%i] %s: %s, vendor: 0x%x (%u), attr: 0x%x (%u)",
+		       (i == (int)depth) ? ">" : " ", i,
+		       fr_int2str(fr_value_box_type_table, tlv_stack[i]->type, "?Unknown?"),
+		       tlv_stack[i]->name,
+		       fr_dict_vendor_num_by_da(tlv_stack[i]), fr_dict_vendor_num_by_da(tlv_stack[i]),
+		       tlv_stack[i]->attr, tlv_stack[i]->attr);
 	}
-	fprintf(fr_log_fp, "stk: %s%.*s:\n",
-		prefix, (int)(proto_log_indent - len), spaces);
-	fflush(fr_log_fp);
+	fr_log(&default_log, L_DBG, file, line, "stk:");
 }
 
 void fr_proto_tlv_stack_build(fr_dict_attr_t const **tlv_stack, fr_dict_attr_t const *da)

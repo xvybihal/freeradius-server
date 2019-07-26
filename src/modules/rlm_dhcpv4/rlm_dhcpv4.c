@@ -50,53 +50,38 @@ typedef struct {
 	int nothing;
 } rlm_dhcpv4_t;
 
-
-/*
- *	Allow single attribute values to be retrieved from the dhcp.
- */
-static ssize_t dhcp_options_xlat(UNUSED TALLOC_CTX *ctx, char **out, size_t outlen,
-			   	 UNUSED void const *mod_inst, UNUSED void const *xlat_inst,
-			   	 REQUEST *request, char const *fmt)
+static xlat_action_t dhcpv4_decode_xlat(TALLOC_CTX *ctx, fr_cursor_t *out,
+				        REQUEST *request, UNUSED void const *xlat_inst, UNUSED void *xlat_thread_inst,
+				        fr_value_box_t **in)
 {
-	fr_cursor_t	cursor;
-	fr_cursor_t	src_cursor;
-	vp_tmpl_t	*src;
+	fr_cursor_t	in_cursor, cursor;
+	fr_value_box_t	*vb, *vb_decoded;
 	VALUE_PAIR	*vp, *head = NULL;
 	int		decoded = 0;
-	ssize_t		slen;
-
-	while (isspace((int) *fmt)) fmt++;
-
-	slen = tmpl_afrom_attr_str(request, &src, fmt, &(vp_tmpl_rules_t){ .dict_def = request->dict });
-	if (slen <= 0) {
-		REMARKER(fmt, slen, fr_strerror());
-	error:
-		talloc_free(src);
-		return -1;
-	}
-
-	if (src->type != TMPL_TYPE_ATTR) {
-		RPEDEBUG("dhcp_options cannot operate on a %s", fr_int2str(tmpl_type_table, src->type, "<INVALID>"));
-		goto error;
-	}
-
-	if (src->tmpl_da->type != FR_TYPE_OCTETS) {
-		REDEBUG("dhcp_options got a %s attribute needed octets",
-			fr_int2str(fr_value_box_type_names, src->tmpl_da->type, "<INVALID>"));
-		goto error;
-	}
 
 	fr_cursor_init(&cursor, &head);
 
-	for (vp = tmpl_cursor_init(NULL, &src_cursor, request, src);
-	     vp;
-	     vp = fr_cursor_next(&src_cursor)) {
-		uint8_t const	*p = vp->vp_octets, *end = p + vp->vp_length;
+	for (vb = fr_cursor_talloc_init(&in_cursor, in, fr_value_box_t);
+	     vb;
+	     vb = fr_cursor_next(&in_cursor)) {
+		uint8_t const	*p, *end;
 		ssize_t		len;
 		VALUE_PAIR	*vps = NULL;
 		fr_cursor_t	options_cursor;
 
+		if (vb->type != FR_TYPE_OCTETS) {
+			RWDEBUG("Skipping value \"%pV\", expected value of type %s, got type %s",
+				vb,
+				fr_int2str(fr_value_box_type_table, FR_TYPE_OCTETS, "<INVALID>"),
+				fr_int2str(fr_value_box_type_table, vb->type, "<INVALID>"));
+			continue;
+		}
+
 		fr_cursor_init(&options_cursor, &vps);
+
+		p = vb->vb_octets;
+		end = vb->vb_octets + vb->vb_length;
+
 		/*
 		 *	Loop over all the options data
 		 */
@@ -105,8 +90,7 @@ static ssize_t dhcp_options_xlat(UNUSED TALLOC_CTX *ctx, char **out, size_t outl
 						      p, end - p, NULL);
 			if (len <= 0) {
 				RWDEBUG("DHCP option decoding failed: %s", fr_strerror());
-				fr_pair_list_free(&head);
-				goto error;
+				return XLAT_ACTION_FAIL;
 			}
 			p += len;
 		}
@@ -126,58 +110,58 @@ static ssize_t dhcp_options_xlat(UNUSED TALLOC_CTX *ctx, char **out, size_t outl
 	/* Free any unmoved pairs */
 	fr_pair_list_free(&head);
 
-	snprintf(*out, outlen, "%i", decoded);
+	/* create a value box to hold the decoded count */
+	MEM(vb_decoded = fr_value_box_alloc(ctx, FR_TYPE_UINT16, NULL, false));
+	vb_decoded->vb_uint16 = decoded;
+	fr_cursor_append(out, vb_decoded);
 
-	talloc_free(src);
-
-	return strlen(*out);
+	return XLAT_ACTION_DONE;
 }
 
-static ssize_t dhcp_xlat(UNUSED TALLOC_CTX *ctx, char **out, size_t outlen,
-			 UNUSED void const *mod_inst, UNUSED void const *xlat_inst,
-			 REQUEST *request, char const *fmt)
+static xlat_action_t dhcpv4_encode_xlat(TALLOC_CTX *ctx, fr_cursor_t *out,
+					REQUEST *request, UNUSED void const *xlat_inst, UNUSED void *xlat_thread_inst,
+					fr_value_box_t **in)
 {
-	fr_cursor_t cursor;
-	VALUE_PAIR *vp;
-	uint8_t binbuf[255];
-	ssize_t len;
+	fr_cursor_t	*cursor;
+	bool		tainted = false;
+	fr_value_box_t	*encoded;
+	VALUE_PAIR	*vp;
 
-	while (isspace((int) *fmt)) fmt++;
+	uint8_t		binbuf[2048];
+	uint8_t		*p = binbuf, *end = p + sizeof(binbuf);
+	ssize_t		len = 0;
 
-	if ((xlat_fmt_copy_vp(request, &vp, request, fmt) < 0) || !vp) return 0;
-	fr_cursor_init(&cursor, &vp);
+	if (!*in) return XLAT_ACTION_DONE;
 
-	len = fr_dhcpv4_encode_option(binbuf, sizeof(binbuf), &cursor, NULL);
-	talloc_free(vp);
-	if (len <= 0) {
-		RPEDEBUG("DHCP option encoding failed");
-
-		return -1;
+	if (fr_value_box_list_concat(ctx, *in, in, FR_TYPE_STRING, true) < 0) {
+		RPEDEBUG("Failed concatenating input string for attribute reference");
+		return XLAT_ACTION_FAIL;
 	}
 
-	if ((size_t)((len * 2) + 1) > outlen) {
-		REDEBUG("DHCP option encoding failed: Output buffer exhausted, needed %zd bytes, have %zd bytes",
-			(len * 2) + 1, outlen);
+	if (xlat_fmt_to_cursor(NULL, &cursor, &tainted, request, (*in)->vb_strvalue) < 0) return XLAT_ACTION_FAIL;
 
-		return -1;
+	if (!fr_cursor_head(cursor)) return XLAT_ACTION_DONE;	/* Nothing to encode */
+
+	while ((vp = fr_cursor_current(cursor))) {
+		len = fr_dhcpv4_encode_option(p, end - p, cursor,
+					      &(fr_dhcpv4_ctx_t){ .root = fr_dict_root(dict_dhcpv4) });
+		if (len < 0) {
+			RPEDEBUG("DHCP option encoding failed");
+			talloc_free(cursor);
+			return XLAT_ACTION_FAIL;
+		}
+		p += len;
 	}
+	talloc_free(cursor);
 
-	return fr_bin2hex(*out, binbuf, len);
-}
+	/*
+	 *	Pass the options string back
+	 */
+	MEM(encoded = fr_value_box_alloc_null(ctx));
+	fr_value_box_memcpy(encoded, encoded, NULL, binbuf, (size_t)len, tainted);
+	fr_cursor_append(out, encoded);
 
-
-/*
- *	Instantiate the module.
- */
-static int mod_bootstrap(void *instance, UNUSED CONF_SECTION *conf)
-{
-	rlm_dhcpv4_t *inst = instance;
-
-
-	xlat_register(inst, "dhcp_options", dhcp_options_xlat, NULL, NULL, 0, XLAT_DEFAULT_BUF_LEN, true);
-	xlat_register(inst, "dhcp", dhcp_xlat, NULL, NULL, 0, XLAT_DEFAULT_BUF_LEN, true);
-
-	return 0;
+	return XLAT_ACTION_DONE;
 }
 
 static int dhcp_load(void)
@@ -186,6 +170,9 @@ static int dhcp_load(void)
 		PERROR("Failed initialising protocol library");
 		return -1;
 	}
+
+	xlat_async_register(NULL, "dhcpv4_decode", dhcpv4_decode_xlat);
+	xlat_async_register(NULL, "dhcpv4_encode", dhcpv4_encode_xlat);
 
 	return 0;
 }
@@ -204,13 +191,12 @@ static void dhcp_unload(void)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_dhcpv4;
-rad_module_t rlm_dhcpv4 = {
+extern module_t rlm_dhcpv4;
+module_t rlm_dhcpv4 = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "dhcpv4",
 	.inst_size	= sizeof(rlm_dhcpv4_t),
 
 	.onload		= dhcp_load,
 	.unload		= dhcp_unload,
-	.bootstrap	= mod_bootstrap,
 };

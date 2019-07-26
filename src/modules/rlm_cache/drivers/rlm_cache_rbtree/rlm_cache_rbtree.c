@@ -68,11 +68,11 @@ static int cache_heap_cmp(void const *one, void const *two)
  *
  * Used to free any entries left in the tree on detach.
  *
- * @param ctx unused.
- * @param data to free.
+ * @param[in] data	to free.
+ * @param[in] uctx	unused.
  * @return 2
  */
-static int _cache_entry_free(UNUSED void *ctx, void *data)
+static int _cache_entry_free(void *data, UNUSED void *uctx)
 {
 	talloc_free(data);
 
@@ -98,9 +98,15 @@ static int mod_detach(void *instance)
 
 /** Create a new cache_rbtree instance
  *
- * @copydetails cache_instantiate_t
+ * @param instance	A uint8_t array of inst_size if inst_size > 0, else NULL,
+ *			this should contain the result of parsing the driver's
+ *			CONF_PARSER array that it specified in the interface struct.
+ * @param conf		section holding driver specific #CONF_PAIR (s).
+ * @return
+ *	- 0 on success.
+ *	- -1 on failure.
  */
-static int mod_instantiate(UNUSED rlm_cache_config_t const *config, void *instance, UNUSED CONF_SECTION *conf)
+static int mod_instantiate(void *instance, UNUSED CONF_SECTION *conf)
 {
 	rlm_cache_rbtree_t *driver = talloc_get_type_abort(instance, rlm_cache_rbtree_t);
 
@@ -171,7 +177,7 @@ static cache_status_t cache_entry_find(rlm_cache_entry_t **out,
 	 *	Clear out old entries
 	 */
 	c = fr_heap_peek(driver->heap);
-	if (c && (c->expires < request->packet->timestamp.tv_sec)) {
+	if (c && (c->expires < fr_time_to_sec(request->packet->timestamp))) {
 		fr_heap_extract(driver->heap, c);
 		rbtree_deletebydata(driver->cache, c);
 		talloc_free(c);

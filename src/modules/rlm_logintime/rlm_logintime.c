@@ -19,8 +19,8 @@
  * @file rlm_logintime.c
  * @brief Allow login only during a given timeslot.
  *
- * @copyright 2001,2006  The FreeRADIUS server project
- * @copyright 2004  Kostas Kalevras <kkalev@noc.ntua.gr>
+ * @copyright 2001,2006 The FreeRADIUS server project
+ * @copyright 2004 Kostas Kalevras (kkalev@noc.ntua.gr)
  */
 RCSID("$Id$")
 
@@ -84,7 +84,7 @@ static int timecmp(UNUSED void *instance, REQUEST *req, UNUSED VALUE_PAIR *reque
 	/*
 	 *      If there's a request, use that timestamp.
 	 */
-	if (timestr_match(check->vp_strvalue, req ? req->packet->timestamp.tv_sec : time(NULL)) >= 0) return 0;
+	if (timestr_match(check->vp_strvalue, req ? fr_time_to_sec(req->packet->timestamp) : time(NULL)) >= 0) return 0;
 
 	return -1;
 }
@@ -101,13 +101,15 @@ static int time_of_day(UNUSED void *instance, REQUEST *request,
 	int		hhmmss, when;
 	char const	*p;
 	struct tm	*tm, s_tm;
+	time_t		now;
 
 	if (strspn(check->vp_strvalue, "0123456789: ") != strlen(check->vp_strvalue)) {
 		RDEBUG2("Bad Time-Of-Day value \"%s\"", check->vp_strvalue);
 		return -1;
 	}
 
-	tm = localtime_r(&request->packet->timestamp.tv_sec, &s_tm);
+	now = fr_time_to_sec(request->packet->timestamp);
+	tm = localtime_r(&now, &s_tm);
 	hhmmss = (tm->tm_hour * 3600) + (tm->tm_min * 60) + tm->tm_sec;
 
 	/*
@@ -161,12 +163,12 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(void *instance, UNUSED void *t
 	/*
 	 *      Authentication is OK. Now see if this user may login at this time of the day.
 	 */
-	RDEBUG("Checking Login-Time");
+	RDEBUG2("Checking Login-Time");
 
 	/*
 	 *	Compare the time the request was received with the current Login-Time value
 	 */
-	left = timestr_match(ends->vp_strvalue, request->packet->timestamp.tv_sec);
+	left = timestr_match(ends->vp_strvalue, fr_time_to_sec(request->packet->timestamp));
 	if (left < 0) return RLM_MODULE_USERLOCK; /* outside of the allowed time */
 
 	/*
@@ -193,20 +195,20 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(void *instance, UNUSED void *t
 	 *	There's time left in the users session, inform the NAS by including a Session-vp
 	 *	attribute in the reply, or modifying the existing one.
 	 */
-	RDEBUG("Login within allowed time-slot, %d seconds left in this session", left);
+	RDEBUG2("Login within allowed time-slot, %d seconds left in this session", left);
 
 	switch (pair_update_reply(&vp, attr_session_timeout)) {
 	case 1:
 		/* just update... */
 		if (vp->vp_uint32 > (uint32_t)left) {
 			vp->vp_uint32 = (uint32_t)left;
-			RDEBUG("&reply:Session-Timeout := %pV", &vp->data);
+			RDEBUG2("&reply:Session-Timeout := %pV", &vp->data);
 		}
 		break;
 
 	case 0:	/* no pre-existing */
 		vp->vp_uint32 = (uint32_t)left;
-		RDEBUG("&reply:Session-Timeout := %pV", &vp->data);
+		RDEBUG2("&reply:Session-Timeout := %pV", &vp->data);
 		break;
 
 	case -1: /* malloc failure */
@@ -254,8 +256,8 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_logintime;
-rad_module_t rlm_logintime = {
+extern module_t rlm_logintime;
+module_t rlm_logintime = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "logintime",
 	.inst_size	= sizeof(rlm_logintime_t),

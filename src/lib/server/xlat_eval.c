@@ -20,15 +20,15 @@
  * @file xlat_eval.c
  * @brief String expansion ("translation").  Evaluation of pre-parsed xlat epxansions.
  *
- * @copyright 2000,2006  The FreeRADIUS server project
- * @copyright 2000  Alan DeKok <aland@freeradius.org>
+ * @copyright 2000,2006 The FreeRADIUS server project
+ * @copyright 2000 Alan DeKok (aland@freeradius.org)
  */
 
 RCSID("$Id$")
 
 #include <freeradius-devel/server/base.h>
 #include <freeradius-devel/server/module.h>
-#include <freeradius-devel/server/parser.h>
+#include <freeradius-devel/server/cond.h>
 #include <freeradius-devel/server/rad_assert.h>
 #include <freeradius-devel/server/regex.h>
 #include <freeradius-devel/server/request.h>
@@ -155,7 +155,7 @@ static char *xlat_fmt_aprint(TALLOC_CTX *ctx, xlat_exp_t const *node)
 
 			child_str = xlat_fmt_aprint(pool, child);
 			if (child_str) {
-				n_out = talloc_buffer_append_buffer(out, child_str);
+				n_out = talloc_buffer_append_buffer(ctx, out, child_str);
 				if (!n_out) {
 					talloc_free(out);
 					talloc_free(pool);
@@ -247,8 +247,10 @@ static xlat_action_t xlat_eval_one_letter(TALLOC_CTX *ctx, fr_cursor_t *out, REQ
 
 	char		buffer[64];
 	struct tm	ts;
-	time_t		when = request->packet->timestamp.tv_sec;
+	time_t		now;
 	fr_value_box_t	*value;
+
+	now = fr_time_to_sec(request->packet->timestamp);
 
 	switch (letter) {
 	case '%':
@@ -280,25 +282,15 @@ static xlat_action_t xlat_eval_one_letter(TALLOC_CTX *ctx, fr_cursor_t *out, REQ
 	 */
 
 	case 'c': /* Current epoch time seconds */
-	{
-		struct timeval now;
-
-		gettimeofday(&now, NULL);
-
 		MEM(value = fr_value_box_alloc(ctx, FR_TYPE_UINT64, NULL, false));
-		value->datum.uint64 = (uint64_t)now.tv_sec;
-	}
+		value->datum.uint64 = (uint64_t)fr_time_to_sec(fr_time());
+
 		break;
 
 	case 'C': /* Current epoch time microsecond component */
-	{
-		struct timeval now;
+		MEM(value = fr_value_box_alloc(ctx, FR_TYPE_UINT64, NULL, false));
+		value->datum.uint64 = (uint64_t)fr_time_to_usec(fr_time());
 
-		gettimeofday(&now, NULL);
-
-		MEM(value = fr_value_box_alloc(ctx, FR_TYPE_UINT32, NULL, false));
-		value->datum.uint32 = (uint64_t)now.tv_usec;
-	}
 		break;
 
 	/*
@@ -306,7 +298,7 @@ static xlat_action_t xlat_eval_one_letter(TALLOC_CTX *ctx, fr_cursor_t *out, REQ
 	 */
 
 	case 'd': /* Request day */
-		if (!localtime_r(&when, &ts)) {
+		if (!localtime_r(&now, &ts)) {
 		error:
 			REDEBUG("Failed converting packet timestamp to localtime: %s", fr_syserror(errno));
 			return XLAT_ACTION_FAIL;
@@ -317,7 +309,7 @@ static xlat_action_t xlat_eval_one_letter(TALLOC_CTX *ctx, fr_cursor_t *out, REQ
 		break;
 
 	case 'D': /* Request date */
-		if (!localtime_r(&when, &ts)) goto error;
+		if (!localtime_r(&now, &ts)) goto error;
 
 		strftime(buffer, sizeof(buffer), "%Y%m%d", &ts);
 
@@ -326,21 +318,21 @@ static xlat_action_t xlat_eval_one_letter(TALLOC_CTX *ctx, fr_cursor_t *out, REQ
 		break;
 
 	case 'e': /* Request second */
-		if (!localtime_r(&when, &ts)) goto error;
+		if (!localtime_r(&now, &ts)) goto error;
 
 		MEM(value = fr_value_box_alloc(ctx, FR_TYPE_UINT8, NULL, false));
 		value->datum.uint8 = ts.tm_sec;
 		break;
 
 	case 'G': /* Request minute */
-		if (!localtime_r(&when, &ts)) goto error;
+		if (!localtime_r(&now, &ts)) goto error;
 
 		MEM(value = fr_value_box_alloc(ctx, FR_TYPE_UINT8, NULL, false));
 		value->datum.uint8 = ts.tm_min;
 		break;
 
 	case 'H': /* Request hour */
-		if (!localtime_r(&when, &ts)) goto error;
+		if (!localtime_r(&now, &ts)) goto error;
 
 		MEM(value = fr_value_box_alloc(ctx, FR_TYPE_UINT8, NULL, false));
 		value->datum.uint8 = ts.tm_hour;
@@ -348,11 +340,11 @@ static xlat_action_t xlat_eval_one_letter(TALLOC_CTX *ctx, fr_cursor_t *out, REQ
 
 	case 'l': /* Request timestamp */
 		MEM(value = fr_value_box_alloc(ctx, FR_TYPE_DATE, NULL, false));
-		value->datum.date = when;
+		value->datum.date = now;
 		break;
 
 	case 'm': /* Request month */
-		if (!localtime_r(&when, &ts)) goto error;
+		if (!localtime_r(&now, &ts)) goto error;
 
 		MEM(value = fr_value_box_alloc(ctx, FR_TYPE_UINT8, NULL, false));
 		value->datum.uint8 = ts.tm_mon + 1;
@@ -360,11 +352,11 @@ static xlat_action_t xlat_eval_one_letter(TALLOC_CTX *ctx, fr_cursor_t *out, REQ
 
 	case 'M': /* Request time microsecond component */
 		MEM(value = fr_value_box_alloc(ctx, FR_TYPE_UINT32, NULL, false));
-		value->datum.uint32 = request->packet->timestamp.tv_usec;
+		value->datum.uint32 = fr_time_to_msec(request->packet->timestamp) % 1000;
 		break;
 
 	case 'S': /* Request timestamp in SQL format */
-		if (!localtime_r(&when, &ts)) goto error;
+		if (!localtime_r(&now, &ts)) goto error;
 
 		strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &ts);
 
@@ -376,7 +368,7 @@ static xlat_action_t xlat_eval_one_letter(TALLOC_CTX *ctx, fr_cursor_t *out, REQ
 	{
 		char *p;
 
-		CTIME_R(&when, buffer, sizeof(buffer));
+		CTIME_R(&now, buffer, sizeof(buffer));
 		p = strchr(buffer, '\n');
 		if (p) *p = '\0';
 
@@ -389,7 +381,7 @@ static xlat_action_t xlat_eval_one_letter(TALLOC_CTX *ctx, fr_cursor_t *out, REQ
 	{
 		int len = 0;
 
-		if (!gmtime_r(&when, &ts)) goto error;
+		if (!gmtime_r(&now, &ts)) goto error;
 
 		if (!(len = strftime(buffer, sizeof(buffer) - 1, "%Y-%m-%dT%H:%M:%S", &ts))) {
 			REDEBUG("Failed converting packet timestamp to gmtime: Buffer full");
@@ -397,7 +389,8 @@ static xlat_action_t xlat_eval_one_letter(TALLOC_CTX *ctx, fr_cursor_t *out, REQ
 		}
 		strcat(buffer, ".");
 		len++;
-		snprintf(buffer + len, sizeof(buffer) - len, "%03i", (int) request->packet->timestamp.tv_usec / 1000);
+		snprintf(buffer + len, sizeof(buffer) - len, "%03i",
+			 (int) fr_time_to_msec(request->packet->timestamp) % 1000);
 
 		MEM(value = fr_value_box_alloc_null(ctx));
 		if (fr_value_box_strdup(value, value, NULL, buffer, false) < 0) goto error;
@@ -405,7 +398,7 @@ static xlat_action_t xlat_eval_one_letter(TALLOC_CTX *ctx, fr_cursor_t *out, REQ
 		break;
 
 	case 'Y': /* Request year */
-		if (!localtime_r(&when, &ts)) goto error;
+		if (!localtime_r(&now, &ts)) goto error;
 
 		MEM(value = fr_value_box_alloc(ctx, FR_TYPE_UINT16, NULL, false));
 
@@ -513,11 +506,11 @@ static xlat_action_t xlat_eval_pair_virtual(TALLOC_CTX *ctx, fr_cursor_t *out, R
 	 *	various VP functions.
 	 */
 	} else if (vpt->tmpl_da == attr_packet_authentication_vector) {
-		value = fr_value_box_alloc_null(ctx);
-		fr_value_box_memdup(ctx, value, vpt->tmpl_da, packet->vector, sizeof(packet->vector), true);
+		MEM(value = fr_value_box_alloc_null(ctx));
+		fr_value_box_memcpy(ctx, value, vpt->tmpl_da, packet->vector, sizeof(packet->vector), true);
 	} else if (vpt->tmpl_da == attr_client_ip_address) {
 		if (request->client) {
-			value = fr_value_box_alloc_null(ctx);
+			MEM(value = fr_value_box_alloc_null(ctx));
 			fr_value_box_ipaddr(value, NULL, &request->client->ipaddr, false);	/* Enum might not match type */
 			goto done;
 		}
@@ -526,28 +519,28 @@ static xlat_action_t xlat_eval_pair_virtual(TALLOC_CTX *ctx, fr_cursor_t *out, R
 	src_ip_address:
 		if (packet->src_ipaddr.af != AF_INET) return XLAT_ACTION_DONE;
 
-		value = fr_value_box_alloc_null(ctx);
+		MEM(value = fr_value_box_alloc_null(ctx));
 		fr_value_box_ipaddr(value, vpt->tmpl_da, &packet->src_ipaddr, true);
 	} else if (vpt->tmpl_da == attr_packet_dst_ip_address) {
 		if (packet->dst_ipaddr.af != AF_INET) return XLAT_ACTION_DONE;
 
-		value = fr_value_box_alloc_null(ctx);
+		MEM(value = fr_value_box_alloc_null(ctx));
 		fr_value_box_ipaddr(value, vpt->tmpl_da, &packet->dst_ipaddr, true);
 	} else if (vpt->tmpl_da == attr_packet_src_ipv6_address) {
 		if (packet->src_ipaddr.af != AF_INET6) return XLAT_ACTION_DONE;
 
-		value = fr_value_box_alloc_null(ctx);
+		MEM(value = fr_value_box_alloc_null(ctx));
 		fr_value_box_ipaddr(value, vpt->tmpl_da, &packet->src_ipaddr, true);
 	} else if (vpt->tmpl_da == attr_packet_dst_ipv6_address) {
 		if (packet->dst_ipaddr.af != AF_INET6) return XLAT_ACTION_DONE;
 
-		value = fr_value_box_alloc_null(ctx);
+		MEM(value = fr_value_box_alloc_null(ctx));
 		fr_value_box_ipaddr(value, vpt->tmpl_da, &packet->dst_ipaddr, true);
 	} else if (vpt->tmpl_da == attr_packet_src_port) {
-		value = fr_value_box_alloc(ctx, vpt->tmpl_da->type, NULL, true);
+		MEM(value = fr_value_box_alloc(ctx, vpt->tmpl_da->type, NULL, true));
 		value->datum.uint16 = packet->src_port;
 	} else if (vpt->tmpl_da == attr_packet_dst_port) {
-		value = fr_value_box_alloc(ctx, vpt->tmpl_da->type, NULL, true);
+		MEM(value = fr_value_box_alloc(ctx, vpt->tmpl_da->type, NULL, true));
 		value->datum.uint16 = packet->dst_port;
 	} else {
 		RERROR("Attribute \"%s\" incorrectly marked as virtual", vpt->tmpl_da->name);
@@ -579,7 +572,7 @@ static xlat_action_t xlat_eval_pair_real(TALLOC_CTX *ctx, fr_cursor_t *out, REQU
 
 	fr_cursor_t	cursor;
 
-	rad_assert((vpt->type == TMPL_TYPE_ATTR) || (vpt->type == TMPL_TYPE_LIST));
+	rad_assert(tmpl_is_attr(vpt) || tmpl_is_list(vpt));
 
 	/*
 	 *	See if we're dealing with an attribute in the request
@@ -594,7 +587,7 @@ static xlat_action_t xlat_eval_pair_real(TALLOC_CTX *ctx, fr_cursor_t *out, REQU
 	 *	virtual.
 	 */
 	if (!vp) {
-		if (vpt->tmpl_da->flags.virtual) return xlat_eval_pair_virtual(ctx, out, request, vpt);
+		if (tmpl_is_attr(vpt) && vpt->tmpl_da->flags.virtual) return xlat_eval_pair_virtual(ctx, out, request, vpt);
 
 		/*
 		 *	Zero count.
@@ -678,6 +671,21 @@ static xlat_action_t xlat_eval_pair_real(TALLOC_CTX *ctx, fr_cursor_t *out, REQU
 #ifdef DEBUG_XLAT
 static const char xlat_spaces[] = "                                                                                                                                                                                                                                                                ";
 #endif
+
+/** Signal an xlat function
+ *
+ * @param[in] signal		function to call.
+ * @param[in] exp		Xlat node that previously yielded.
+ * @param[in] request		The current request.
+ * @param[in] rctx		Opaque (to us), resume ctx provided by the xlat function
+ *				when it yielded.
+ * @param[in] action		What the request should do (the type of signal).
+ */
+void xlat_signal(xlat_func_signal_t signal, xlat_exp_t const *exp,
+		 REQUEST *request, void *rctx, fr_state_signal_t action)
+{
+	signal(request, exp->inst, xlat_thread_instance_find(exp)->data, rctx, action);
+}
 
 /** Call an xlat's resumption method
  *
@@ -776,7 +784,7 @@ xlat_action_t xlat_frame_eval_repeat(TALLOC_CTX *ctx, fr_cursor_t *out,
 				str[0] = '\0';	/* Be sure the string is \0 terminated */
 			}
 
-			XLAT_DEBUG("** [%i] %s(func) - %%{%s:%pV}", unlang_stack_depth(request), __FUNCTION__,
+			XLAT_DEBUG("** [%i] %s(func) - %%{%s:%pV}", unlang_interpret_stack_depth(request), __FUNCTION__,
 				   node->fmt,
 				   fr_box_strvalue_len(result_str, talloc_array_length(result_str) - 1));
 
@@ -797,7 +805,9 @@ xlat_action_t xlat_frame_eval_repeat(TALLOC_CTX *ctx, fr_cursor_t *out,
 			/*
 			 *	Shrink the buffer
 			 */
-			if ((node->xlat->buf_len > 0) && (slen > 0)) MEM(str = talloc_realloc_bstr(str, (size_t)slen));
+			if ((node->xlat->buf_len > 0) && (slen > 0)) {
+				MEM(str = talloc_bstr_realloc(ctx, str, (size_t)slen));
+			}
 
 			/*
 			 *	Fixup talloc lineage and assign the
@@ -819,7 +829,7 @@ xlat_action_t xlat_frame_eval_repeat(TALLOC_CTX *ctx, fr_cursor_t *out,
 
 			thread_inst = xlat_thread_instance_find(node);
 
-			XLAT_DEBUG("** [%i] %s(func-async) - %%{%s:%pM}", unlang_stack_depth(request), __FUNCTION__,
+			XLAT_DEBUG("** [%i] %s(func-async) - %%{%s:%pM}", unlang_interpret_stack_depth(request), __FUNCTION__,
 				   node->fmt, result);
 
 			/*
@@ -873,7 +883,7 @@ xlat_action_t xlat_frame_eval_repeat(TALLOC_CTX *ctx, fr_cursor_t *out,
 			 */
 			if (*alternate) {
 				XLAT_DEBUG("** [%i] %s(alt-second) - string empty, null expansion, continuing...",
-					   unlang_stack_depth(request), __FUNCTION__);
+					   unlang_interpret_stack_depth(request), __FUNCTION__);
 				*alternate = false;	/* Reset */
 
 				xlat_debug_log_expansion(request, *in, NULL);
@@ -882,7 +892,7 @@ xlat_action_t xlat_frame_eval_repeat(TALLOC_CTX *ctx, fr_cursor_t *out,
 			}
 
 			XLAT_DEBUG("** [%i] %s(alt-first) - string empty, evaluating alternate: %s",
-				   unlang_stack_depth(request), __FUNCTION__, (*in)->alternate->fmt);
+				   unlang_interpret_stack_depth(request), __FUNCTION__, (*in)->alternate->fmt);
 			*child = (*in)->alternate;
 			*alternate = true;
 
@@ -950,7 +960,7 @@ xlat_action_t xlat_frame_eval(TALLOC_CTX *ctx, fr_cursor_t *out, xlat_exp_t cons
 
 	if (!node) return XLAT_ACTION_DONE;
 
-	XLAT_DEBUG("** [%i] %s >> entered", unlang_stack_depth(request), __FUNCTION__);
+	XLAT_DEBUG("** [%i] %s >> entered", unlang_interpret_stack_depth(request), __FUNCTION__);
 
 	for (node = *in; node; node = (*in)->next) {
 	     	*in = node;		/* Update node in our caller */
@@ -958,7 +968,7 @@ xlat_action_t xlat_frame_eval(TALLOC_CTX *ctx, fr_cursor_t *out, xlat_exp_t cons
 
 		switch (node->type) {
 		case XLAT_LITERAL:
-			XLAT_DEBUG("** [%i] %s(literal) - %s", unlang_stack_depth(request), __FUNCTION__, node->fmt);
+			XLAT_DEBUG("** [%i] %s(literal) - %s", unlang_interpret_stack_depth(request), __FUNCTION__, node->fmt);
 
 			/*
 			 *	We unfortunately need to dup the buffer
@@ -970,7 +980,7 @@ xlat_action_t xlat_frame_eval(TALLOC_CTX *ctx, fr_cursor_t *out, xlat_exp_t cons
 			continue;
 
 		case XLAT_ONE_LETTER:
-			XLAT_DEBUG("** [%i] %s(one-letter) - %%%s", unlang_stack_depth(request), __FUNCTION__,
+			XLAT_DEBUG("** [%i] %s(one-letter) - %%%s", unlang_interpret_stack_depth(request), __FUNCTION__,
 				   node->fmt);
 
 			xlat_debug_log_expansion(request, node, NULL);
@@ -984,7 +994,7 @@ xlat_action_t xlat_frame_eval(TALLOC_CTX *ctx, fr_cursor_t *out, xlat_exp_t cons
 			continue;
 
 		case XLAT_ATTRIBUTE:
-			XLAT_DEBUG("** [%i] %s(attribute) - %%{%s}", unlang_stack_depth(request), __FUNCTION__,
+			XLAT_DEBUG("** [%i] %s(attribute) - %%{%s}", unlang_interpret_stack_depth(request), __FUNCTION__,
 				   node->fmt);
 
 			xlat_debug_log_expansion(request, node, NULL);
@@ -997,7 +1007,7 @@ xlat_action_t xlat_frame_eval(TALLOC_CTX *ctx, fr_cursor_t *out, xlat_exp_t cons
 			char	*str = NULL;
 			ssize_t	slen;
 
-			XLAT_DEBUG("** [%i] %s(virtual) - %%{%s}", unlang_stack_depth(request), __FUNCTION__,
+			XLAT_DEBUG("** [%i] %s(virtual) - %%{%s}", unlang_interpret_stack_depth(request), __FUNCTION__,
 				   node->fmt);
 
 			xlat_debug_log_expansion(request, node, NULL);
@@ -1019,7 +1029,7 @@ xlat_action_t xlat_frame_eval(TALLOC_CTX *ctx, fr_cursor_t *out, xlat_exp_t cons
 		{
 			fr_value_box_t *result = NULL;
 
-			XLAT_DEBUG("** [%i] %s(func) - %%{%s:...}", unlang_stack_depth(request), __FUNCTION__,
+			XLAT_DEBUG("** [%i] %s(func) - %%{%s:...}", unlang_interpret_stack_depth(request), __FUNCTION__,
 				   node->fmt);
 
 			/*
@@ -1046,7 +1056,7 @@ xlat_action_t xlat_frame_eval(TALLOC_CTX *ctx, fr_cursor_t *out, xlat_exp_t cons
 		{
 			char *str = NULL;
 
-			XLAT_DEBUG("** [%i] %s(regex) - %%{%s}", unlang_stack_depth(request), __FUNCTION__,
+			XLAT_DEBUG("** [%i] %s(regex) - %%{%s}", unlang_interpret_stack_depth(request), __FUNCTION__,
 				   node->fmt);
 			if (regex_request_to_sub(ctx, &str, request, node->regex_index) < 0) continue;
 
@@ -1063,7 +1073,7 @@ xlat_action_t xlat_frame_eval(TALLOC_CTX *ctx, fr_cursor_t *out, xlat_exp_t cons
 #endif
 
 		case XLAT_ALTERNATE:
-			XLAT_DEBUG("** [%i] %s(alternate) - %%{%%{%s}:-%%{%s}}", unlang_stack_depth(request),
+			XLAT_DEBUG("** [%i] %s(alternate) - %%{%%{%s}:-%%{%s}}", unlang_interpret_stack_depth(request),
 				   __FUNCTION__, node->child->fmt, node->alternate->fmt);
 			rad_assert(node->child != NULL);
 			rad_assert(node->alternate != NULL);
@@ -1075,7 +1085,7 @@ xlat_action_t xlat_frame_eval(TALLOC_CTX *ctx, fr_cursor_t *out, xlat_exp_t cons
 	}
 
 finish:
-	XLAT_DEBUG("** [%i] %s << %s", unlang_stack_depth(request),
+	XLAT_DEBUG("** [%i] %s << %s", unlang_interpret_stack_depth(request),
 		   __FUNCTION__, fr_int2str(xlat_action_table, xa, "<INVALID>"));
 
 	return xa;
@@ -1198,7 +1208,7 @@ static char *xlat_aprint(TALLOC_CTX *ctx, REQUEST *request, xlat_exp_t const * c
 			 */
 			unlang_xlat_push(pool, &result, request, node, true);
 
-			switch (unlang_run(request)) {
+			switch (unlang_interpret_run(request)) {
 			default:
 				break;
 
@@ -1538,6 +1548,7 @@ static ssize_t _xlat_eval(TALLOC_CTX *ctx, char **out, size_t outlen, REQUEST *r
 	}
 
 	if (len < 0) {
+		REMARKER(fmt, -(len), "%s", fr_strerror());
 		if (*out) **out = '\0';
 		REXDENT();
 		return -1;
@@ -1644,7 +1655,7 @@ int xlat_eval_pair(REQUEST *request, VALUE_PAIR *vp)
  *	- 0 on success (walker always returned 0).
  *	- <0 if walker returned <0.
  */
-int xlat_eval_walk(xlat_exp_t *exp, xlat_walker_t walker, xlat_state_t type, void *uctx)
+int xlat_eval_walk(xlat_exp_t *exp, xlat_walker_t walker, xlat_type_t type, void *uctx)
 {
 	xlat_exp_t	*node;
 	int		ret;

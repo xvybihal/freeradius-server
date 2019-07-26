@@ -1,4 +1,4 @@
-# -*- text -*-
+#  -*- text -*-
 ######################################################################
 #
 #	This virtual server gives an example of reading the detail
@@ -12,21 +12,26 @@ server detail {
 	#  In v4, all "server" sections MUST start with a "namespace"
 	#  parameter.  This tells the server which protocol is being used.
 	#
-	#  All of the subsequent "listen" sections in this server will
-	#  only accept packets for that protocol.
-	#
 	namespace = detail
+
+	#
+	#  This virtual server will read detail files from the
+	#  following directory.
+	#
+	directory = ${radacctdir}/detail
 
 	listen {
 		#
-		#  The packet types are NOT in the detail file,
-		#  so they need to be listed here.
+		#  This has to be listed first, sorry.
 		#
-		#  Supported types are:
+		#  The value given here must match the `namespace` of
+		#  the virtual server which originally created the
+		#  detail files.
 		#
-		#  Accounting-Request
-		#  CoA-Request
-		#  Disconnect-Request
+		dictionary = radius
+
+		#
+		#  Types of packets we are reading.
 		#
 		type = Accounting-Request
 
@@ -101,14 +106,21 @@ server detail {
 			#
 			#  The wildcard to use for finding detail files
 			#
-			filename = "${confdir}/detail-*"
+			filename = "${...directory}/detail-*"
 
-		#
+			#
 			#  If there are no detail files in the directory,
 			#  the listener will periodically wake up to check
 			#  for new entries.
 			#
-			#  Allowed values: 1 to 3600
+			#  If this is set to `0`. then the server will
+			#  rely on file system notifications to
+			#  discover when a detail file has been added.
+			#  Setting it to `0` only works on Linux.  On
+			#  other operating systems, it MUST be set to
+			#  a non-zero value.
+			#
+			#  Allowed values: 0 to 3600
 			poll_interval = 5
 		}
 
@@ -121,10 +133,11 @@ server detail {
 		#
 		work {
 			#
-			#  The name of the current working file.
-			#  If ommitted, it is the directory from
-			#  the 'filename' above, with "/detail.work"
-			#  appended to it.
+			#  The name of the current working file.  If
+			#  omitted, it is the directory from the
+			#  `file` subsection, `filename` argument
+			#  given above, with "/detail.work" appended
+			#  to it.
 			#
 			#  As of v4, you can have multiple detail file
 			#  readers in the same directory.  The only
@@ -133,15 +146,15 @@ server detail {
 			#  The best way to enforce that is to give the
 			#  the files different prefixes.
 			#
-			filename = "${confdir}/detail.work"
+			filename = "${...directory}/detail.work"
 
 			#
 			#  Track progress through the detail file.  When the detail
 			#  file is large, and the server is re-started, it will
 			#  read from the START of the file.
 			#
-			#  Setting "track = yes" means it will skip packets which
-			#  have already been processed.  The default is "no".
+			#  Setting `track = yes` means it will skip packets which
+			#  have already been processed.  The default is `no`.
 			#
 			track = yes
 
@@ -222,6 +235,9 @@ server detail {
 #  'recv' section.  Note that there is no second name to the section.
 #
 recv {
+	update request {
+		&Acct-Delay-Time := "%{expr:%{%{Acct-Delay-Time}:-0} + %c - %{%{integer:Event-Timestamp}:-%{integer:Packet-Original-Timestamp}}}"
+	}
 
 	#
 	#  We handled the packet successfully.  Run the "send ok" section.

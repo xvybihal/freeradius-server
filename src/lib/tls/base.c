@@ -20,8 +20,8 @@
  * @file tls/base.c
  * @brief Initialise OpenSSL
  *
- * @copyright 2001 hereUare Communications, Inc. <raghud@hereuare.com>
- * @copyright 2003  Alan DeKok <aland@freeradius.org>
+ * @copyright 2001 hereUare Communications, Inc. (raghud@hereuare.com)
+ * @copyright 2003 Alan DeKok (aland@freeradius.org)
  * @copyright 2006-2016 The FreeRADIUS server project
  */
 RCSID("$Id$")
@@ -424,13 +424,20 @@ static void *openssl_realloc(void *old, size_t len)
  * @param to_free memory to free.
  */
 #if OPENSSL_VERSION_NUMBER >= 0x10100000L
-static void openssl_free(void *to_free, UNUSED char const *file, UNUSED int line)
+static void openssl_free(void *to_free, char const *file, int line)
+{
+	char buffer[256];
+
+	snprintf(buffer, sizeof(buffer), "%s:%i", file, line);
+
+	(void)_talloc_free(to_free, buffer);
+}
 #else
 static void openssl_free(void *to_free)
-#endif
 {
 	(void)talloc_free(to_free);
 }
+#endif
 
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 /** Free any memory alloced by libssl

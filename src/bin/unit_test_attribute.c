@@ -17,7 +17,7 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2010  Alan DeKok <aland@freeradius.org>
+ * @copyright 2010 Alan DeKok (aland@freeradius.org)
  */
 
 RCSID("$Id$")
@@ -29,14 +29,14 @@ typedef struct rad_request REQUEST;
 #include <freeradius-devel/server/tmpl.h>
 #include <freeradius-devel/server/map.h>
 
-#include <freeradius-devel/server/parser.h>
+#include <freeradius-devel/server/cond.h>
 #include <freeradius-devel/server/xlat.h>
 #include <freeradius-devel/util/conf.h>
 #include <freeradius-devel/autoconf.h>
 #include <freeradius-devel/dhcpv4/dhcpv4.h>
 #include <freeradius-devel/server/cf_parse.h>
 #include <freeradius-devel/server/cf_util.h>
-#include <freeradius-devel/server/dl.h>
+#include <freeradius-devel/server/dl_module.h>
 #include <freeradius-devel/server/dependency.h>
 #include <freeradius-devel/server/command.h>
 #include <freeradius-devel/io/test_point.h>
@@ -56,6 +56,12 @@ typedef struct rad_request REQUEST;
 #include <freeradius-devel/server/log.h>
 #include <sys/wait.h>
 
+#define EXIT_WITH_FAILURE \
+do { \
+	ret = EXIT_FAILURE; \
+	goto cleanup; \
+} while (0)
+
 static ssize_t xlat_test(UNUSED TALLOC_CTX *ctx, UNUSED char **out, UNUSED size_t outlen,
 			 UNUSED void const *mod_inst, UNUSED void const *xlat_inst,
 			 UNUSED REQUEST *request, UNUSED char const *fmt)
@@ -64,7 +70,8 @@ static ssize_t xlat_test(UNUSED TALLOC_CTX *ctx, UNUSED char **out, UNUSED size_
 }
 
 static char proto_name_prev[128];
-static void *dl_handle;
+static dl_t		*dl;
+static dl_loader_t	*dl_loader;
 
 /** Concatenate error stack
  */
@@ -164,7 +171,7 @@ static int encode_data_tlv(char *buffer, char **endptr,
 	*p = '\0';
 
 	p = buffer + 1;
-	while (isspace((int) *p)) p++;
+	fr_skip_spaces(p);
 
 	length = encode_tlv(p, output, outlen);
 	if (length == 0) return 0;
@@ -178,7 +185,7 @@ static int encode_hex(char *p, uint8_t *output, size_t outlen)
 	while (*p) {
 		char *c1, *c2;
 
-		while (isspace((int) *p)) p++;
+		fr_skip_spaces(p);
 
 		if (!*p) break;
 
@@ -215,7 +222,7 @@ static int encode_data(char *p, uint8_t *output, size_t outlen)
 		return 0;
 	}
 
-	while (isspace((int) *p)) p++;
+	fr_skip_spaces(p);
 
 	if (*p == '{') {
 		int sublen;
@@ -224,7 +231,7 @@ static int encode_data(char *p, uint8_t *output, size_t outlen)
 		length = 0;
 
 		do {
-			while (isspace((int) *p)) p++;
+			fr_skip_spaces(p);
 			if (!*p) {
 				if (length == 0) {
 					fprintf(stderr, "No data\n");
@@ -553,40 +560,44 @@ static void parse_condition(fr_dict_t const *dict, char const *input, char *outp
 static void parse_xlat(fr_dict_t const *dict, char const *input, char *output, size_t outlen)
 {
 	ssize_t		dec_len;
-	char const	*error = NULL;
 	char		*fmt;
 	xlat_exp_t	*head;
+	size_t		input_len = strlen(input), len;
+	char		buff[1024];
 
-	fmt = talloc_typed_strdup(NULL, input);
-	dec_len = xlat_tokenize(fmt, &head, &error, fmt, &(vp_tmpl_rules_t) { .dict_def = dict });
+	/*
+	 *	Process special chars, octal escape sequences and hex sequences
+	 */
+	MEM(fmt = talloc_array(NULL, char, input_len + 1));
+	len = fr_value_str_unescape((uint8_t *)fmt, input, input_len, '\"');
+	fmt[len] = '\0';
 
+	dec_len = xlat_tokenize(fmt, &head, fmt, &(vp_tmpl_rules_t) { .dict_def = dict });
 	if (dec_len <= 0) {
-		snprintf(output, outlen, "ERROR offset %d '%s'", (int) -dec_len, error);
+		snprintf(output, outlen, "ERROR offset %d '%s'", (int) -dec_len, fr_strerror());
 		talloc_free(fmt);
 		return;
 	}
 
-	if (input[dec_len] != '\0') {
+	if (fmt[dec_len] != '\0') {
 		snprintf(output, outlen, "ERROR offset %d 'Too much text'", (int) dec_len);
 		talloc_free(fmt);
 		return;
 	}
 
-	xlat_snprint(output, outlen, head);
+	len = xlat_snprint(buff, sizeof(buff), head);
+	fr_snprint(output, outlen, buff, len, '"');
 	talloc_free(fmt);
 }
 
 static void unload_proto_library(void)
 {
-	if (dl_handle) {
-		dlclose(dl_handle);
-		dl_handle = NULL;
-	}
+	TALLOC_FREE(dl);
 }
 
 static ssize_t load_proto_library(char const *proto_name)
 {
-	char dl_name[128];
+	char	dl_name[128];
 
 	if (strcmp(proto_name_prev, proto_name) != 0) {
 		/*
@@ -595,13 +606,10 @@ static ssize_t load_proto_library(char const *proto_name)
 		unload_proto_library();
 
 		snprintf(dl_name, sizeof(dl_name), "libfreeradius-%s", proto_name);
-		if (dl_handle) {
-			dlclose(dl_handle);
-			dl_handle = NULL;
-		}
+		if (dl) TALLOC_FREE(dl);
 
-		dl_handle = dl_by_name(dl_name);
-		if (!dl_handle) {
+		dl = dl_by_name(dl_loader, dl_name, NULL, false);
+		if (!dl) {
 			fprintf(stderr, "Failed to link to library \"%s\": %s\n", dl_name, fr_strerror());
 			unload_proto_library();
 			return 0;
@@ -620,7 +628,7 @@ static ssize_t load_test_point_by_command(void **symbol, char *command, size_t o
 	char const	*symbol_name;
 	void		*dl_symbol;
 
-	if (!dl_handle) {
+	if (!dl) {
 		fprintf(stderr, "No protocol library loaded. Specify library with \"load <proto name>\"\n");
 		return 0;
 	}
@@ -638,7 +646,7 @@ static ssize_t load_test_point_by_command(void **symbol, char *command, size_t o
 		symbol_name = buffer;
 	}
 
-	dl_symbol = dlsym(dl_handle, symbol_name);
+	dl_symbol = dlsym(dl->handle, symbol_name);
 	if (!dl_symbol) {
 		fprintf(stderr, "Test point (symbol \"%s\") not exported by library\n", symbol_name);
 		unload_proto_library();
@@ -713,14 +721,14 @@ static void command_add(TALLOC_CTX *ctx, char *input, char *output, size_t outle
 	 *	Set the name and try to find the syntax.
 	 */
 	name = p;
-	while (*p && !isspace((int) *p)) p++;
+	fr_skip_spaces(p);
 
 	if (isspace(*p)) {
 		*p = '\0';
 		p++;
 	}
 
-	while (*p && isspace((int) *p)) p++;
+	fr_skip_spaces(p);
 
 	if (*p) {
 		table->syntax = talloc_strdup(table, p);
@@ -799,20 +807,22 @@ static void command_parse(TALLOC_CTX *ctx, char *input, char *output, size_t out
 	snprintf(output, outlen, "Unknown command '%s'", input);
 }
 
-static int process_file(CONF_SECTION *features, fr_dict_t *dict, const char *root_dir, char const *filename)
-{
-	int		lineno;
-	size_t		i, outlen;
-	ssize_t		len, data_len;
-	FILE		*fp;
-	char		input[8192], buffer[8192];
-	char		output[8192];
-	char		directory[8192];
-	uint8_t		*attr, data[2048];
-	TALLOC_CTX	*tp_ctx = talloc_init("tp_ctx");
-	fr_dict_t	*proto_dict = NULL;
 
-	bool		encode_error = false;		//!< Whether the last encode errored.
+static int process_file(TALLOC_CTX *ctx, CONF_SECTION *features,
+			fr_dict_t *dict, const char *root_dir, char const *filename)
+{
+	int			lineno;
+	size_t			i, outlen;
+	ssize_t			len, data_len;
+	FILE			*fp;
+	char			input[8192], buffer[8192];
+	char			output[8192];
+	char			directory[8192];
+	uint8_t			*attr, data[2048];
+	TALLOC_CTX		*tp_ctx = talloc_named_const(ctx, 0, "tp_ctx");
+	fr_dict_t		*proto_dict = NULL;
+
+	bool			encode_error = false;		//!< Whether the last encode errored.
 
 #define CLEAR_TEST_POINT \
 do { \
@@ -850,6 +860,7 @@ do { \
 		char			*p = strchr(buffer, '\n'), *q;
 		char			test_type[128];
 		VALUE_PAIR		*vp, *head = NULL;
+		fr_type_t		type;
 
 		lineno++;
 
@@ -871,7 +882,7 @@ do { \
 			  ((p > buffer) && (p[-1] != '[')))) *p = '\0';
 
 		p = buffer;
-		while (isspace((int) *p)) p++;
+		fr_skip_spaces(p);
 		if (!*p) continue;
 
 		DEBUG2("%s[%d]: %s\n", filename, lineno, buffer);
@@ -885,6 +896,7 @@ do { \
 			talloc_free(tp_ctx);	/* Free testpoint first then the library */
 			unload_proto_library();	/* Cleanup */
 			fr_dict_free(&proto_dict);
+			if (fp != stdin) fclose(fp);
 
 			return -1;
 		}
@@ -894,6 +906,8 @@ do { \
 		strlcpy(test_type, p, (q - p) + 1);
 
 		if (strcmp(test_type, "data") == 0) {
+			char *spaces;
+
 			encode_error = false;	/* Clear the encode error if we're doing a comparison */
 
 			/*
@@ -906,8 +920,25 @@ do { \
 			}
 
 			if (strcmp(p + 5, output) != 0) {
+				char *a, *b;
+
 				fprintf(stderr, "Mismatch at line %d of %s\n\tgot      : %s\n\texpected : %s\n",
 					lineno, directory, output, p + 5);
+
+				a = p + 5;
+				b = output;
+
+				while (*a == *b) {
+					a++;
+					b++;
+				}
+
+				spaces = talloc_array(NULL, char, (b - output) + 1);
+				memset(spaces, ' ', (b - output));
+				spaces[(b - output)] = '\0';
+				fprintf(stderr, "\t           %s^ differs here\n", spaces);
+				talloc_free(spaces);
+
 				goto error;
 			}
 			fr_strerror();	/* Clear the error buffer */
@@ -936,10 +967,12 @@ do { \
 		}
 
 		if (strcmp(test_type, "load-dictionary") == 0) {
+			char *name, *dir, *tmp = NULL;
+
 			p += 15;
 
 			if (*p++ != ' ') {
-				fprintf(stderr, "Load-dictionary syntax is \"load-dictionary <proto_name>\"");
+				fprintf(stderr, "Load-dictionary syntax is \"load-dictionary <proto_name> [<proto_dir>]\"");
 				goto error;
 			}
 
@@ -948,10 +981,22 @@ do { \
 			 */
 			if (proto_dict) fr_dict_free(&proto_dict);
 
-			if (fr_dict_protocol_afrom_file(&proto_dict, p) < 0) {
+			q = strchr(p, ' ');
+			if (q) {
+				name = tmp = talloc_bstrndup(NULL, p, q - p);
+				q++;
+				dir = q;
+			} else {
+				name = p;
+				dir = NULL;
+			}
+
+			if (fr_dict_protocol_afrom_file(&proto_dict, name, dir) < 0) {
 				fr_perror("unit_test_attribute");
+				talloc_free(tmp);
 				goto error;
 			}
+			talloc_free(tmp);
 
 			/*
 			 *	Dump the dictionary if we're in super debug mode
@@ -998,6 +1043,8 @@ do { \
 			if (outlen >= (sizeof(output) / 2)) {
 				outlen = (sizeof(output) / 2) - 1;
 			}
+
+			if (outlen >= sizeof(data)) outlen = sizeof(data);
 
 			data_len = outlen;
 			for (i = 0; i < outlen; i++) {
@@ -1116,15 +1163,15 @@ do { \
 
 		if (strcmp(test_type, "$INCLUDE") == 0) {
 			p += 9;
-			while (isspace((int) *p)) p++;
+			fr_skip_spaces(p);
 
 			q = strrchr(directory, '/');
 			if (q) {
 				*q = '\0';
-				process_file(features, dict, directory, p);
+				process_file(ctx, features, dict, directory, p);
 				*q = '/';
 			} else {
-				process_file(features, dict, NULL, p);
+				process_file(ctx, features, dict, NULL, p);
 			}
 			continue;
 		}
@@ -1314,7 +1361,57 @@ do { \
 			continue;
 		}
 
-		fprintf(stderr, "Unknown input at line %d of %s: %s\n", lineno, directory, p);
+		/*
+		 *	Parse data types
+		 */
+		type = fr_str2int(fr_value_box_type_table, test_type, FR_TYPE_INVALID);
+		if (type != FR_TYPE_INVALID) {
+			fr_value_box_t *box = talloc_zero(NULL, fr_value_box_t);
+			fr_value_box_t *box2;
+
+			while (!isspace((int) *p)) p++;
+			while (isspace((int) *p)) p++;
+
+			if (fr_value_box_from_str(box, box, &type, NULL, p, -1, '"', false) < 0) {
+				snprintf(output, sizeof(output), "ERROR parsing value: %s",
+					 fr_strerror());
+				talloc_free(box);
+				continue;
+			}
+
+			fr_value_box_snprint(output, sizeof(output), box, '"');
+
+			/*
+			 *	Behind the scenes, parse the output
+			 *	string.  We should get the same value
+			 *	box as last time.
+			 */
+			box2 = talloc_zero(NULL, fr_value_box_t);
+			if (fr_value_box_from_str(box2, box2, &type, NULL, output, -1, '"', false) < 0) {
+				snprintf(output, sizeof(output), "ERROR parsing output value: %s",
+					 fr_strerror());
+				talloc_free(box2);
+				talloc_free(box);
+				continue;
+			}
+
+			/*
+			 *	They MUST be identical
+			 */
+			if (fr_value_box_cmp(box, box2) != 0) {
+				snprintf(output, sizeof(output), "ERROR failed in parse / print / parse.  Results are not identical!");
+				talloc_free(box2);
+				talloc_free(box);
+				continue;
+			}
+
+			talloc_free(box2);
+			talloc_free(box);
+			continue;
+		}
+
+		*p = ' ';
+		fprintf(stderr, "Unknown input at line %d of %s: %s\n", lineno, directory, test_type);
 
 		goto error;
 
@@ -1331,32 +1428,34 @@ do { \
 	return 0;
 }
 
-static void usage(void)
+static void usage(char *argv[])
 {
-	fprintf(stderr, "usage: unit_test_attribute [OPTS] filename\n");
-	fprintf(stderr, "  -d <raddb>             Set user dictionary directory (defaults to " RADDBDIR ").\n");
-	fprintf(stderr, "  -D <dictdir>           Set main dictionary directory (defaults to " DICTDIR ").\n");
-	fprintf(stderr, "  -x                     Debugging mode.\n");
-	fprintf(stderr, "  -f                     Print features.\n");
-	fprintf(stderr, "  -M                     Show talloc memory report.\n");
+	fprintf(stderr, "usage: %s [OPTS] filename\n", argv[0]);
+	fprintf(stderr, "  -d <raddb>         Set user dictionary directory (defaults to " RADDBDIR ").\n");
+	fprintf(stderr, "  -D <dictdir>       Set main dictionary directory (defaults to " DICTDIR ").\n");
+	fprintf(stderr, "  -x                 Debugging mode.\n");
+	fprintf(stderr, "  -f                 Print features.\n");
+	fprintf(stderr, "  -M                 Show talloc memory report.\n");
+	fprintf(stderr, "  -r <receipt_file>  Create the <receipt_file> as a 'success' exit.\n");
 }
 
 int main(int argc, char *argv[])
 {
-	int		c;
-	char const	*raddb_dir = RADDBDIR;
-	char const	*dict_dir = DICTDIR;
-	int		*inst = &c;
-	CONF_SECTION	*cs, *features;
-	fr_dict_t	*dict = NULL;
-	int		ret = EXIT_SUCCESS;
-
-	TALLOC_CTX	*autofree = talloc_autofree_context();
+	int			c;
+	char const		*raddb_dir = RADDBDIR;
+	char const		*dict_dir = DICTDIR;
+	char const		*receipt_file = NULL;
+	int			*inst = &c;
+	CONF_SECTION		*cs, *features;
+	fr_dict_t		*dict = NULL;
+	int			ret = EXIT_SUCCESS;
+	TALLOC_CTX		*autofree = talloc_autofree_context();
+	dl_module_loader_t	*dl_modules = NULL;
 
 #ifndef NDEBUG
 	if (fr_fault_setup(autofree, getenv("PANIC_ACTION"), argv[0]) < 0) {
 		fr_perror("unit_test_attribute");
-		goto done;
+		goto cleanup;
 	}
 #endif
 	/*
@@ -1367,7 +1466,7 @@ int main(int argc, char *argv[])
 	MEM(features = cf_section_alloc(cs, cs, "feature", NULL));
 	dependency_features_init(features);	/* Add build time features to the config section */
 
-	while ((c = getopt(argc, argv, "d:D:fxMh")) != -1) switch (c) {
+	while ((c = getopt(argc, argv, "d:D:fxMhr:")) != -1) switch (c) {
 		case 'd':
 			raddb_dir = optarg;
 			break;
@@ -1385,13 +1484,12 @@ int main(int argc, char *argv[])
 			     cp = cf_pair_find_next(features, cp, CF_IDENT_ANY)) {
 				fprintf(stdout, "%s %s\n", cf_pair_attr(cp), cf_pair_value(cp));
 			}
-			goto done;
+			goto cleanup;
 		}
 
 		case 'x':
 			fr_debug_lvl++;
 			rad_debug_lvl = fr_debug_lvl;
-			fr_log_fp = stdout;
 			default_log.dst = L_DST_STDOUT;
 			default_log.fd = STDOUT_FILENO;
 			break;
@@ -1400,56 +1498,72 @@ int main(int argc, char *argv[])
 			talloc_enable_leak_report();
 			break;
 
+		case 'r':
+			receipt_file = optarg;
+			break;
+
 		case 'h':
 		default:
-			usage();
-			ret = EXIT_FAILURE;
-			goto done;
+			usage(argv);
+			ret = EXIT_SUCCESS;
+			goto cleanup;
 	}
 	argc -= (optind - 1);
 	argv += (optind - 1);
+
+	if (receipt_file && (fr_file_unlink(receipt_file) < 0)) {
+		fr_perror("unit_test_attribute");
+		EXIT_WITH_FAILURE;
+	}
 
 	/*
 	 *	Mismatch between the binary and the libraries it depends on
 	 */
 	if (fr_check_lib_magic(RADIUSD_MAGIC_NUMBER) < 0) {
 		fr_perror("unit_test_attribute");
-		ret = EXIT_FAILURE;
-		goto done;
+		EXIT_WITH_FAILURE;
+	}
+
+	dl_modules = dl_module_loader_init(NULL);
+	if (!dl_modules) {
+		fr_perror("unit_test_attribute");
+		EXIT_WITH_FAILURE;
+	}
+
+	dl_loader = dl_loader_init(autofree, NULL, NULL, false, false);
+	if (!dl_loader) {
+		fr_perror("unit_test_attribute");
+		EXIT_WITH_FAILURE;
 	}
 
 	if (fr_dict_global_init(autofree, dict_dir) < 0) {
 		fr_perror("unit_test_attribute");
-		ret = EXIT_FAILURE;
-		goto done;
+		EXIT_WITH_FAILURE;
 	}
 
 	if (fr_dict_internal_afrom_file(&dict, FR_DICTIONARY_INTERNAL_DIR) < 0) {
 		fr_perror("unit_test_attribute");
-		ret = EXIT_FAILURE;
-		goto done;
+		EXIT_WITH_FAILURE;
 	}
 
 	/*
 	 *	Load the custom dictionary
 	 */
 	if (fr_dict_read(dict, raddb_dir, FR_DICTIONARY_FILE) == -1) {
-		fr_log_perror(&default_log, L_ERR, "Failed to initialize the dictionaries");
-		ret = EXIT_FAILURE;
-		goto done;
+		PERROR("Failed to initialize the dictionaries");
+		EXIT_WITH_FAILURE;
 	}
 
 	if (xlat_register(inst, "test", xlat_test, NULL, NULL, 0, XLAT_DEFAULT_BUF_LEN, true) < 0) {
 		fprintf(stderr, "Failed registering xlat");
-		ret = EXIT_FAILURE;
-		goto done;
+		EXIT_WITH_FAILURE;
 	}
 
 	/*
 	 *	Read tests from stdin
 	 */
 	if (argc < 2) {
-		if (process_file(features, dict, NULL, "-") < 0) ret = EXIT_FAILURE;
+		if (process_file(autofree, features, dict, NULL, "-") < 0) ret = EXIT_FAILURE;
 
 	/*
 	 *	...or process each file in turn.
@@ -1457,17 +1571,24 @@ int main(int argc, char *argv[])
 	} else {
 		int i;
 
-		for (i = 1; i < argc; i++) if (process_file(features, dict, NULL, argv[i]) < 0) ret = EXIT_FAILURE;
+		for (i = 1; i < argc; i++) if (process_file(autofree, features,
+							    dict, NULL, argv[i]) < 0) ret = EXIT_FAILURE;
 	}
 
 	/*
 	 *	Try really hard to free any allocated
 	 *	memory, so we get clean talloc reports.
 	 */
-done:
+cleanup:
+	if (dl_modules) talloc_free(dl_modules);
 	fr_dict_free(&dict);
 	xlat_free();
 	fr_strerror_free();
+
+	if (receipt_file && (ret == EXIT_SUCCESS) && (fr_file_touch(receipt_file, 0644) < 0)) {
+		fr_perror("unit_test_attribute");
+		ret = EXIT_FAILURE;
+	}
 
 	return ret;
 }

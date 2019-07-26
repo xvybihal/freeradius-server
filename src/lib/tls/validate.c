@@ -21,8 +21,8 @@
  * @brief Expose certificate OIDs as attributes, and call validation virtual
  *	server to check cert is valid.
  *
- * @copyright 2001 hereUare Communications, Inc. <raghud@hereuare.com>
- * @copyright 2003  Alan DeKok <aland@freeradius.org>
+ * @copyright 2001 hereUare Communications, Inc. (raghud@hereuare.com)
+ * @copyright 2003 Alan DeKok (aland@freeradius.org)
  * @copyright 2006-2016 The FreeRADIUS server project
  */
 #ifdef WITH_TLS
@@ -284,21 +284,21 @@ int tls_validate_cert_cb(int ok, X509_STORE_CTX *x509_ctx)
 #endif
 		fd = mkstemp(filename);
 		if (fd < 0) {
-			RDEBUG("Failed creating file in %s: %s",
-			       conf->verify_tmp_dir, fr_syserror(errno));
+			RDEBUG2("Failed creating file in %s: %s",
+			        conf->verify_tmp_dir, fr_syserror(errno));
 			break;
 		}
 
 		fp = fdopen(fd, "w");
 		if (!fp) {
 			close(fd);
-			RDEBUG("Failed opening file \"%s\": %s", filename, fr_syserror(errno));
+			REDEBUG("Failed opening file \"%s\": %s", filename, fr_syserror(errno));
 			break;
 		}
 
 		if (!PEM_write_X509(fp, cert)) {
 			fclose(fp);
-			RDEBUG("Failed writing certificate to file");
+			REDEBUG("Failed writing certificate to file");
 			goto do_unlink;
 		}
 		fclose(fp);
@@ -308,11 +308,11 @@ int tls_validate_cert_cb(int ok, X509_STORE_CTX *x509_ctx)
 
 		RDEBUG2("Verifying client certificate with cmd");
 		if (radius_exec_program(request, NULL, 0, NULL, request, conf->verify_client_cert_cmd,
-					request->packet->vps, true, true, EXEC_TIMEOUT) != 0) {
+					request->packet->vps, true, true, fr_time_delta_from_sec(EXEC_TIMEOUT)) != 0) {
 			REDEBUG("Client certificate CN \"%s\" failed external verification", common_name);
 			my_ok = 0;
 		} else {
-			RDEBUG("Client certificate CN \"%s\" passed external validation", common_name);
+			RDEBUG2("Client certificate CN \"%s\" passed external validation", common_name);
 		}
 
 	do_unlink:

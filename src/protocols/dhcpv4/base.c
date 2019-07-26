@@ -21,7 +21,7 @@
  * @brief Functions to send/receive dhcp packets.
  *
  * @copyright 2008 The FreeRADIUS server project
- * @copyright 2008 Alan DeKok <aland@deployingradius.com>
+ * @copyright 2008 Alan DeKok (aland@deployingradius.com)
  */
 RCSID("$Id$")
 
@@ -268,7 +268,7 @@ bool fr_dhcpv4_ok(uint8_t const *data, ssize_t data_len, uint8_t *message_type, 
 	return true;
 }
 
-ssize_t fr_dhcpv4_encode(uint8_t *buffer, size_t buflen, int code, uint32_t xid, VALUE_PAIR *vps)
+ssize_t fr_dhcpv4_encode(uint8_t *buffer, size_t buflen, dhcp_packet_t *original, int code, uint32_t xid, VALUE_PAIR *vps)
 {
 	uint8_t		*p;
 	fr_cursor_t	cursor;
@@ -312,17 +312,35 @@ ssize_t fr_dhcpv4_encode(uint8_t *buffer, size_t buflen, int code, uint32_t xid,
 
 	/* DHCP-Hardware-Type */
 	vp = fr_pair_find_by_da(vps, attr_dhcp_hardware_type, TAG_ANY);
-	if (vp) *p = vp->vp_uint8;
+	if (vp) {
+		*p = vp->vp_uint8;
+
+	} else if (original) {
+		*p = original->htype;
+
+	} /* else leave it unset */
 	p += 1;
 
 	/* DHCP-Hardware-Address-len */
 	vp = fr_pair_find_by_da(vps, attr_dhcp_hardware_address_length, TAG_ANY);
-	if (vp) *p = vp->vp_uint8;
+	if (vp) {
+		*p = vp->vp_uint8;
+
+	} else if (original) {
+		*p = original->hlen;
+
+	} /* else leave it unset */
 	p += 1;
 
 	/* DHCP-Hop-Count */
 	vp = fr_pair_find_by_da(vps, attr_dhcp_hop_count, TAG_ANY);
-	if (vp) *p = vp->vp_uint8;
+	if (vp) {
+		*p = vp->vp_uint8;
+
+	} else if (original) {
+		*p = original->hops;
+
+	} /* else leave it unset */
 	p++;
 
 	/* DHCP-Transaction-Id */
@@ -377,10 +395,15 @@ ssize_t fr_dhcpv4_encode(uint8_t *buffer, size_t buflen, int code, uint32_t xid,
 	vp = fr_pair_find_by_da(vps, attr_dhcp_gateway_ip_address, TAG_ANY);
 	if (vp) {
 		lvalue = vp->vp_ipv4addr;
+		memcpy(p, &lvalue, 4);
+
+	} else if (original) {	/* copy whatever value was in the original */
+		memcpy(p, &original->giaddr, sizeof(original->giaddr));
+
 	} else {
 		lvalue = htonl(INADDR_ANY);
+		memcpy(p, &lvalue, 4);
 	}
-	memcpy(p, &lvalue, 4);
 	p += 4;
 
 	/* DHCP-Client-Hardware-Address */
@@ -394,6 +417,10 @@ ssize_t fr_dhcpv4_encode(uint8_t *buffer, size_t buflen, int code, uint32_t xid,
 
 			memcpy(p, vp->vp_ether, sizeof(vp->vp_ether));
 		} /* else ignore it */
+
+	} else if (original) {	/* copy whatever value was in the original */
+		memcpy(p, &original->chaddr[0], sizeof(original->chaddr));
+
 	}
 	p += DHCP_CHADDR_LEN;
 
@@ -433,7 +460,7 @@ ssize_t fr_dhcpv4_encode(uint8_t *buffer, size_t buflen, int code, uint32_t xid,
 	memcpy(p, &lvalue, 4);
 	p += 4;
 
-	p[0] = 0x35;		/* DHCP-Message-Type */
+	p[0] = FR_DHCP_MESSAGE_TYPE;
 	p[1] = 1;
 	p[2] = code;
 	p += 3;
@@ -450,12 +477,25 @@ ssize_t fr_dhcpv4_encode(uint8_t *buffer, size_t buflen, int code, uint32_t xid,
 	 *  and sub options.
 	 */
 	while ((vp = fr_cursor_current(&cursor))) {
-		len = fr_dhcpv4_encode_option(p, buflen - (p - buffer), &cursor, NULL);
-		if (len < 0) break;
+		/*
+		 *	The encoder skips message type, and returns
+		 *	"len==0" for it.  We want to allow that, BUT
+		 *	stop when the encoder returns "len==0" for
+		 *	other attributes.  So we need to skip it
+		 *	manually, too.
+		 */
+		if (vp->da == attr_dhcp_message_type) {
+			(void) fr_cursor_next(&cursor);
+			continue;
+		}
+
+		len = fr_dhcpv4_encode_option(p, buflen - (p - buffer),
+					      &cursor, &(fr_dhcpv4_ctx_t){ .root = fr_dict_root(dict_dhcpv4) });
+		if (len <= 0) break;
 		p += len;
 	};
 
-	p[0] = 0xff;		/* end of option option */
+	p[0] = FR_DHCP_END_OF_OPTIONS;
 	p[1] = 0x00;
 	p += 2;
 	dhcp_size = p - buffer;

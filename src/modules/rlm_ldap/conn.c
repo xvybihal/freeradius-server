@@ -19,7 +19,7 @@
  * @file rlm_ldap.c
  * @brief Connection wrappers
  *
- * @author Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  *
  * @copyright 2017 The FreeRADIUS Server Project.
  */
@@ -109,7 +109,7 @@ void mod_conn_release(rlm_ldap_t const *inst, REQUEST *request, fr_ldap_connecti
  *
  * Create a new ldap connection and allocate memory for a new rlm_handle_t
  */
-void *mod_conn_create(TALLOC_CTX *ctx, void *instance, struct timeval const *timeout)
+void *mod_conn_create(TALLOC_CTX *ctx, void *instance, fr_time_delta_t timeout)
 {
 	fr_ldap_rcode_t		status;
 	fr_ldap_connection_t	*conn;

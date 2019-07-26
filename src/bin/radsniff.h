@@ -21,9 +21,9 @@
  * @file radsniff.h
  * @brief Structures and prototypes for the RADIUS sniffer.
  *
- * @copyright 2013 Arran Cudbard-Bell <arran.cudbardb@freeradius.org>
+ * @copyright 2013 Arran Cudbard-Bell (arran.cudbardb@freeradius.org)
  * @copyright 2006 The FreeRADIUS server project
- * @copyright 2006 Nicolas Baradakis <nicolas.baradakis@cegetel.net>
+ * @copyright 2006 Nicolas Baradakis (nicolas.baradakis@cegetel.net)
  */
 RCSIDH(radsniff_h, "$Id$")
 
@@ -93,7 +93,7 @@ typedef struct rs_stats_value_tmpl rs_stats_value_tmpl_t;
 #endif
 
 typedef struct {
-	uint64_t type[FR_CODE_MAX + 1];
+	uint64_t type[FR_CODE_RADIUS_MAX + 1];
 } rs_counters_t;
 
 /** Stats for a single interval
@@ -153,7 +153,7 @@ typedef struct {
 typedef struct {
 	int			intervals;		//!< Number of stats intervals.
 
-	rs_latency_t		exchange[FR_CODE_MAX + 1];  //!< We end up allocating ~16K, but memory is cheap so
+	rs_latency_t		exchange[FR_CODE_RADIUS_MAX + 1];  //!< We end up allocating ~16K, but memory is cheap so
 							//!< what the hell.  This is required because instances of
 							//!< FreeRADIUS delay Access-Rejects, which would artificially
 							//!< increase latency stats for Access-Requests.

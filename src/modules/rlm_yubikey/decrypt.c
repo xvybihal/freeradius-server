@@ -3,9 +3,9 @@
  * @file decrypt.c
  * @brief Authentication for yubikey OTP tokens using the yubikey library.
  *
- * @author Arran Cudbard-Bell <a.cudbardb@networkradius.com>
+ * @author Arran Cudbard-Bell (a.cudbardb@networkradius.com)
  * @copyright 2013 The FreeRADIUS server project
- * @copyright 2013 Network RADIUS <info@networkradius.com>
+ * @copyright 2013 Network RADIUS (info@networkradius.com)
  */
 #include "rlm_yubikey.h"
 
@@ -51,7 +51,7 @@ rlm_rcode_t rlm_yubikey_decrypt(rlm_yubikey_t const *inst, REQUEST *request, cha
 		return RLM_MODULE_REJECT;
 	}
 
-	RDEBUG("Token data decrypted successfully");
+	RDEBUG2("Token data decrypted successfully");
 
 	counter = (yubikey_counter(token.ctr) << 8) | token.use;
 	timestamp = (token.tstph << 16) | token.tstpl;
@@ -68,7 +68,7 @@ rlm_rcode_t rlm_yubikey_decrypt(rlm_yubikey_t const *inst, REQUEST *request, cha
 	 *	Private ID used for validation purposes
 	 */
 	MEM(pair_update_request(&vp, attr_yubikey_private_id) >= 0);
-	fr_pair_value_memcpy(vp, token.uid, YUBIKEY_UID_SIZE);
+	fr_pair_value_memcpy(vp, token.uid, YUBIKEY_UID_SIZE, true);
 
 	/*
 	 *	Token timestamp

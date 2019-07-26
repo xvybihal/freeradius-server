@@ -17,9 +17,9 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2001  hereUare Communications, Inc. <raghud@hereuare.com>
- * @copyright 2003  Alan DeKok <aland@freeradius.org>
- * @copyright 2006  The FreeRADIUS server project
+ * @copyright 2001 hereUare Communications, Inc. (raghud@hereuare.com)
+ * @copyright 2003 Alan DeKok (aland@freeradius.org)
+ * @copyright 2006 The FreeRADIUS server project
  *
  */
 RCSID("$Id$")
@@ -71,7 +71,53 @@ fr_dict_attr_autoload_t rlm_eap_tls_dict_attr[] = {
 /*
  *	Do authentication, by letting EAP-TLS do most of the work.
  */
-static rlm_rcode_t CC_HINT(nonnull) mod_process(void *instance, eap_session_t *eap_session);
+static rlm_rcode_t CC_HINT(nonnull) mod_process(void *instance, void *thread, REQUEST *request);
+
+static rlm_rcode_t eap_tls_success_with_prf(eap_session_t *eap_session)
+{
+#if OPENSSL_VERSION_NUMBER >= 0x10101000L
+	eap_tls_session_t	*eap_tls_session = talloc_get_type_abort(eap_session->opaque, eap_tls_session_t);
+	tls_session_t		*tls_session = eap_tls_session->tls_session;
+
+	/*
+	 *	Set the PRF label based on the TLS version negotiated
+	 *	in the handshake.
+	 */
+	switch (SSL_SESSION_get_protocol_version(SSL_get_session(tls_session->ssl))) {
+	case SSL2_VERSION:			/* Should never happen */
+	case SSL3_VERSION:			/* Should never happen */
+		rad_assert(0);
+		return RLM_MODULE_INVALID;
+
+	case TLS1_VERSION:
+	case TLS1_1_VERSION:
+	case TLS1_2_VERSION:
+#endif
+	{
+		static char const keying_prf_label[] = "client EAP encryption";
+
+		if (eap_tls_success(eap_session,
+				    keying_prf_label, sizeof(keying_prf_label) - 1,
+				    NULL, 0) < 0) return RLM_MODULE_FAIL;
+	}
+#if OPENSSL_VERSION_NUMBER >= 0x10101000L
+		break;
+
+	case TLS1_3_VERSION:
+	default:
+	{
+		static char const keying_prf_label[] = "EXPORTER_EAP_TLS_Key_Material";
+		static char const sessid_prf_label[] = "EXPORTER_EAP_TLS_Method-Id";
+
+		if (eap_tls_success(eap_session,
+				    keying_prf_label, sizeof(keying_prf_label) - 1,
+				    sessid_prf_label, sizeof(sessid_prf_label) - 1) < 0) return RLM_MODULE_FAIL;
+	}
+		break;
+	}
+#endif
+	return RLM_MODULE_OK;
+}
 
 static unlang_action_t eap_tls_virtual_server_result(REQUEST *request, rlm_rcode_t *presult,
 						     UNUSED int *priority, void *uctx)
@@ -81,6 +127,7 @@ static unlang_action_t eap_tls_virtual_server_result(REQUEST *request, rlm_rcode
 	switch (*presult) {
 	case RLM_MODULE_OK:
 	case RLM_MODULE_UPDATED:
+		*presult = eap_tls_success_with_prf(eap_session);
 		break;
 
 	default:
@@ -133,23 +180,24 @@ static rlm_rcode_t eap_tls_virtual_server(rlm_eap_tls_t *inst, eap_session_t *ea
 	/*
 	 *	Catch the interpreter on the way back up the stack
 	 */
-	unlang_push_function(request, NULL, eap_tls_virtual_server_result, eap_session);
+	unlang_interpret_push_function(request, NULL, eap_tls_virtual_server_result, eap_session);
 
 	/*
 	 *	Push unlang instructions for the virtual server section
 	 */
-	unlang_push_section(request, section, RLM_MODULE_NOOP, UNLANG_SUB_FRAME);
+	unlang_interpret_push_section(request, section, RLM_MODULE_NOOP, UNLANG_SUB_FRAME);
 
 	return RLM_MODULE_YIELD;
 }
 
-static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
+static rlm_rcode_t mod_process(void *instance, UNUSED void *thread, REQUEST *request)
 {
 	eap_tls_status_t	status;
+
+	rlm_eap_tls_t		*inst = talloc_get_type_abort(instance, rlm_eap_tls_t);
+	eap_session_t		*eap_session = eap_session_get(request);
 	eap_tls_session_t	*eap_tls_session = talloc_get_type_abort(eap_session->opaque, eap_tls_session_t);
 	tls_session_t		*tls_session = eap_tls_session->tls_session;
-	REQUEST			*request = eap_session->request;
-	rlm_eap_tls_t		*inst = talloc_get_type_abort(instance, rlm_eap_tls_t);
 
 	status = eap_tls_process(eap_session);
 	if ((status == EAP_TLS_INVALID) || (status == EAP_TLS_FAIL)) {
@@ -167,51 +215,9 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 	 *	it accepts the certificates, too.
 	 */
 	case EAP_TLS_ESTABLISHED:
-	{
 		if (inst->virtual_server) return eap_tls_virtual_server(inst, eap_session);
+		return eap_tls_success_with_prf(eap_session);
 
-#if OPENSSL_VERSION_NUMBER >= 0x10101000L
-		/*
-		 *	Set the PRF label based on the TLS version negotiated
-		 *	in the handshake.
-		 */
-		switch (SSL_SESSION_get_protocol_version(SSL_get_session(tls_session->ssl))) {
-		case SSL2_VERSION:			/* Should never happen */
-		case SSL3_VERSION:			/* Should never happen */
-			rad_assert(0);
-			return RLM_MODULE_INVALID;
-
-		case TLS1_VERSION:
-		case TLS1_1_VERSION:
-		case TLS1_2_VERSION:
-#endif
-		{
-			static char const keying_prf_label[] = "client EAP encryption";
-
-			if (eap_tls_success(eap_session,
-				    	    keying_prf_label, sizeof(keying_prf_label) - 1,
-				    	    NULL, 0) < 0) return RLM_MODULE_FAIL;
-		}
-#if OPENSSL_VERSION_NUMBER >= 0x10101000L
-			break;
-
-		case TLS1_3_VERSION:
-		default:
-		{
-			static char const keying_prf_label[] = "EXPORTER_EAP_TLS_Key_Material";
-			static char const sessid_prf_label[] = "EXPORTER_EAP_TLS_Method-Id";
-
-			if (eap_tls_success(eap_session,
-				    	    keying_prf_label, sizeof(keying_prf_label) - 1,
-				    	    sessid_prf_label, sizeof(sessid_prf_label) - 1) < 0) return RLM_MODULE_FAIL;
-		}
-			break;
-		}
-#endif
-
-
-	}
-		return RLM_MODULE_OK;
 
 	/*
 	 *	The TLS code is still working on the TLS
@@ -247,10 +253,12 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 /*
  *	Send an initial eap-tls request to the peer, using the libeap functions.
  */
-static rlm_rcode_t mod_session_init(void *uctx, eap_session_t *eap_session)
+static rlm_rcode_t mod_session_init(void *instance, UNUSED void *thread, REQUEST *request)
 {
+	rlm_eap_tls_t		*inst = talloc_get_type_abort(instance, rlm_eap_tls_t);
+	eap_session_t		*eap_session = eap_session_get(request);
 	eap_tls_session_t	*eap_tls_session;
-	rlm_eap_tls_t		*inst = talloc_get_type_abort(uctx, rlm_eap_tls_t);
+
 	VALUE_PAIR		*vp;
 	bool			client_cert;
 
@@ -302,29 +310,58 @@ static int mod_instantiate(void *instance, CONF_SECTION *cs)
 		return -1;
 	}
 
-	/*
-	 *	Compile virtual server sections.
-	 *
-	 *	FIXME - We can use proper section names now instead of relying on Autz-Type
-	 */
-	if (inst->virtual_server) {
-		CONF_SECTION	*server_cs;
-		int		ret;
-
-		server_cs = virtual_server_find(inst->virtual_server);
-		if (!server_cs) {
-			ERROR("Can't find virtual server \"%s\"", inst->virtual_server);
-			return -1;
-		}
-
-		ret = unlang_compile_subsection(server_cs, "recv", "Access-Request", MOD_AUTHORIZE, NULL);
-		if (ret == 0) {
-			cf_log_err(server_cs, "Failed finding 'recv Access-Request { ... }' "
-				   "section of virtual server %s", cf_section_name2(server_cs));
-			return -1;
-		}
-		if (ret < 0) return -1;
+	if (inst->virtual_server && !virtual_server_find(inst->virtual_server)) {
+		cf_log_err_by_child(cs, "virtual_server", "Unknown virtual server '%s'", inst->virtual_server);
+		return -1;
 	}
+
+	return 0;
+}
+
+#define ACTION_SECTION(_out, _field, _verb, _name) \
+do { \
+	CONF_SECTION *_tmp; \
+	_tmp = cf_section_find(server_cs, _verb, _name); \
+	if (_tmp) { \
+		if (unlang_compile(_tmp, MOD_AUTHORIZE, NULL) < 0) return -1; \
+		found = true; \
+	} \
+	if (_out) _out->_field = _tmp; \
+} while (0)
+
+/** Compile virtual server sections
+ *
+ */
+static int mod_section_compile(eap_tls_actions_t *actions, CONF_SECTION *server_cs)
+{
+	bool found = false;
+
+	if (!fr_cond_assert(server_cs)) return -1;
+
+	ACTION_SECTION(actions, recv_access_request, "recv", "Access-Request");
+
+	/*
+	 *	Warn if we couldn't find any actions.
+	 */
+	if (!found) {
+		cf_log_warn(server_cs, "No \"eap-tls\" actions found in virtual server \"%s\"",
+			    cf_section_name2(server_cs));
+	}
+
+	return 0;
+}
+
+/** Compile any virtual servers with the "eap-tls" namespace
+ *
+ */
+static int mod_namespace_load(CONF_SECTION *server_cs)
+{
+	return mod_section_compile(NULL, server_cs);
+}
+
+static int mod_load(void)
+{
+	if (virtual_server_namespace_register("eap-tls", mod_namespace_load) < 0) return -1;
 
 	return 0;
 }
@@ -338,11 +375,12 @@ rlm_eap_submodule_t rlm_eap_tls = {
 	.name		= "eap_tls",
 	.magic		= RLM_MODULE_INIT,
 
-	.provides	= { FR_EAP_TLS },
+	.provides	= { FR_EAP_METHOD_TLS },
 	.inst_size	= sizeof(rlm_eap_tls_t),
 	.config		= submodule_config,
 	.instantiate	= mod_instantiate,	/* Create new submodule instance */
 
+	.onload		= mod_load,
 	.session_init	= mod_session_init,	/* Initialise a new EAP session */
 	.entry_point	= mod_process		/* Process next round of EAP method */
 };

@@ -19,9 +19,9 @@
  * @file lib/ldap/base.c
  * @brief LDAP module library functions.
  *
- * @author Arran Cudbard-Bell <a.cudbardb@freeradius.org>
- * @copyright 2015 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
- * @copyright 2013-2015 Network RADIUS SARL <info@networkradius.com>
+ * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
+ * @copyright 2015 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
+ * @copyright 2013-2015 Network RADIUS SARL (info@networkradius.com)
  * @copyright 2013-2015 The FreeRADIUS Server Project.
  */
 RCSID("$Id$")
@@ -104,7 +104,7 @@ FR_NAME_NUMBER const fr_ldap_dereference[] = {
  * issues with them, hence the need for this function.
  */
 void fr_ldap_timeout_debug(REQUEST *request, fr_ldap_connection_t const *conn,
-			   struct timeval const *timeout, char const *prefix)
+			   fr_time_delta_t timeout, char const *prefix)
 {
 	struct timeval 			*net = NULL, *client = NULL;
 	int				server = 0;
@@ -131,16 +131,16 @@ void fr_ldap_timeout_debug(REQUEST *request, fr_ldap_connection_t const *conn,
 	ROPTIONAL(RDEBUG4, DEBUG4, "%s: Timeout settings", prefix);
 
 	if (timeout) {
-		ROPTIONAL(RDEBUG4, DEBUG4, "Client side result timeout (ovr): %ld.%06ld",
-			  (long)timeout->tv_sec, (long)timeout->tv_usec);
+		ROPTIONAL(RDEBUG4, DEBUG4, "Client side result timeout (ovr): %pVs",
+			  fr_box_time_delta(timeout));
 	} else {
 		ROPTIONAL(RDEBUG4, DEBUG4, "Client side result timeout (ovr): unset");
 	}
 
 #ifdef LDAP_OPT_TIMEOUT
 	if (client && (client->tv_sec != -1)) {
-		ROPTIONAL(RDEBUG4, DEBUG4, "Client side result timeout (dfl): %ld.%06ld",
-			  (long)client->tv_sec, (long)client->tv_usec);
+		ROPTIONAL(RDEBUG4, DEBUG4, "Client side result timeout (dfl): %pVs",
+			  fr_box_time_delta(fr_time_delta_from_timeval(client)));
 
 	} else {
 		ROPTIONAL(RDEBUG4, DEBUG4, "Client side result timeout (dfl): unset");
@@ -149,8 +149,8 @@ void fr_ldap_timeout_debug(REQUEST *request, fr_ldap_connection_t const *conn,
 
 #ifdef LDAP_OPT_NETWORK_TIMEOUT
 	if (net && (net->tv_sec != -1)) {
-		ROPTIONAL(RDEBUG4, DEBUG4, "Client side network I/O timeout : %ld.%06ld",
-			  (long)net->tv_sec, (long)net->tv_usec);
+		ROPTIONAL(RDEBUG4, DEBUG4, "Client side network I/O timeout : %pVs",
+			  fr_box_time_delta(fr_time_delta_from_timeval(net)));
 	} else {
 		ROPTIONAL(RDEBUG4, DEBUG4, "Client side network I/O timeout : unset");
 
@@ -393,12 +393,11 @@ process_error:
 fr_ldap_rcode_t fr_ldap_result(LDAPMessage **result, LDAPControl ***ctrls,
 			       fr_ldap_connection_t const *conn, int msgid, int all,
 			       char const *dn,
-			       struct timeval const *timeout)
+			       fr_time_delta_t timeout)
 {
 	fr_ldap_rcode_t	status = LDAP_PROC_SUCCESS;
 	int		lib_errno;
-
-	struct timeval	tv;			/* Holds timeout values */
+	fr_time_delta_t	our_timeout = timeout;
 
 	LDAPMessage	*tmp_msg = NULL, *msg;	/* Temporary message pointer storage if we weren't provided with one */
 	LDAPMessage	**result_p = result;
@@ -417,17 +416,13 @@ fr_ldap_rcode_t fr_ldap_result(LDAPMessage **result, LDAPControl ***ctrls,
 	ldap_get_option(conn->handle, LDAP_OPT_ERROR_NUMBER, &lib_errno);
 	if (lib_errno != LDAP_SUCCESS) return fr_ldap_error_check(NULL, conn, NULL, dn);
 
-	if (!timeout) {
-		tv = conn->config->res_timeout;
-	} else {
-		tv = *timeout;
-	}
+	if (!timeout) our_timeout = conn->config->res_timeout;
 
 	/*
 	 *	Now retrieve the result and check for errors
 	 *	ldap_result returns -1 on failure, and 0 on timeout
 	 */
-	lib_errno = ldap_result(conn->handle, msgid, all, &tv, result_p);
+	lib_errno = ldap_result(conn->handle, msgid, all, &fr_time_delta_to_timeval(our_timeout), result_p);
 	switch (lib_errno) {
 	case 0:
 		lib_errno = LDAP_TIMEOUT;
@@ -481,7 +476,7 @@ fr_ldap_rcode_t fr_ldap_bind(REQUEST *request,
 #else
 			     NDEBUG_UNUSED fr_ldap_sasl_t const *sasl,
 #endif
-			     struct timeval const *timeout,
+			     fr_time_delta_t timeout,
 			     LDAPControl **serverctrls, LDAPControl **clientctrls)
 {
 	fr_ldap_rcode_t			status = LDAP_PROC_ERROR;
@@ -533,12 +528,12 @@ fr_ldap_rcode_t fr_ldap_bind(REQUEST *request,
 		/* We got a valid message ID */
 		if ((ret == 0) && (msgid >= 0)) ROPTIONAL(RDEBUG2, DEBUG2, "Waiting for bind result...");
 
-		status = fr_ldap_result(NULL, NULL, *pconn, msgid, 0, dn, NULL);
+		status = fr_ldap_result(NULL, NULL, *pconn, msgid, 0, dn, 0);
 	}
 
 	switch (status) {
 	case LDAP_PROC_SUCCESS:
-		ROPTIONAL(RDEBUG, DEBUG, "Bind successful");
+		ROPTIONAL(RDEBUG2, DEBUG2, "Bind successful");
 		break;
 
 	case LDAP_PROC_NOT_PERMITTED:
@@ -600,7 +595,7 @@ fr_ldap_rcode_t fr_ldap_search(LDAPMessage **result, REQUEST *request,
 	rad_assert(*pconn && (*pconn)->handle);
 
 	if (DEBUG_ENABLED4 || (request && RDEBUG_ENABLED4)) {
-		fr_ldap_timeout_debug(request, *pconn, NULL, __FUNCTION__);
+		fr_ldap_timeout_debug(request, *pconn, 0, __FUNCTION__);
 	}
 
 	/*
@@ -616,7 +611,7 @@ fr_ldap_rcode_t fr_ldap_search(LDAPMessage **result, REQUEST *request,
 	if ((*pconn)->rebound) {
 		status = fr_ldap_bind(request, pconn,
 				      (*pconn)->config->admin_identity, (*pconn)->config->admin_password,
-				      &(*pconn)->config->admin_sasl, NULL,
+				      &(*pconn)->config->admin_sasl, 0,
 				      NULL, NULL);
 		if (status != LDAP_PROC_SUCCESS) return LDAP_PROC_ERROR;
 
@@ -626,10 +621,10 @@ fr_ldap_rcode_t fr_ldap_search(LDAPMessage **result, REQUEST *request,
 	}
 
 	if (filter) {
-		ROPTIONAL(RDEBUG, DEBUG, "Performing search in \"%s\" with filter \"%s\", scope \"%s\"", dn, filter,
+		ROPTIONAL(RDEBUG2, DEBUG2, "Performing search in \"%s\" with filter \"%s\", scope \"%s\"", dn, filter,
 			  fr_int2str(fr_ldap_scope, scope, "<INVALID>"));
 	} else {
-		ROPTIONAL(RDEBUG, DEBUG, "Performing unfiltered search in \"%s\", scope \"%s\"", dn,
+		ROPTIONAL(RDEBUG2, DEBUG2, "Performing unfiltered search in \"%s\", scope \"%s\"", dn,
 			  fr_int2str(fr_ldap_scope, scope, "<INVALID>"));
 	}
 	/*
@@ -642,8 +637,8 @@ fr_ldap_rcode_t fr_ldap_search(LDAPMessage **result, REQUEST *request,
 	(void) ldap_search_ext((*pconn)->handle, dn, scope, filter, search_attrs,
 			       0, our_serverctrls, our_clientctrls, NULL, 0, &msgid);
 
-	ROPTIONAL(RDEBUG, DEBUG, "Waiting for search result...");
-	status = fr_ldap_result(&our_result, NULL, *pconn, msgid, 1, dn, NULL);
+	ROPTIONAL(RDEBUG2, DEBUG2, "Waiting for search result...");
+	status = fr_ldap_result(&our_result, NULL, *pconn, msgid, 1, dn, 0);
 	switch (status) {
 	case LDAP_PROC_SUCCESS:
 		break;
@@ -662,7 +657,7 @@ fr_ldap_rcode_t fr_ldap_search(LDAPMessage **result, REQUEST *request,
 		ldap_msgfree(our_result);
 		our_result = NULL;
 	} else if (count == 0) {
-		ROPTIONAL(RDEBUG, DEBUG, "Search returned no results");
+		ROPTIONAL(RDEBUG2, DEBUG2, "Search returned no results");
 		status = LDAP_PROC_NO_RESULT;
 
 		ldap_msgfree(our_result);
@@ -721,7 +716,7 @@ fr_ldap_rcode_t fr_ldap_search_async(int *msgid, REQUEST *request,
 
 	rad_assert(*pconn && (*pconn)->handle);
 
-	if (DEBUG_ENABLED4 || (request && RDEBUG_ENABLED4)) fr_ldap_timeout_debug(request, *pconn, NULL, __FUNCTION__);
+	if (DEBUG_ENABLED4 || (request && RDEBUG_ENABLED4)) fr_ldap_timeout_debug(request, *pconn, 0, __FUNCTION__);
 
 	/*
 	 *	OpenLDAP library doesn't declare attrs array as const, but
@@ -736,7 +731,7 @@ fr_ldap_rcode_t fr_ldap_search_async(int *msgid, REQUEST *request,
 	if ((*pconn)->rebound) {
 		status = fr_ldap_bind(request, pconn,
 				      (*pconn)->config->admin_identity, (*pconn)->config->admin_password,
-				      &(*pconn)->config->admin_sasl, NULL,
+				      &(*pconn)->config->admin_sasl, 0,
 				      NULL, NULL);
 		if (status != LDAP_PROC_SUCCESS) return LDAP_PROC_ERROR;
 
@@ -746,10 +741,10 @@ fr_ldap_rcode_t fr_ldap_search_async(int *msgid, REQUEST *request,
 	}
 
 	if (filter) {
-		ROPTIONAL(RDEBUG, DEBUG, "Performing search in \"%s\" with filter \"%s\", scope \"%s\"", dn, filter,
+		ROPTIONAL(RDEBUG2, DEBUG2, "Performing search in \"%s\" with filter \"%s\", scope \"%s\"", dn, filter,
 			  fr_int2str(fr_ldap_scope, scope, "<INVALID>"));
 	} else {
-		ROPTIONAL(RDEBUG, DEBUG, "Performing unfiltered search in \"%s\", scope \"%s\"", dn,
+		ROPTIONAL(RDEBUG2, DEBUG2, "Performing unfiltered search in \"%s\", scope \"%s\"", dn,
 			  fr_int2str(fr_ldap_scope, scope, "<INVALID>"));
 	}
 	/*
@@ -802,7 +797,7 @@ fr_ldap_rcode_t fr_ldap_modify(REQUEST *request, fr_ldap_connection_t **pconn,
 
 	rad_assert(*pconn && (*pconn)->handle);
 
-	if (RDEBUG_ENABLED4) fr_ldap_timeout_debug(request, *pconn, NULL, __FUNCTION__);
+	if (RDEBUG_ENABLED4) fr_ldap_timeout_debug(request, *pconn, 0, __FUNCTION__);
 
 	/*
 	 *	Perform all modifications as the admin user.
@@ -811,7 +806,7 @@ fr_ldap_rcode_t fr_ldap_modify(REQUEST *request, fr_ldap_connection_t **pconn,
 		status = fr_ldap_bind(request, pconn,
 				      (*pconn)->config->admin_identity, (*pconn)->config->admin_password,
 				      &(*pconn)->config->admin_sasl,
-				      NULL, NULL, NULL);
+				      0, NULL, NULL);
 		if (status != LDAP_PROC_SUCCESS) {
 			return LDAP_PROC_ERROR;
 		}
@@ -825,7 +820,7 @@ fr_ldap_rcode_t fr_ldap_modify(REQUEST *request, fr_ldap_connection_t **pconn,
 	(void) ldap_modify_ext((*pconn)->handle, dn, mods, our_serverctrls, our_clientctrls, &msgid);
 
 	RDEBUG2("Waiting for modify result...");
-	status = fr_ldap_result(NULL, NULL, *pconn, msgid, 0, dn, NULL);
+	status = fr_ldap_result(NULL, NULL, *pconn, msgid, 0, dn, 0);
 	switch (status) {
 	case LDAP_PROC_SUCCESS:
 		break;

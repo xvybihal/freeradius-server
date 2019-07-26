@@ -19,9 +19,9 @@
  * @file rlm_logtee.c
  * @brief Add an additional log destination for any given request.
  *
- * @author Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  *
- * @copyright 2017 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2017 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -105,8 +105,8 @@ typedef struct {
 	logtee_net_t		tcp;			//!< TCP server.
 	logtee_net_t		udp;			//!< UDP server.
 
-	struct timeval		connection_timeout;	//!< How long to wait to open a socket.
-	struct timeval		reconnection_delay;	//!< How long to wait to retry.
+	fr_time_delta_t		connection_timeout;	//!< How long to wait to open a socket.
+	fr_time_delta_t		reconnection_delay;	//!< How long to wait to retry.
 } rlm_logtee_t;
 
 /** Per-thread instance data
@@ -171,8 +171,8 @@ static const CONF_PARSER module_config[] = {
 	{ FR_CONF_OFFSET("tcp", FR_TYPE_SUBSECTION, rlm_logtee_t, tcp), .subcs= (void const *) tcp_config },
 	{ FR_CONF_OFFSET("udp", FR_TYPE_SUBSECTION, rlm_logtee_t, udp), .subcs = (void const *) udp_config },
 
-	{ FR_CONF_OFFSET("connection_timeout", FR_TYPE_TIMEVAL, rlm_logtee_t, connection_timeout), .dflt = "1.0" },
-	{ FR_CONF_OFFSET("reconnection_delay", FR_TYPE_TIMEVAL, rlm_logtee_t, reconnection_delay), .dflt = "1.0" },
+	{ FR_CONF_OFFSET("connection_timeout", FR_TYPE_TIME_DELTA, rlm_logtee_t, connection_timeout), .dflt = "1.0" },
+	{ FR_CONF_OFFSET("reconnection_delay", FR_TYPE_TIME_DELTA, rlm_logtee_t, reconnection_delay), .dflt = "1.0" },
 
 	CONF_PARSER_TERMINATOR
 };
@@ -201,8 +201,10 @@ static void logtee_fd_idle(rlm_logtee_thread_t *t);
 
 static void logtee_fd_active(rlm_logtee_thread_t *t);
 
-static void logtee_it(fr_log_type_t type, fr_log_lvl_t lvl, REQUEST *request, char const *fmt, va_list ap, void *uctx)
-		      CC_HINT(format (printf, 4, 0)) CC_HINT(nonnull (3, 4));
+static void logtee_it(fr_log_type_t type, fr_log_lvl_t lvl, REQUEST *request,
+		      char const *file, int line,
+		      char const *fmt, va_list ap, void *uctx)
+		      CC_HINT(format (printf, 6, 0)) CC_HINT(nonnull (3, 6));
 
 static rlm_rcode_t mod_insert_logtee(void *instance, UNUSED void *thread, REQUEST *request) CC_HINT(nonnull);
 
@@ -429,11 +431,15 @@ static fr_connection_state_t _logtee_conn_init(int *fd_out, void *uctx)
  * @param[in] type	What type of message this is (error, warn, info, debug).
  * @param[in] lvl	At what logging level this message should be output.
  * @param[in] request	The current request.
+ * @param[in] file	src file the log message was generated in.
+ * @param[in] line	number the log message was generated on.
  * @param[in] fmt	sprintf style fmt string.
  * @param[in] ap	Arguments for the fmt string.
  * @param[in] uctx	Context data for the log function.
  */
-static void logtee_it(fr_log_type_t type, fr_log_lvl_t lvl, REQUEST *request, char const *fmt, va_list ap, void *uctx)
+static void logtee_it(fr_log_type_t type, fr_log_lvl_t lvl, REQUEST *request,
+		      UNUSED char const *file, UNUSED int line,
+		      char const *fmt, va_list ap, void *uctx)
 {
 	rlm_logtee_thread_t	*t = talloc_get_type_abort(uctx, rlm_logtee_thread_t);
 	rlm_logtee_t const	*inst = t->inst;
@@ -555,8 +561,7 @@ static int mod_thread_instantiate(UNUSED CONF_SECTION const *conf, void *instanc
 	/*
 	 *	This opens the outbound connection
 	 */
-
-	t->conn = fr_connection_alloc(t, el, &inst->connection_timeout, &inst->reconnection_delay,
+	t->conn = fr_connection_alloc(t, el, inst->connection_timeout, inst->reconnection_delay,
 				      _logtee_conn_init, _logtee_conn_open, _logtee_conn_close,
 				      inst->name, t);
 	if (t->conn == NULL) return -1;
@@ -631,8 +636,8 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
 /*
  *	Externally visible module definition.
  */
-extern rad_module_t rlm_logtee;
-rad_module_t rlm_logtee = {
+extern module_t rlm_logtee;
+module_t rlm_logtee = {
 	.magic			= RLM_MODULE_INIT,
 	.name			= "logtee",
 	.inst_size		= sizeof(rlm_logtee_t),

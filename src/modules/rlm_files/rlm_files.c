@@ -19,8 +19,8 @@
  * @file rlm_files.c
  * @brief Process simple 'users' policy files.
  *
- * @copyright 2000,2006  The FreeRADIUS server project
- * @copyright 2000  Jeff Carneal <jeff@apex.net>
+ * @copyright 2000,2006 The FreeRADIUS server project
+ * @copyright 2000 Jeff Carneal (jeff@apex.net)
  */
 RCSID("$Id$")
 
@@ -493,8 +493,8 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 
 
 /* globally exported name */
-extern rad_module_t rlm_files;
-rad_module_t rlm_files = {
+extern module_t rlm_files;
+module_t rlm_files = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "files",
 	.inst_size	= sizeof(rlm_files_t),

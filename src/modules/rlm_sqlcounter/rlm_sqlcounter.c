@@ -19,8 +19,8 @@
  * @file rlm_sqlcounter.c
  * @brief Tracks data usage and other counters using SQL.
  *
- * @copyright 2001,2006  The FreeRADIUS server project
- * @copyright 2001  Alan DeKok <aland@freeradius.org>
+ * @copyright 2001,2006 The FreeRADIUS server project
+ * @copyright 2001 Alan DeKok (aland@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -418,12 +418,12 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(void *instance, UNUSED void *t
 	 *	Before doing anything else, see if we have to reset
 	 *	the counters.
 	 */
-	if (inst->reset_time && (inst->reset_time <= request->packet->timestamp.tv_sec)) {
+	if (inst->reset_time && (inst->reset_time <= fr_time_to_sec(request->packet->timestamp))) {
 		/*
 		 *	Re-set the next time and prev_time for this counters range
 		 */
 		inst->last_reset = inst->reset_time;
-		find_next_reset(inst,request->packet->timestamp.tv_sec);
+		find_next_reset(inst, fr_time_to_sec(request->packet->timestamp));
 	}
 
 	/*
@@ -509,8 +509,9 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(void *instance, UNUSED void *t
 		 *	again.  Do this only for Session-Timeout.
 		 */
 		if ((inst->reply_attr->tmpl_da == attr_session_timeout) &&
-		    inst->reset_time && (res >= (uint64_t)(inst->reset_time - request->packet->timestamp.tv_sec))) {
-			uint64_t to_reset = inst->reset_time - request->packet->timestamp.tv_sec;
+		    inst->reset_time &&
+		    (res >= (uint64_t)(inst->reset_time - fr_time_to_sec(request->packet->timestamp)))) {
+			uint64_t to_reset = inst->reset_time - fr_time_to_sec(request->packet->timestamp);
 
 			RDEBUG2("Time remaining (%" PRIu64 "s) is greater than time to reset (%" PRIu64 "s).  "
 				"Adding %" PRIu64 "s to reply value", to_reset, res, to_reset);
@@ -638,8 +639,8 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_sqlcounter;
-rad_module_t rlm_sqlcounter = {
+extern module_t rlm_sqlcounter;
+module_t rlm_sqlcounter = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "sqlcounter",
 	.type		= RLM_TYPE_THREAD_SAFE,

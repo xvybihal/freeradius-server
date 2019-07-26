@@ -18,8 +18,8 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2000,2006  The FreeRADIUS server project
- * @copyright 2000  Alan DeKok <aland@freeradius.org>
+ * @copyright 2000,2006 The FreeRADIUS server project
+ * @copyright 2000 Alan DeKok (aland@freeradius.org)
  */
 
 RCSID("$Id$")
@@ -223,7 +223,7 @@ int main(int argc, char **argv)
 		main_config_name_set_default(config, p + 1, false);
 	}
 
-	while((c = getopt(argc, argv, "d:D:fF:nN:sSipP:crRu:U:Z")) != -1) switch (c) {
+	while((c = getopt(argc, argv, "d:D:fF:hnN:sSipP:crRu:U:Z")) != -1) switch (c) {
 		case 'd':
 			main_config_raddb_dir_set(config, optarg);
 			break;
@@ -234,8 +234,7 @@ int main(int argc, char **argv)
 			radutmp_file = optarg;
 			break;
 		case 'h':
-			usage(0);	/* never returns */
-
+			usage(EXIT_SUCCESS);	/* never returns */
 		case 'S':
 			hideshell = 1;
 			break;
@@ -244,7 +243,7 @@ int main(int argc, char **argv)
 			break;
 		case 'N':
 			if (inet_pton(AF_INET, optarg, &nas_ip_address) <= 0) {
-				usage(1);
+				usage(EXIT_FAILURE);
 			}
 			break;
 		case 's':
@@ -299,15 +298,14 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-#if 0
-	if (fr_dict_from_file(&dict, FR_DICTIONARY_FILE) < 0) {
-		fr_perror("%s", main_config->name);
-		return 1;
+
+	if (fr_dict_internal_afrom_file(&dict, FR_DICTIONARY_INTERNAL_DIR) < 0) {
+		fr_perror("%s", config->name);
+		exit(EXIT_FAILURE);
 	}
-#endif
 
 	if (fr_dict_read(dict, config->raddb_dir, FR_DICTIONARY_FILE) == -1) {
-		fr_log_perror(&default_log, L_ERR, "Failed to initialize the dictionaries");
+		PERROR("Failed to initialize the dictionaries");
 		return 1;
 	}
 	fr_strerror();	/* Clear the error buffer */

@@ -52,11 +52,14 @@ sub process_file {
 		#
 		#  Skip editor commands
 		#
-		if (/^# -\*- text -\*-/) {
+		if (/^#\s*-\*- text -\*-/) {
 			next;
 		}
 
-		if (/\$Id: /) {
+		#
+		#  Need the [:] to avoid git getting excited
+		#
+		if (/\$Id[:] /) {
 			next;
 		}
 

@@ -21,7 +21,7 @@
  *
  * @file src/lib/util/types.h
  *
- * @copyright 2017  The FreeRADIUS server project
+ * @copyright 2017 The FreeRADIUS server project
  */
 RCSIDH(types_h, "$Id$")
 
@@ -63,14 +63,11 @@ typedef enum {
 	FR_TYPE_FLOAT64,			//!< Double precision floating point.
 
 	FR_TYPE_DATE,				//!< 32 Bit Unix timestamp.
-	FR_TYPE_DATE_MILLISECONDS,		//!< Milliseconds since the epoch.
-	FR_TYPE_DATE_MICROSECONDS,		//!< Microseconds since the epoch.
-	FR_TYPE_DATE_NANOSECONDS,		//!< Nanoseconds since the epoch.
 
 	FR_TYPE_SIZE,				//!< Unsigned integer capable of representing any memory
 						//!< address on the local system.
 
-	FR_TYPE_TIMEVAL,			//!< Time value (struct timeval), only for config items.
+	FR_TYPE_TIME_DELTA,			//!< A period of time measured in nanoseconds.
 
 	FR_TYPE_ABINARY,			//!< Ascend binary format a packed data structure.
 
@@ -78,7 +75,6 @@ typedef enum {
 	FR_TYPE_STRUCT,				//!< like TLV, but without T or L, and fixed-width children
 
 	FR_TYPE_EXTENDED,			//!< Extended attribute space attribute.
-	FR_TYPE_LONG_EXTENDED,			//!< Long extended attribute space attribute.
 
 	FR_TYPE_VSA,				//!< Vendor-Specific, for RADIUS attribute 26.
 	FR_TYPE_EVS,				//!< Extended attribute, vendor specific.
@@ -111,7 +107,7 @@ typedef enum {
 	case FR_TYPE_COMBO_IP_ADDR: \
 	case FR_TYPE_COMBO_IP_PREFIX: \
 	case FR_TYPE_INT32: \
-	case FR_TYPE_TIMEVAL: \
+	case FR_TYPE_TIME_DELTA: \
 	case FR_TYPE_BOOL: \
 	case FR_TYPE_FLOAT64
 
@@ -131,9 +127,6 @@ typedef enum {
 	case FR_TYPE_FLOAT32: \
 	case FR_TYPE_FLOAT64: \
 	case FR_TYPE_DATE: \
-	case FR_TYPE_DATE_MILLISECONDS: \
-	case FR_TYPE_DATE_MICROSECONDS: \
-	case FR_TYPE_DATE_NANOSECONDS: \
 	case FR_TYPE_SIZE
 
 /** Match all variable length types in case statements
@@ -158,7 +151,6 @@ typedef enum {
  */
 #define FR_TYPE_STRUCTURAL_EXCEPT_VSA \
 	     FR_TYPE_EXTENDED: \
-	case FR_TYPE_LONG_EXTENDED: \
 	case FR_TYPE_EVS: \
 	case FR_TYPE_TLV: \
 	case FR_TYPE_STRUCT

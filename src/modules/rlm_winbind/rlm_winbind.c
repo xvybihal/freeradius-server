@@ -19,10 +19,10 @@
  * @file rlm_winbind.c
  * @brief Authenticates against Active Directory or Samba using winbind
  *
- * @author Matthew Newton <matthew@newtoncomputing.co.uk>
+ * @author Matthew Newton (matthew@newtoncomputing.co.uk)
  *
  * @copyright 2016 The FreeRADIUS server project
- * @copyright 2016 Matthew Newton <matthew@newtoncomputing.co.uk>
+ * @copyright 2016 Matthew Newton (matthew@newtoncomputing.co.uk)
  */
 
 RCSID("$Id$")
@@ -169,13 +169,13 @@ static int winbind_group_cmp(void *instance, REQUEST *request, UNUSED VALUE_PAIR
 		goto error;
 	}
 
-	RDEBUG2("Trying to find user \"%s\" in group \"%s\"", username, check->vp_strvalue);
+	REDEBUG2("Trying to find user \"%s\" in group \"%s\"", username, check->vp_strvalue);
 
 	err = wbcCtxGetGroups(wb_ctx, username, &num_groups, &wb_groups);
 	switch (err) {
 	case WBC_ERR_SUCCESS:
 		rcode = 0;
-		RDEBUG2("Successfully retrieved user's groups");
+		REDEBUG2("Successfully retrieved user's groups");
 		break;
 
 	case WBC_ERR_WINBIND_NOT_AVAILABLE:
@@ -196,7 +196,7 @@ static int winbind_group_cmp(void *instance, REQUEST *request, UNUSED VALUE_PAIR
 		break;
 	}
 
-	if (!num_groups) RDEBUG("No groups returned");
+	if (!num_groups) REDEBUG2("No groups returned");
 
 	if (rcode) goto finish;
 	rcode = 1;
@@ -232,7 +232,7 @@ static int winbind_group_cmp(void *instance, REQUEST *request, UNUSED VALUE_PAIR
 			continue;
 		}
 
-		RDEBUG3("Resolved GID %i to name \"%s\"", wb_groups[i], group->gr_name);
+		REDEBUG2("Resolved GID %i to name \"%s\"", wb_groups[i], group->gr_name);
 
 		/* Find the backslash in the returned group name */
 		if ((backslash < strlen(group->gr_name)) && (group->gr_name[backslash] == '\\')) {
@@ -245,9 +245,9 @@ static int winbind_group_cmp(void *instance, REQUEST *request, UNUSED VALUE_PAIR
 		}
 
 		/* See if the group matches */
-		RDEBUG3("Checking plain group name \"%s\"", group_name);
+		REDEBUG2("Checking plain group name \"%s\"", group_name);
 		if (!strcasecmp(group_name, check->vp_strvalue)) {
-			RDEBUG("Found matching group: %s", group_name);
+			REDEBUG2("Found matching group: %s", group_name);
 			found = true;
 			rcode = 0;
 		}
@@ -257,7 +257,7 @@ static int winbind_group_cmp(void *instance, REQUEST *request, UNUSED VALUE_PAIR
 		if (found) break;
 	}
 
-	if (rcode) RDEBUG2("No groups found that match");
+	if (rcode) REDEBUG2("No groups found that match");
 
 finish:
 	wbcFreeMemory(wb_groups);
@@ -294,7 +294,7 @@ static int _mod_conn_free(struct wbcContext **wb_ctx)
  *
  * @return pointer to libwbclient context
  */
-static void *mod_conn_create(TALLOC_CTX *ctx, UNUSED void *instance, UNUSED struct timeval const *timeout)
+static void *mod_conn_create(TALLOC_CTX *ctx, UNUSED void *instance, UNUSED fr_time_delta_t timeout)
 {
 	struct wbcContext **wb_ctx;
 
@@ -464,7 +464,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(void *instance, UNUSED void *t
 	rlm_winbind_t const *inst = instance;
 
 	if (!request->password || (request->password->da != attr_user_password)) {
-		RDEBUG("No User-Password found in the request; not doing winbind authentication.");
+		REDEBUG2("No User-Password found in the request; not doing winbind authentication.");
 		return RLM_MODULE_NOOP;
 	}
 
@@ -507,10 +507,10 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(void *instance, UNUSED void
 	 *	Log the password
 	 */
 	if (RDEBUG_ENABLED3) {
-		RDEBUG3("Login attempt with password \"%s\" (%zd)", request->password->vp_strvalue,
+		REDEBUG("Login attempt with password \"%s\" (%zd)", request->password->vp_strvalue,
 			request->password->vp_length);
 	} else {
-		RDEBUG("Login attempt with password");
+		REDEBUG2("Login attempt with password");
 	}
 
 	/*
@@ -519,7 +519,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(void *instance, UNUSED void
 	 *	chatty enough.
 	 */
 	if (do_auth_wbclient_pap(inst, request) == 0) {
-		RDEBUG("User authenticated successfully using winbind");
+		REDEBUG2("User authenticated successfully using winbind");
 		return RLM_MODULE_OK;
 	}
 
@@ -536,8 +536,8 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(void *instance, UNUSED void
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_winbind;
-rad_module_t rlm_winbind = {
+extern module_t rlm_winbind;
+module_t rlm_winbind = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "winbind",
 	.inst_size	= sizeof(rlm_winbind_t),

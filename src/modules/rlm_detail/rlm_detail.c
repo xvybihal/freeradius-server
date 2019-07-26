@@ -19,7 +19,7 @@
  * @file rlm_detail.c
  * @brief Write plaintext versions of packets to flatfiles.
  *
- * @copyright 2000,2006  The FreeRADIUS server project
+ * @copyright 2000,2006 The FreeRADIUS server project
  */
 RCSID("$Id$")
 
@@ -370,7 +370,7 @@ static int detail_write(FILE *out, rlm_detail_t const *inst, REQUEST *request, R
 	 *	dictionary used for decoding.
 	 */
 //	WRITE("\t%s = %s", attr_protocol->name, fr_dict_root(request->dict)->name);
-	WRITE("\tTimestamp = %lu\n", (unsigned long) request->packet->timestamp.tv_sec);
+	WRITE("\tTimestamp = %lu\n", (unsigned long) fr_time_to_sec(request->packet->timestamp));
 
 	WRITE("\n");
 
@@ -539,8 +539,8 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_proxy(void *instance, void *thread,
 #endif
 
 /* globally exported name */
-extern rad_module_t rlm_detail;
-rad_module_t rlm_detail = {
+extern module_t rlm_detail;
+module_t rlm_detail = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "detail",
 	.inst_size	= sizeof(rlm_detail_t),

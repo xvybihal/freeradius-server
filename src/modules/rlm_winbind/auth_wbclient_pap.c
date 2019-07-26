@@ -19,9 +19,9 @@
  * @file auth_wbclient_pap.c
  * @brief PAP authentication against the wbclient library
  *
- * @author Matthew Newton <matthew@newtoncomputing.co.uk>
+ * @author Matthew Newton (matthew@newtoncomputing.co.uk)
  *
- * @copyright 2015-2016  Matthew Newton
+ * @copyright 2015-2016 Matthew Newton
  */
 
 RCSID("$Id$")

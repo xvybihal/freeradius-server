@@ -18,7 +18,7 @@
  *
  * @file src/lib/util/misc.c
  *
- * @copyright 2000,2006  The FreeRADIUS server project
+ * @copyright 2000,2006 The FreeRADIUS server project
  */
 RCSID("$Id$")
 
@@ -27,6 +27,7 @@ RCSID("$Id$")
 #include <freeradius-devel/util/debug.h>
 #include <freeradius-devel/util/strerror.h>
 #include <freeradius-devel/util/syserror.h>
+#include <freeradius-devel/util/time.h>
 
 #include <ctype.h>
 #include <fcntl.h>
@@ -35,7 +36,9 @@ RCSID("$Id$")
 #include <stdio.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/types.h>
 #include <sys/uio.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #ifdef HAVE_DIRENT_H
@@ -495,7 +498,7 @@ int fr_blocking(UNUSED int fd)
  *	- Number of bytes written.
  *	- -1 on failure.
  */
-ssize_t fr_writev(int fd, struct iovec vector[], int iovcnt, struct timeval *timeout)
+ssize_t fr_writev(int fd, struct iovec vector[], int iovcnt, fr_time_delta_t timeout)
 {
 	struct iovec *vector_p = vector;
 	ssize_t total = 0;
@@ -544,7 +547,7 @@ ssize_t fr_writev(int fd, struct iovec vector[], int iovcnt, struct timeval *tim
 
 			/* Don't let signals mess up the select */
 			do {
-				ret = select(fd + 1, NULL, &write_set, NULL, timeout);
+				ret = select(fd + 1, NULL, &write_set, NULL, &(fr_time_delta_to_timeval(timeout)));
 			} while ((ret == -1) && (errno == EINTR));
 
 			/* Select returned 0 which means it reached the timeout */
@@ -848,165 +851,6 @@ int fr_time_from_str(time_t *date, char const *date_str)
 	return 0;
 }
 
-#define USEC 1000000
-
-/** Convert a time specified in milliseconds to a timeval
- *
- * @param[out] out	Where to write the result.
- * @param[in] ms	To convert to a timeval struct.
- */
-void fr_timeval_from_ms(struct timeval *out, uint64_t ms)
-{
-	out->tv_sec = ms / 1000;
-	out->tv_usec = (ms % 1000) * 1000;
-}
-
-/** Convert a time specified in microseconds to a timeval
- *
- * @param[out] out	Where to write the result.
- * @param[in] usec	To convert to a timeval struct.
- */
-void fr_timeval_from_usec(struct timeval *out, uint64_t usec)
-{
-	out->tv_sec = usec / USEC;
-	out->tv_usec = (usec % USEC) * USEC;
-}
-
-/** Subtract one timeval from another
- *
- * @param[out] out Where to write difference.
- * @param[in] end Time closest to the present.
- * @param[in] start Time furthest in the past.
- */
-void fr_timeval_subtract(struct timeval *out, struct timeval const *end, struct timeval const *start)
-{
-	out->tv_sec = end->tv_sec - start->tv_sec;
-	if (out->tv_sec > 0) {
-		out->tv_sec--;
-		out->tv_usec = USEC;
-	} else {
-		out->tv_usec = 0;
-	}
-	out->tv_usec += end->tv_usec;
-	out->tv_usec -= start->tv_usec;
-
-	if (out->tv_usec >= USEC) {
-		out->tv_usec -= USEC;
-		out->tv_sec++;
-	}
-}
-
-/** Add one timeval to another
- *
- * @param[out] out Where to write the sum of the two times.
- * @param[in] a first time to sum.
- * @param[in] b second time to sum.
- */
-void fr_timeval_add(struct timeval *out, struct timeval const *a, struct timeval const *b)
-{
-	uint64_t usec;
-
-	out->tv_sec = a->tv_sec + b->tv_sec;
-
-	usec = a->tv_usec + b->tv_usec;
-	if (usec >= USEC) {
-		out->tv_sec++;
-		usec -= USEC;
-	}
-	out->tv_usec = usec;
-}
-
-/** Divide a timeval by a divisor
- *
- * @param[out] out where to write the result of dividing in by the divisor.
- * @param[in] in Timeval to divide.
- * @param[in] divisor Integer to divide timeval by.
- */
-void fr_timeval_divide(struct timeval *out, struct timeval const *in, int divisor)
-{
-	uint64_t x;
-
-	x = (((uint64_t)in->tv_sec * USEC) + in->tv_usec) / divisor;
-
-	out->tv_sec = x / USEC;
-	out->tv_usec = x % USEC;
-}
-
-/** Compare two timevals
- *
- * @param[in] a First timeval.
- * @param[in] b Second timeval.
- * @return
- *	- +1 if a > b.
- *	- -1 if a < b.
- *	- 0 if a == b.
- */
-int fr_timeval_cmp(struct timeval const *a, struct timeval const *b)
-{
-	int ret;
-
-	ret = (a->tv_sec > b->tv_sec) - (a->tv_sec < b->tv_sec);
-	if (ret != 0) return ret;
-
-	return (a->tv_usec > b->tv_usec) - (a->tv_usec < b->tv_usec);
-}
-
-/** Create timeval from a string
- *
- * @param[out] out Where to write timeval.
- * @param[in] in String to parse.
- * @return
- *	- 0 on success.
- *	- -1 on failure.
- */
-int fr_timeval_from_str(struct timeval *out, char const *in)
-{
-	int	sec;
-	char	*end;
-	struct	timeval tv;
-
-	sec = strtoul(in, &end, 10);
-	if (in == end) {
-		fr_strerror_printf("Failed parsing \"%s\" as float", in);
-		return -1;
-	}
-	tv.tv_sec = sec;
-	tv.tv_usec = 0;
-	if (*end == '.') {
-		size_t len;
-
-		len = strlen(end + 1);
-
-		if (len > 6) {
-			fr_strerror_printf("Too much precision for timeval");
-			return -1;
-		}
-
-		/*
-		 *	If they write "0.1", that means
-		 *	"10000" microseconds.
-		 */
-		sec = strtoul(end + 1, &end, 10);
-		if (in == end) {
-			fr_strerror_printf("Failed parsing fractional component \"%s\" of float", in);
-			return -1;
-		}
-		while (len < 6) {
-			sec *= 10;
-			len++;
-		}
-		tv.tv_usec = sec;
-	}
-	*out = tv;
-	return 0;
-}
-
-bool fr_timeval_isset(struct timeval const *tv)
-{
-	if (tv->tv_sec || tv->tv_usec) return true;
-	return false;
-}
-
 int fr_size_from_str(size_t *out, char const *str)
 {
 	char		*q = NULL;
@@ -1068,31 +912,6 @@ int fr_size_from_str(size_t *out, char const *str)
 	*out = (size_t)size;
 
 	return 0;
-}
-
-#define NSEC 1000000000
-/** Subtract one timespec from another
- *
- * @param[out] out Where to write difference.
- * @param[in] end Time closest to the present.
- * @param[in] start Time furthest in the past.
- */
-void fr_timespec_subtract(struct timespec *out, struct timespec const *end, struct timespec const *start)
-{
-	out->tv_sec = end->tv_sec - start->tv_sec;
-	if (out->tv_sec > 0) {
-		out->tv_sec--;
-		out->tv_nsec = NSEC;
-	} else {
-		out->tv_nsec = 0;
-	}
-	out->tv_nsec += end->tv_nsec;
-	out->tv_nsec -= start->tv_nsec;
-
-	if (out->tv_nsec >= NSEC) {
-		out->tv_nsec -= NSEC;
-		out->tv_sec++;
-	}
 }
 
 /** Multiple checking for overflow
@@ -1184,4 +1003,44 @@ int fr_digest_cmp(uint8_t const *a, uint8_t const *b, size_t length)
 	for (i = 0; i < length; i++) result |= a[i] ^ b[i];
 
 	return result;		/* 0 is OK, !0 is !OK, just like memcmp */
+}
+
+/** Create an empty file
+ *
+ * @param[in] filename path to file.
+ * @param[in] mode Specifies the file mode bits be applied.
+ * @return
+ *	- 0 on success.
+ *	- -1 on failure.
+ */
+int fr_file_touch(char const *filename, mode_t mode) {
+	int fd;
+
+	fd = open(filename, O_WRONLY | O_CREAT, mode);
+	if (fd < 0) {
+		fr_strerror_printf("Failed creating file \"%s\": %s", filename, fr_syserror(errno));
+		return -1;
+	}
+
+	close(fd);
+
+	return 0;
+}
+
+/** Remove a regular file from the filesystem
+ *
+ * @param[in] filename path to file.
+ * @return
+ * 	- -1 On error.
+ * 	- 0 if the file was removed.
+ * 	- 1 if the file didn't exist.
+ */
+int fr_file_unlink(char const *filename) {
+	if (unlink(filename) == 0) return 0;
+
+	if (errno == ENOENT) return 1;
+
+	fr_strerror_printf("Failed removing regular file \"%s\": %s", filename, fr_syserror(errno));
+
+	return -1;
 }

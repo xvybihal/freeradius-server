@@ -95,6 +95,7 @@
 #  define SHARED_OPTS			"-shared"
 #  define MODULE_OPTS			"-shared"
 #  define LINKER_FLAG_PREFIX		"-Wl,"
+//#  define DYNAMIC_INSTALL_NAME		"-Wl,-soname,"
 #if !defined(__sun)
 #  define DYNAMIC_LINK_OPTS		LINKER_FLAG_PREFIX "-export-dynamic"
 #else
@@ -216,6 +217,9 @@
 #define PATH_MAX 1024
 #endif
 
+
+#define XSTRINGIFY(x) #x
+#define STRINGIFY(x) XSTRINGIFY(x)
 
 /* We want to say we are libtool 1.4 for shlibtool compatibility. */
 #define VERSION "1.4"
@@ -1463,6 +1467,19 @@ static void add_minus_l(count_chars *cc, char const *arg)
 		strcpy(newarg, "-l");
 		strcat(newarg, file);
 		push_count_chars(cc, newarg);
+	}
+	/* special case for FreeRADIUS loadable modules */
+	else if ((name != NULL) && (file != NULL) &&
+		(strstr(name, "rlm_") == (name + 1))) {
+		*name = '\0';
+		file = name+1;
+		push_count_chars(cc, "-L");
+		push_count_chars(cc, arg);
+		/* we need one argument like -lapr-1 */
+		newarg = lt_malloc(strlen(file) + 4);
+		strcpy(newarg, "-l:");
+		strcat(newarg, file);
+		push_count_chars(cc, newarg);
 	} else {
 		push_count_chars(cc, arg);
 	}
@@ -2036,13 +2053,19 @@ static void link_fixup(command_t *cmd)
 #ifdef DYNAMIC_INSTALL_NAME
 			push_count_chars(cmd->shared_opts.normal, DYNAMIC_INSTALL_NAME);
 
+#ifdef __APPLE__
+			/*
+			 *	Install paths on OSX are absolute.
+			 */
 			if (!cmd->install_path) {
 				ERROR("Installation mode requires -rpath\n");
 				exit(1);
 			}
+#endif
 
 			{
-				char *tmp = lt_malloc(PATH_MAX);
+				char *tmp = lt_malloc(PATH_MAX + 30);
+
 				strcpy(tmp, cmd->install_path);
 
 				if (cmd->shared_name.install) {
@@ -2051,8 +2074,26 @@ static void link_fixup(command_t *cmd)
 					strcat(tmp, strrchr(cmd->shared_name.normal, '/'));
 				}
 
+				/*
+				 *	Add the version as "libfoo.so.PROGRAM_VERSION"
+				 */
+#if 0 && defined(PROGRAM_VERSION) && !defined(__APPLE__)
+				strcat(tmp, "." STRINGIFY(PROGRAM_VERSION));
+#endif
+
 				push_count_chars(cmd->shared_opts.normal, tmp);
 			}
+
+#if defined(PROGRAM_VERSION) && defined(__APPLE__)
+			/*
+			 *	These are separate options on OSX.
+			 */
+			push_count_chars(cmd->shared_opts.normal,
+					 "-current_version " STRINGIFY(PROGRAM_VERSION));
+			push_count_chars(cmd->shared_opts.normal,
+					 "-compatibility_version " STRINGIFY(PROGRAM_VERSION));
+#endif
+
 #endif
 		}
 

@@ -31,10 +31,12 @@
 #include <freeradius-devel/vqp/vqp.h>
 
 static fr_dict_t *dict_freeradius;
+static fr_dict_t *dict_vmps;
 
 extern fr_dict_autoload_t proto_vmps_dynamic_client_dict[];
 fr_dict_autoload_t proto_vmps_dynamic_client_dict[] = {
 	{ .out = &dict_freeradius, .proto = "freeradius" },
+	{ .out = &dict_vmps, .proto = "vmps" },
 	{ NULL }
 };
 
@@ -55,21 +57,12 @@ fr_dict_attr_autoload_t proto_vmps_dynamic_client_dict_attr[] = {
 #define CLIENT_ADD	(1)
 #define CLIENT_NAK	(257)
 
-static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, fr_io_action_t action)
+static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request)
 {
 	rlm_rcode_t rcode;
 	CONF_SECTION *unlang;
 
 	REQUEST_VERIFY(request);
-
-	/*
-	 *	Pass this through asynchronously to the module which
-	 *	is waiting for something to happen.
-	 */
-	if (action != FR_IO_ACTION_RUN) {
-		unlang_signal(request, (fr_state_signal_t) action);
-		return FR_IO_DONE;
-	}
 
 	switch (request->request_state) {
 	case REQUEST_INIT:
@@ -86,13 +79,13 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 		}
 
 		RDEBUG("Running 'new client' from file %s", cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_RECV;
 		/* FALL-THROUGH */
 
 	case REQUEST_RECV:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
 
@@ -122,13 +115,13 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 
 	rerun_nak:
 		RDEBUG("Running '%s client' from file %s", cf_section_name1(unlang), cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_SEND;
 		/* FALL-THROUGH */
 
 	case REQUEST_SEND:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
 
@@ -196,44 +189,30 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 }
 
 
-/*
- *	Ensure that the unlang sections are compiled.
- */
-static int mod_instantiate(UNUSED void *instance, CONF_SECTION *listen_cs)
-{
-	int rcode;
-	CONF_SECTION *server_cs;
-	vp_tmpl_rules_t		parse_rules;
+static virtual_server_compile_t compile_list[] = {
+	{
+		.name = "new",
+		.name2 = "client",
+		.component = MOD_AUTHORIZE,
+	},
+	{
+		.name = "add",
+		.name2 = "client",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "deny",
+		.name2 = "client",
+		.component = MOD_POST_AUTH,
+	},
 
-	memset(&parse_rules, 0, sizeof(parse_rules));
-	parse_rules.dict_def = dict_freeradius;
-
-	rad_assert(listen_cs);
-
-	server_cs = cf_item_to_section(cf_parent(listen_cs));
-	rad_assert(strcmp(cf_section_name1(server_cs), "server") == 0);
-
-	rcode = unlang_compile_subsection(server_cs, "new", "client", MOD_AUTHORIZE, &parse_rules);
-	if (rcode < 0) return rcode;
-	if (rcode == 0) {
-		cf_log_err(server_cs, "Failed finding 'new client { ... }' section of virtual server %s",
-			      cf_section_name2(server_cs));
-		return -1;
-	}
-
-	rcode = unlang_compile_subsection(server_cs, "add", "client", MOD_POST_AUTH, &parse_rules);
-	if (rcode < 0) return rcode;
-
-	rcode = unlang_compile_subsection(server_cs, "deny", "client", MOD_POST_AUTH, &parse_rules);
-	if (rcode < 0) return rcode;
-
-	return 0;
-}
+	COMPILE_TERMINATOR
+};
 
 extern fr_app_worker_t proto_vmps_dynamic_client;
 fr_app_worker_t proto_vmps_dynamic_client = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "vmps_dynamic_client",
-	.instantiate	= mod_instantiate,
 	.entry_point	= mod_process,
+	.compile_list	= compile_list,
 };

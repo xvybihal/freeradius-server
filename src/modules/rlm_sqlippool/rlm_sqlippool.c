@@ -19,9 +19,9 @@
  * @file rlm_sqlippool.c
  * @brief Allocates an IPv4 address from pools stored in SQL.
  *
- * @copyright 2002  Globe.Net Communications Limited
- * @copyright 2006  The FreeRADIUS server project
- * @copyright 2006  Suntel Communications
+ * @copyright 2002 Globe.Net Communications Limited
+ * @copyright 2006 The FreeRADIUS server project
+ * @copyright 2006 Suntel Communications
  */
 RCSID("$Id$")
 
@@ -297,6 +297,11 @@ static int sqlippool_command(char const *fmt, rlm_sql_handle_t **handle,
 	if (!fmt || !*fmt) return 0;
 
 	/*
+	 *	No handle?  That's an error.
+	 */
+	if (!handle || !*handle) return -1;
+
+	/*
 	 *	@todo this needs to die (should just be done in xlat expansion)
 	 */
 	sqlippool_expand(query, sizeof(query), fmt, data, param, param_len);
@@ -331,7 +336,7 @@ static int sqlippool_command(char const *fmt, rlm_sql_handle_t **handle,
  * Query the database expecting a single result row
  */
 static int CC_HINT(nonnull (1, 3, 4, 5)) sqlippool_query1(char *out, int outlen, char const *fmt,
-							  rlm_sql_handle_t *handle, rlm_sqlippool_t *data,
+							  rlm_sql_handle_t **handle, rlm_sqlippool_t *data,
 							  REQUEST *request, char *param, int param_len)
 {
 	char query[MAX_QUERY_LEN];
@@ -351,18 +356,18 @@ static int CC_HINT(nonnull (1, 3, 4, 5)) sqlippool_query1(char *out, int outlen,
 	/*
 	 *	Do an xlat on the provided string
 	 */
-	if (xlat_aeval(request, &expanded, request, query, data->sql_inst->sql_escape_func, handle) < 0) {
+	if (xlat_aeval(request, &expanded, request, query, data->sql_inst->sql_escape_func, *handle) < 0) {
 		return 0;
 	}
-	retval = data->sql_inst->sql_select_query(data->sql_inst, request, &handle, expanded);
+	retval = data->sql_inst->sql_select_query(data->sql_inst, request, handle, expanded);
 	talloc_free(expanded);
 
-	if (retval != 0){
+	if ((retval != 0) || !*handle) {
 		REDEBUG("database query error on '%s'", query);
 		return 0;
 	}
 
-	if (data->sql_inst->sql_fetch_row(&row, data->sql_inst, request, &handle) < 0) {
+	if (data->sql_inst->sql_fetch_row(&row, data->sql_inst, request, handle) < 0) {
 		REDEBUG("Failed fetching query result");
 		goto finish;
 	}
@@ -379,14 +384,15 @@ static int CC_HINT(nonnull (1, 3, 4, 5)) sqlippool_query1(char *out, int outlen,
 
 	rlen = strlen(row[0]);
 	if (rlen >= outlen) {
-		RDEBUG("insufficient string space");
+		RDEBUG2("insufficient string space");
 		goto finish;
 	}
 
 	strcpy(out, row[0]);
 	retval = rlen;
+
 finish:
-	(data->sql_inst->driver->sql_finish_select_query)(handle, data->sql_inst->config);
+	(data->sql_inst->driver->sql_finish_select_query)(*handle, data->sql_inst->config);
 
 	return retval;
 }
@@ -413,7 +419,7 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
 	} else {
 		inst->pool_name = talloc_typed_strdup(inst, "ippool");
 	}
-	sql_inst = module_find(cf_section_find(main_config->root_cs, "modules", NULL), inst->sql_instance_name);
+	sql_inst = module_by_name(NULL, inst->sql_instance_name);
 	if (!sql_inst) {
 		cf_log_err(conf, "failed to find sql instance named %s",
 			   inst->sql_instance_name);
@@ -486,13 +492,13 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 	 *	If there is a Framed-IP-Address attribute in the reply do nothing
 	 */
 	if (fr_pair_find_by_da(request->reply->vps, inst->framed_ip_address, TAG_ANY) != NULL) {
-		RDEBUG("Framed-IP-Address already exists");
+		RDEBUG2("Framed-IP-Address already exists");
 
 		return do_logging(inst, request, inst->log_exists, RLM_MODULE_NOOP);
 	}
 
 	if (fr_pair_find_by_da(request->control, attr_pool_name, TAG_ANY) == NULL) {
-		RDEBUG("No Pool-Name defined");
+		RDEBUG2("No Pool-Name defined");
 
 		return do_logging(inst, request, inst->log_nopool, RLM_MODULE_NOOP);
 	}
@@ -526,8 +532,9 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 	DO_PART(allocate_begin);
 
 	allocation_len = sqlippool_query1(allocation, sizeof(allocation),
-					  inst->allocate_find, handle,
+					  inst->allocate_find, &handle,
 					  inst, request, (char *) NULL, 0);
+	if (!handle) return RLM_MODULE_FAIL;
 
 	/*
 	 *	Nothing found...
@@ -545,8 +552,9 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 			 *Let's check if the pool exists at all
 			 */
 			allocation_len = sqlippool_query1(allocation, sizeof(allocation),
-							  inst->pool_check, handle, inst, request,
+							  inst->pool_check, &handle, inst, request,
 							  (char *) NULL, 0);
+			if (!handle) return RLM_MODULE_FAIL;
 
 			fr_pool_connection_release(inst->sql_inst->pool, request, handle);
 
@@ -560,7 +568,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 				 *	that case, we should return
 				 *	NOTFOUND
 				 */
-				RDEBUG("pool appears to be full");
+				RDEBUG2("pool appears to be full");
 				return do_logging(inst, request, inst->log_failed, RLM_MODULE_NOTFOUND);
 
 			}
@@ -571,14 +579,14 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 			 *	sqlippool, so we should just ignore this
 			 *	allocation failure and return NOOP
 			 */
-			RDEBUG("IP address could not be allocated as no pool exists with that name");
+			RDEBUG2("IP address could not be allocated as no pool exists with that name");
 			return RLM_MODULE_NOOP;
 
 		}
 
 		fr_pool_connection_release(inst->sql_inst->pool, request, handle);
 
-		RDEBUG("IP address could not be allocated");
+		RDEBUG2("IP address could not be allocated");
 		return do_logging(inst, request, inst->log_failed, RLM_MODULE_NOOP);
 	}
 
@@ -590,12 +598,12 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 	if (fr_pair_value_from_str(vp, allocation, allocation_len, '\0', true) < 0) {
 		DO_PART(allocate_commit);
 
-		RDEBUG("Invalid IP number [%s] returned from instbase query.", allocation);
+		RDEBUG2("Invalid IP number [%s] returned from instbase query.", allocation);
 		fr_pool_connection_release(inst->sql_inst->pool, request, handle);
 		return do_logging(inst, request, inst->log_failed, RLM_MODULE_NOOP);
 	}
 
-	RDEBUG("Allocated IP %s", allocation);
+	RDEBUG2("Allocated IP %s", allocation);
 	fr_pair_add(&request->reply->vps, vp);
 
 	/*
@@ -677,7 +685,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_accounting(void *instance, UNUSED void *
 
 	vp = fr_pair_find_by_da(request->packet->vps, attr_acct_status_type, TAG_ANY);
 	if (!vp) {
-		RDEBUG("Could not find account status type in packet");
+		RDEBUG2("Could not find account status type in packet");
 		return RLM_MODULE_NOOP;
 	}
 	acct_status_type = vp->vp_uint32;
@@ -697,7 +705,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_accounting(void *instance, UNUSED void *
 
 	handle = fr_pool_connection_get(inst->sql_inst->pool, request);
 	if (!handle) {
-		RDEBUG("Failed reserving SQL connection");
+		RDEBUG2("Failed reserving SQL connection");
 		return RLM_MODULE_FAIL;
 	}
 
@@ -738,8 +746,8 @@ static rlm_rcode_t CC_HINT(nonnull) mod_accounting(void *instance, UNUSED void *
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_sqlippool;
-rad_module_t rlm_sqlippool = {
+extern module_t rlm_sqlippool;
+module_t rlm_sqlippool = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "sqlippool",
 	.type		= RLM_TYPE_THREAD_SAFE,

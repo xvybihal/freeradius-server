@@ -19,9 +19,9 @@
  * @file rlm_client.c
  * @brief Reads client definitions from flat files as required.
  *
- * @copyright 2008  The FreeRADIUS server project
- * @copyright 2008  Alan DeKok <aland@deployingradius.com>
- * @copyright 2016 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2008 The FreeRADIUS server project
+ * @copyright 2008 Alan DeKok (aland@deployingradius.com)
+ * @copyright 2016 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -55,7 +55,7 @@ static int _map_proc_client_get_vp(TALLOC_CTX *ctx, VALUE_PAIR **out, REQUEST *r
 	/*
 	 *	FIXME: allow multiple entries.
 	 */
-	if (map->lhs->type == TMPL_TYPE_ATTR) {
+	if (tmpl_is_attr(map->lhs)) {
 		da = map->lhs->tmpl_da;
 	} else {
 		char *attr;
@@ -143,7 +143,8 @@ static rlm_rcode_t map_proc_client(UNUSED void *mod_inst, UNUSED void *proc_inst
 		client = client_find(NULL, &ip, IPPROTO_IP);
 		if (!client) {
 			RDEBUG("No client found with IP \"%s\"", client_str);
-			return 0;
+			rcode = RLM_MODULE_NOTFOUND;
+			goto finish;
 		}
 
 		if (client->cs) {
@@ -172,7 +173,7 @@ static rlm_rcode_t map_proc_client(UNUSED void *mod_inst, UNUSED void *proc_inst
 		char	*field = NULL;
 
 		if (tmpl_aexpand(request, &field, request, map->rhs, NULL, NULL) < 0) {
-			RDEBUG("Failed expanding RHS at %s", map->lhs->name);
+			REDEBUG("Failed expanding RHS at %s", map->lhs->name);
 			rcode = RLM_MODULE_FAIL;
 			talloc_free(field);
 			break;
@@ -277,30 +278,30 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(UNUSED void *instance, UNUSED 
 	 */
 	if ((request->packet->src_port != 0) || (request->packet->vps != NULL) ||
 	    (request->parent != NULL)) {
-		RDEBUG("Improper configuration");
+		REDEBUG("Improper configuration");
 		return RLM_MODULE_NOOP;
 	}
 
 	if (!request->client || !request->client->cs) {
-		RDEBUG("Unknown client definition");
+		REDEBUG("Unknown client definition");
 		return RLM_MODULE_NOOP;
 	}
 
 	cp = cf_pair_find(request->client->cs, "directory");
 	if (!cp) {
-		RDEBUG("No directory configuration in the client");
+		REDEBUG("No directory configuration in the client");
 		return RLM_MODULE_NOOP;
 	}
 
 	value = cf_pair_value(cp);
 	if (!value) {
-		RDEBUG("No value given for the directory entry in the client");
+		REDEBUG("No value given for the directory entry in the client");
 		return RLM_MODULE_NOOP;
 	}
 
 	length = strlen(value);
 	if (length > (sizeof(buffer) - 256)) {
-		RDEBUG("Directory name too long");
+		REDEBUG("Directory name too long");
 		return RLM_MODULE_NOOP;
 	}
 
@@ -359,8 +360,8 @@ static int mod_bootstrap(void *instance, UNUSED CONF_SECTION *conf)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_client;
-rad_module_t rlm_client = {
+extern module_t rlm_client;
+module_t rlm_client = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "dynamic_clients",
 	.type		= RLM_TYPE_THREAD_SAFE,		/* type */

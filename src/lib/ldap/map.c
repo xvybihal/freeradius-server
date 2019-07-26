@@ -19,8 +19,8 @@
  * @file src/lib/ldap/map.c
  * @brief Functions for mapping between LDAP and FreeRADIUS attributes.
  *
- * @author Arran Cudbard-Bell <a.cudbardb@freeradius.org>
- * @copyright 2013 Network RADIUS SARL <info@networkradius.com>
+ * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
+ * @copyright 2013 Network RADIUS SARL (info@networkradius.com)
  * @copyright 2013 The FreeRADIUS Server Project.
  */
 RCSID("$Id$")
@@ -41,10 +41,10 @@ USES_APPLE_DEPRECATED_API
  */
 int fr_ldap_map_getvalue(TALLOC_CTX *ctx, VALUE_PAIR **out, REQUEST *request, vp_map_t const *map, void *uctx)
 {
-	fr_ldap_result_t *self = uctx;
-	VALUE_PAIR *head = NULL, *vp;
-	fr_cursor_t cursor, to_append;
-	int i;
+	fr_ldap_result_t	*self = uctx;
+	VALUE_PAIR		*head = NULL, *vp;
+	fr_cursor_t		cursor, to_append;
+	int			i;
 
 	fr_cursor_init(&cursor, &head);
 
@@ -102,7 +102,7 @@ int fr_ldap_map_getvalue(TALLOC_CTX *ctx, VALUE_PAIR **out, REQUEST *request, vp
 
 			talloc_free(attr_str);
 
-			if (attr->lhs->type == TMPL_TYPE_UNPARSED) {
+			if (tmpl_is_unparsed(attr->lhs)) {
 			    RWDEBUG("Failed parsing left side of \"%pV\", skipping...",
 					fr_box_strvalue_len(self->values[i]->bv_val, self->values[i]->bv_len));
 				talloc_free(attr);
@@ -266,7 +266,7 @@ int fr_ldap_map_expand(fr_ldap_map_exp_t *expanded, REQUEST *request, vp_map_t c
 
 	for (map = maps; map != NULL; map = map->next) {
 		if (tmpl_expand(&attr, attr_buff, sizeof(attr_buff), request, map->rhs, NULL, NULL) < 0) {
-			RDEBUG("Expansion of LDAP attribute \"%s\" failed", map->rhs->name);
+			REDEBUG("Expansion of LDAP attribute \"%s\" failed", map->rhs->name);
 			TALLOC_FREE(ctx);
 			return -1;
 		}

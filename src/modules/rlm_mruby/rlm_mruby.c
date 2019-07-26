@@ -19,7 +19,7 @@
  * @file rlm_mruby.c
  * @brief Translates requests between the server an an mruby interpreter.
  *
- * @copyright 2016 Herwin Weststrate <freeradius@herwinw.nl>
+ * @copyright 2016 Herwin Weststrate (freeradius@herwinw.nl)
  * @copyright 2016 The FreeRADIUS server project
  */
 RCSID("$Id$")
@@ -64,7 +64,7 @@ static mrb_value mruby_log(mrb_state *mrb, UNUSED mrb_value self)
 	char *msg = NULL;
 
 	mrb_get_args(mrb, "iz", &level, &msg);
-	fr_log(&default_log, level, "rlm_ruby: %s", msg);
+	fr_log(&default_log, level, __FILE__, __LINE__, "rlm_ruby: %s", msg);
 
 	return mrb_nil_value();
 }
@@ -158,12 +158,9 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
 	/* Define the logging constants */
 	A(L_DBG);
 	A(L_WARN);
-	A(L_AUTH);
 	A(L_INFO);
 	A(L_ERR);
-	A(L_PROXY);
 	A(L_WARN);
-	A(L_ACCT);
 	A(L_DBG_WARN);
 	A(L_DBG_ERR);
 	A(L_DBG_WARN_REQ);
@@ -270,7 +267,6 @@ static int mruby_vps_to_array(REQUEST *request, mrb_value *out, mrb_state *mrb, 
 		case FR_TYPE_IPV6_PREFIX:
 		case FR_TYPE_IFID:
 		case FR_TYPE_ETHERNET:
-		case FR_TYPE_TIMEVAL:
 		case FR_TYPE_ABINARY:
 			val = to_cast;		/* No conversions required */
 			break;
@@ -288,9 +284,7 @@ static int mruby_vps_to_array(REQUEST *request, mrb_value *out, mrb_state *mrb, 
 		case FR_TYPE_INT32:
 		case FR_TYPE_INT64:
 		case FR_TYPE_DATE:
-		case FR_TYPE_DATE_MILLISECONDS:
-		case FR_TYPE_DATE_MICROSECONDS:
-		case FR_TYPE_DATE_NANOSECONDS:
+		case FR_TYPE_TIME_DELTA:
 		case FR_TYPE_SIZE:
 			val = mrb_convert_type(mrb, to_cast, MRB_TT_FIXNUM, "Fixnum", "to_int");
 			break;
@@ -367,7 +361,7 @@ static void add_vp_tuple(TALLOC_CTX *ctx, REQUEST *request, VALUE_PAIR **vps, mr
 		}
 		DEBUG("%s: %s %s %s", function_name, ckey, fr_int2str(fr_tokens_table, op, "="), cval);
 
-		if (tmpl_afrom_attr_str(request, &dst, ckey,
+		if (tmpl_afrom_attr_str(request, NULL, &dst, ckey,
 					&(vp_tmpl_rules_t){
 						.dict_def = request->dict,
 						.list_def = PAIR_LIST_REPLY
@@ -530,8 +524,8 @@ static int mod_detach(void *instance)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_mruby;
-rad_module_t rlm_mruby = {
+extern module_t rlm_mruby;
+module_t rlm_mruby = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "mruby",
 	.type		= RLM_TYPE_THREAD_UNSAFE, /* Not sure */

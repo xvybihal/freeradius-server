@@ -15,8 +15,8 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2012  The FreeRADIUS server project
- * @copyright 2012  Alan DeKok <aland@networkradius.com>
+ * @copyright 2012 The FreeRADIUS server project
+ * @copyright 2012 Alan DeKok (aland@networkradius.com)
  */
 
 #define LOG_PREFIX "rlm_securid - "
@@ -89,7 +89,7 @@ int securid_sessionlist_add(rlm_securid_t *inst,REQUEST *request, SECURID_SESSIO
 	 *	The time at which this request was made was the time
 	 *	at which it was received by the RADIUS server.
 	 */
-	session->timestamp = request->packet->timestamp;
+	session->timestamp = fr_time_to_sec(request->packet->timestamp);
 
 	session->src_ipaddr = request->packet->src_ipaddr;
 
@@ -117,7 +117,7 @@ int securid_sessionlist_add(rlm_securid_t *inst,REQUEST *request, SECURID_SESSIO
 	memset(session->state, 0, sizeof(session->state));
 	snprintf(session->state,sizeof(session->state)-1,"FRR-CH %d|%d",session->session_id,session->trips+1);
 	RDEBUG2("Inserting session id=%d identity='%s' state='%s' to the session list",
-			 session->session_id,SAFE_STR(session->identity),session->state);
+		session->session_id,SAFE_STR(session->identity),session->state);
 
 
 	/*
@@ -125,7 +125,7 @@ int securid_sessionlist_add(rlm_securid_t *inst,REQUEST *request, SECURID_SESSIO
 	 *	the list.
 	 */
 	MEM(pair_update_reply(&state, attr_state) >= 0);
-	fr_pair_value_memcpy(state, session->state, sizeof(session->state));
+	fr_pair_value_memcpy(state, session->state, sizeof(session->state), true);
 
 	status = rbtree_insert(inst->session_tree, session);
 	if (status) {
@@ -177,7 +177,7 @@ SECURID_SESSION *securid_sessionlist_find(rlm_securid_t *inst, REQUEST *request)
 
 	/* clean expired sessions if any */
 	pthread_mutex_lock(&(inst->session_mutex));
-	securid_sessionlist_clean_expired(inst, request, request->packet->timestamp);
+	securid_sessionlist_clean_expired(inst, request, fr_time_to_sec(request->packet->timestamp));
 	pthread_mutex_unlock(&(inst->session_mutex));
 
 	/*

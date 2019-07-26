@@ -17,8 +17,8 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2008  The FreeRADIUS server project
- * @copyright 2008  Alan DeKok <aland@deployingradius.com>
+ * @copyright 2008 The FreeRADIUS server project
+ * @copyright 2008 Alan DeKok (aland@deployingradius.com)
  */
 
 RCSID("$Id$")
@@ -27,18 +27,17 @@ RCSID("$Id$")
 #include <freeradius-devel/server/rad_assert.h>
 
 #include <freeradius-devel/util/misc.h>
-
+#include <freeradius-devel/util/time.h>
 #include <freeradius-devel/radius/defs.h>
 
 
 #ifdef WITH_STATS
 
-#define USEC (1000000)
 #define EMA_SCALE (100)
 #define F_EMA_SCALE (1000000)
 
-static struct timeval	start_time;
-static struct timeval	hup_time;
+static fr_time_t start_time;
+static fr_time_t hup_time;
 
 #define FR_STATS_INIT { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 	\
 				 { 0, 0, 0, 0, 0, 0, 0, 0 }}
@@ -127,14 +126,14 @@ void request_stats_final(REQUEST *request)
 		 *	FIXME: Do the time calculations once...
 		 */
 		fr_stats_bins(&radius_auth_stats,
-			      &request->packet->timestamp,
-			      &request->reply->timestamp);
+			      request->packet->timestamp,
+			      request->reply->timestamp);
 		fr_stats_bins(&request->client->auth,
-			      &request->packet->timestamp,
-			      &request->reply->timestamp);
+			      request->packet->timestamp,
+			      request->reply->timestamp);
 		fr_stats_bins(&request->listener->stats,
-			      &request->packet->timestamp,
-			      &request->reply->timestamp);
+			      request->packet->timestamp,
+			      request->reply->timestamp);
 		break;
 
 	case FR_CODE_ACCESS_REJECT:
@@ -149,11 +148,11 @@ void request_stats_final(REQUEST *request)
 	case FR_CODE_ACCOUNTING_RESPONSE:
 		INC_ACCT(total_responses);
 		fr_stats_bins(&radius_acct_stats,
-			      &request->packet->timestamp,
-			      &request->reply->timestamp);
+			      request->packet->timestamp,
+			      request->reply->timestamp);
 		fr_stats_bins(&request->client->acct,
-			      &request->packet->timestamp,
-			      &request->reply->timestamp);
+			      request->packet->timestamp,
+			      request->reply->timestamp);
 		break;
 #endif
 
@@ -163,8 +162,8 @@ void request_stats_final(REQUEST *request)
 	  coa_stats:
 		INC_COA(total_responses);
 		fr_stats_bins(&request->client->coa,
-			      &request->packet->timestamp,
-			      &request->reply->timestamp);
+			      request->packet->timestamp,
+			      request->reply->timestamp);
 		break;
 
 	case FR_CODE_COA_NAK:
@@ -176,8 +175,8 @@ void request_stats_final(REQUEST *request)
 	  dsc_stats:
 		INC_DSC(total_responses);
 		fr_stats_bins(&request->client->dsc,
-			      &request->packet->timestamp,
-			      &request->reply->timestamp);
+			      request->packet->timestamp,
+			      request->reply->timestamp);
 		break;
 
 	case FR_CODE_DISCONNECT_NAK:
@@ -553,9 +552,9 @@ void request_stats_reply(REQUEST *request)
 	 */
 	if ((flag->vp_uint32 & 0x10) != 0) {
 		vp = ADD_TO_REPLY(FR_FREERADIUS_STATS_START_TIME, VENDORPEC_FREERADIUS);
-		if (vp) vp->vp_date = start_time.tv_sec;
+		if (vp) vp->vp_date = fr_time_to_sec(start_time);
 		vp = ADD_TO_REPLY(FR_FREERADIUS_STATS_HUP_TIME, VENDORPEC_FREERADIUS);
-		if (vp) vp->vp_date = hup_time.tv_sec;
+		if (vp) vp->vp_date = fr_time_to_sec(hup_time);
 	}
 
 	/*
@@ -801,24 +800,22 @@ void request_stats_reply(REQUEST *request)
 void radius_stats_init(int flag)
 {
 	if (!flag) {
-		gettimeofday(&start_time, NULL);
+		start_time = fr_time();
 		hup_time = start_time; /* it's just nicer this way */
 	} else {
-		gettimeofday(&hup_time, NULL);
+		hup_time = fr_time();
 	}
 }
 
-void radius_stats_ema(fr_stats_ema_t *ema,
-		      struct timeval *start, struct timeval *end)
+void radius_stats_ema(fr_stats_ema_t *ema, fr_time_t start, fr_time_t end)
 {
-	int micro;
-	time_t tdiff;
+	uint64_t	tdiff;
 #ifdef WITH_STATS_DEBUG
-	static int n = 0;
+	static int	n = 0;
 #endif
 	if (ema->window == 0) return;
 
-	rad_assert(start->tv_sec <= end->tv_sec);
+	rad_assert(start <= end);
 
 	/*
 	 *	Initialize it.
@@ -830,35 +827,27 @@ void radius_stats_ema(fr_stats_ema_t *ema,
 		ema->f10 = (2 * F_EMA_SCALE) / ((10 * ema->window) + 1);
 	}
 
-
-	tdiff = start->tv_sec;
-	tdiff -= end->tv_sec;
-
-	micro = (int) tdiff;
-	if (micro > 40) micro = 40; /* don't overflow 32-bit ints */
-	micro *= USEC;
-	micro += start->tv_usec;
-	micro -= end->tv_usec;
-
-	micro *= EMA_SCALE;
+	tdiff = fr_time_delta_to_usec(start);
+	tdiff -= fr_time_delta_to_usec(end);
+	tdiff *= EMA_SCALE;
 
 	if (ema->ema1 == 0) {
-		ema->ema1 = micro;
-		ema->ema10 = micro;
+		ema->ema1 = tdiff;
+		ema->ema10 = tdiff;
 	} else {
 		int diff;
 
-		diff = ema->f1 * (micro - ema->ema1);
+		diff = ema->f1 * (tdiff - ema->ema1);
 		ema->ema1 += (diff / 1000000);
 
-		diff = ema->f10 * (micro - ema->ema10);
+		diff = ema->f10 * (tdiff - ema->ema10);
 		ema->ema10 += (diff / 1000000);
 	}
 
 
 #ifdef WITH_STATS_DEBUG
 	DEBUG("time %d %d.%06d\t%d.%06d\t%d.%06d\n",
-	      n, micro / PREC, (micro / EMA_SCALE) % USEC,
+	      n, tdiff / PREC, (tdiff / EMA_SCALE) % USEC,
 	      ema->ema1 / PREC, (ema->ema1 / EMA_SCALE) % USEC,
 	      ema->ema10 / PREC, (ema->ema10 / EMA_SCALE) % USEC);
 	n++;
@@ -874,22 +863,21 @@ void radius_stats_ema(fr_stats_ema_t *ema,
  * @param[in] start of the request.
  * @param[in] end of the request.
  */
-void fr_stats_bins(fr_stats_t *stats, struct timeval *start, struct timeval *end)
+void fr_stats_bins(fr_stats_t *stats, fr_time_t start, fr_time_t end)
 {
-	struct timeval diff;
-	uint32_t delay;
+	fr_time_t	diff;
+	uint32_t	delay;
 
-	if ((start->tv_sec == 0) || (end->tv_sec == 0) || (end->tv_sec < start->tv_sec)) return;
+	if (end < start) return;	/* bad data */
+	diff = end - start;
 
-	fr_timeval_subtract(&diff, end, start);
-
-	if (diff.tv_sec >= 10) {
+	if (diff >= fr_time_delta_from_sec(10)) {
 		stats->elapsed[7]++;
 	} else {
 		int i;
 		uint32_t cmp;
 
-		delay = (diff.tv_sec * USEC) + diff.tv_usec;
+		delay = fr_time_delta_to_usec(diff);
 
 		cmp = 10;
 		for (i = 0; i < 7; i++) {

@@ -34,7 +34,7 @@
 #include <freeradius-devel/io/schedule.h>
 #include <freeradius-devel/server/rad_assert.h>
 
-#include <freeradius-devel/protocol/vqp/vqp.h>
+#include <freeradius-devel/protocol/vmps/vmps.h>
 
 #include "proto_vmps.h"
 
@@ -113,7 +113,7 @@ static ssize_t mod_read(fr_listen_t *li, void **packet_ctx, fr_time_t **recv_tim
 	int				flags;
 	ssize_t				data_size;
 	size_t				packet_len;
-	struct timeval			timestamp;
+	fr_time_t			timestamp;
 
 	fr_time_t			*recv_time_p;
 	uint32_t			id;
@@ -161,8 +161,8 @@ static ssize_t mod_read(fr_listen_t *li, void **packet_ctx, fr_time_t **recv_tim
 		return 0;
 	}
 
-	if ((buffer[1] != FR_VMPS_PACKET_TYPE_VALUE_VMPS_JOIN_REQUEST) &&
-	    (buffer[1] != FR_VMPS_PACKET_TYPE_VALUE_VMPS_RECONFIRM_REQUEST)) {
+	if ((buffer[1] != FR_PACKET_TYPE_VALUE_JOIN_REQUEST) &&
+	    (buffer[1] != FR_PACKET_TYPE_VALUE_RECONFIRM_REQUEST)) {
 		DEBUG("proto_vmps_udp got invalid packet code %d", buffer[0]);
 		thread->stats.total_unknown_types++;
 		return 0;
@@ -180,8 +180,7 @@ static ssize_t mod_read(fr_listen_t *li, void **packet_ctx, fr_time_t **recv_tim
 		return 0;
 	}
 
-	// @todo - maybe convert timestamp?
-	*recv_time_p = fr_time();
+	*recv_time_p = timestamp;
 
 	/*
 	 *	proto_vmps sets the priority
@@ -315,6 +314,8 @@ static int mod_open(fr_listen_t *li)
 		return -1;
 	}
 
+	li->app_io_addr = fr_app_io_socket_addr(li, IPPROTO_UDP, &inst->ipaddr, port);
+
 	/*
 	 *	Set SO_REUSEPORT before bind, so that all packets can
 	 *	listen on the same destination IP address.
@@ -374,7 +375,8 @@ static int mod_fd_set(fr_listen_t *li, int fd)
 	return 0;
 }
 
-static int mod_compare(UNUSED void const *instance, void const *one, void const *two)
+static int mod_compare(UNUSED void const *instance, UNUSED void *thread_instance, UNUSED RADCLIENT *client,
+		       void const *one, void const *two)
 {
 	int rcode;
 	uint8_t const *a = one;
@@ -470,7 +472,7 @@ static int mod_bootstrap(void *instance, CONF_SECTION *cs)
 	 *	for IPPROTO_UDP, and to not require a "secret".
 	 */
 	if (cf_section_find_next(server_cs, NULL, "client", CF_IDENT_ANY)) {
-		inst->clients = client_list_parse_section(server_cs, false);
+		inst->clients = client_list_parse_section(server_cs, IPPROTO_UDP, false);
 		if (!inst->clients) {
 			cf_log_err(cs, "Failed creating local clients");
 			return -1;

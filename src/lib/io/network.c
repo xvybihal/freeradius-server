@@ -20,9 +20,11 @@
  * @brief Receiver of socket data, which sends messages to the workers.
  * @file io/network.c
  *
- * @copyright 2016 Alan DeKok <aland@freeradius.org>
+ * @copyright 2016 Alan DeKok (aland@freeradius.org)
  */
 RCSID("$Id$")
+
+#define LOG_DST nr->log
 
 #include <talloc.h>
 
@@ -39,19 +41,6 @@ RCSID("$Id$")
 #include <freeradius-devel/io/queue.h>
 #include <freeradius-devel/io/ring_buffer.h>
 #include <freeradius-devel/io/worker.h>
-
-/*
- *	Define our own debugging.
- */
-#undef DEBUG
-#undef DEBUG2
-#undef DEBUG3
-#undef ERROR
-
-//#define DEBUG(fmt, ...) if (nr->lvl) fr_log(nr->log, L_DBG, fmt, ## __VA_ARGS__)
-//#define DEBUG2(fmt, ...) if (nr->lvl >= L_DBG_LVL_2) fr_log(nr->log, L_DBG, fmt, ## __VA_ARGS__)
-#define DEBUG3(fmt, ...) if (nr->lvl >= L_DBG_LVL_3) fr_log(nr->log, L_DBG, fmt, ## __VA_ARGS__)
-#define ERROR(fmt, ...) fr_log(nr->log, L_ERR, fmt, ## __VA_ARGS__)
 
 #define MAX_WORKERS 64
 
@@ -139,8 +128,8 @@ struct fr_network_t {
 	fr_network_worker_t	*workers[MAX_WORKERS]; 	//!< each worker
 };
 
-static void fr_network_post_event(fr_event_list_t *el, struct timeval *now, void *uctx);
-static int fr_network_pre_event(void *ctx, struct timeval *wake);
+static void fr_network_post_event(fr_event_list_t *el, fr_time_t now, void *uctx);
+static int fr_network_pre_event(void *ctx, fr_time_t wake);
 
 static int reply_cmp(void const *one, void const *two)
 {
@@ -408,7 +397,8 @@ static void fr_network_read(UNUSED fr_event_list_t *el, int sockfd, UNUSED int f
 	if (!s->cd) {
 		cd = (fr_channel_data_t *) fr_message_reserve(s->ms, s->listen->default_message_size);
 		if (!cd) {
-			fr_log(nr->log, L_ERR, "Failed allocating message size %zd! - Closing socket", s->listen->default_message_size);
+			ERROR("Failed allocating message size %zd! - Closing socket",
+			      s->listen->default_message_size);
 			fr_network_socket_dead(nr, s);
 			return;
 		}
@@ -502,14 +492,14 @@ next_message:
 		next = (fr_channel_data_t *) fr_message_alloc_reserve(s->ms, &cd->m, data_size, s->leftover,
 								      s->listen->default_message_size);
 		if (!next) {
-			fr_log(nr->log, L_ERR, "Failed reserving partial packet.");
+			ERROR("Failed reserving partial packet.");
 			// @todo - probably close the socket...
 			rad_assert(0 == 1);
 		}
 	}
 
 	if (!fr_network_send_request(nr, cd)) {
-		fr_log(nr->log, L_ERR, "Failed sending packet to worker");
+		ERROR("Failed sending packet to worker");
 		fr_message_done(&cd->m);
 		nr->stats.dropped++;
 		s->stats.dropped++;
@@ -643,7 +633,7 @@ static void fr_network_write(UNUSED fr_event_list_t *el, UNUSED int sockfd, UNUS
 				return;
 			}
 
-			PERROR("Failed writing to socket %d", s->listen->fd);
+			PERROR("Closing socket %d due to failed write", s->listen->fd);
 			fr_network_socket_dead(nr, s);
 			return;
 		}
@@ -777,7 +767,7 @@ static void fr_network_socket_callback(void *ctx, void const *data, size_t data_
 				      sizeof(fr_channel_data_t),
 				      size);
 	if (!s->ms) {
-		fr_log(nr->log, L_ERR, "Failed creating message buffers for network IO: %s", fr_strerror());
+		ERROR("Failed creating message buffers for network IO: %s", fr_strerror());
 		talloc_free(s);
 		return;
 	}
@@ -843,7 +833,7 @@ static void fr_network_directory_callback(void *ctx, void const *data, size_t da
 				      sizeof(fr_channel_data_t),
 				      s->listen->default_message_size * s->listen->num_messages);
 	if (!s->ms) {
-		fr_log(nr->log, L_ERR, "Failed creating message buffers for directory IO: %s", fr_strerror());
+		ERROR("Failed creating message buffers for directory IO: %s", fr_strerror());
 		talloc_free(s);
 		return;
 	}
@@ -1154,7 +1144,7 @@ int fr_network_destroy(fr_network_t *nr)
  * @param[in] ctx the network
  * @param[in] wake the time when the event loop will wake up.
  */
-static int fr_network_pre_event(void *ctx, UNUSED struct timeval *wake)
+static int fr_network_pre_event(void *ctx, UNUSED fr_time_t wake)
 {
 	fr_network_t *nr = talloc_get_type_abort(ctx, fr_network_t);
 
@@ -1171,7 +1161,7 @@ static int fr_network_pre_event(void *ctx, UNUSED struct timeval *wake)
  * @param now	the current time (mostly)
  * @param uctx	the fr_network_t
  */
-static void fr_network_post_event(UNUSED fr_event_list_t *el, UNUSED struct timeval *now, void *uctx)
+static void fr_network_post_event(UNUSED fr_event_list_t *el, UNUSED fr_time_t now, void *uctx)
 {
 	fr_channel_data_t *cd;
 	fr_network_t *nr = talloc_get_type_abort(uctx, fr_network_t);
@@ -1298,7 +1288,11 @@ static void fr_network_post_event(UNUSED fr_event_list_t *el, UNUSED struct time
 			fr_message_done(&cd->m);
 			if (li->app_io->error) li->app_io->error(li);
 
-			fr_network_socket_dead(nr, s);
+			/*
+			 *	Don't close the socket.  The write may
+			 *	be temporary.
+			 */
+//			fr_network_socket_dead(nr, s);
 			continue;
 		}
 
@@ -1522,9 +1516,9 @@ static int cmd_stats_self(FILE *fp, UNUSED FILE *fp_err, void *ctx, UNUSED fr_cm
 	return 0;
 }
 
-static int socket_list(void *ctx, void *data)
+static int socket_list(void *data, void *uctx)
 {
-	FILE *fp = ctx;
+	FILE *fp = uctx;
 	fr_network_socket_t *s = data;
 
 	if (!s->listen->app_io->get_name) {

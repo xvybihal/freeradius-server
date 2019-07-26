@@ -20,7 +20,7 @@
  * @file rlm_always.c
  * @brief Return preconfigured fixed rcodes.
  *
- * @copyright 2000,2006  The FreeRADIUS server project
+ * @copyright 2000,2006 The FreeRADIUS server project
  */
 RCSID("$Id$")
 
@@ -82,8 +82,8 @@ static rlm_rcode_t CC_HINT(nonnull) mod_always_return(void *instance, UNUSED voi
 	return inst->rcode;
 }
 
-extern rad_module_t rlm_always;
-rad_module_t rlm_always = {
+extern module_t rlm_always;
+module_t rlm_always = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "always",
 	.inst_size	= sizeof(rlm_always_t),

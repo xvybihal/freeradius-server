@@ -34,8 +34,8 @@ static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM
 static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM *ci, CONF_PARSER const *rule);
 
 static CONF_PARSER const limit_config[] = {
-	{ FR_CONF_OFFSET("idle_timeout", FR_TYPE_TIMEVAL, proto_control_t, io.idle_timeout), .dflt = "30.0" } ,
-	{ FR_CONF_OFFSET("nak_lifetime", FR_TYPE_TIMEVAL, proto_control_t, io.nak_lifetime), .dflt = "30.0" } ,
+	{ FR_CONF_OFFSET("idle_timeout", FR_TYPE_TIME_DELTA, proto_control_t, io.idle_timeout), .dflt = "30.0" } ,
+	{ FR_CONF_OFFSET("nak_lifetime", FR_TYPE_TIME_DELTA, proto_control_t, io.nak_lifetime), .dflt = "30.0" } ,
 
 	{ FR_CONF_OFFSET("max_connections", FR_TYPE_UINT32, proto_control_t, io.max_connections), .dflt = "1024" } ,
 	{ FR_CONF_OFFSET("max_clients", FR_TYPE_UINT32, proto_control_t, io.max_clients), .dflt = "256" } ,
@@ -84,7 +84,7 @@ fr_dict_attr_autoload_t proto_control_dict_attr[] = {
 /** Wrapper around dl_instance which translates the packet-type into a submodule name
  *
  * @param[in] ctx	to allocate data in (instance of proto_control).
- * @param[out] out	Where to write a dl_instance_t containing the module handle and instance.
+ * @param[out] out	Where to write a dl_module_inst_t containing the module handle and instance.
  * @param[in] parent	Base structure address.
  * @param[in] ci	#CONF_PAIR specifying the name of the type module.
  * @param[in] rule	unused.
@@ -98,30 +98,30 @@ static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM
 	CONF_SECTION		*listen_cs = cf_item_to_section(cf_parent(ci));
 //	CONF_SECTION		*server = cf_item_to_section(cf_parent(listen_cs));
 //	proto_control_t		*inst;
-	dl_instance_t		*parent_inst;
+	dl_module_inst_t		*parent_inst;
 //	fr_dict_enum_t const	*type_enum;
 
 	rad_assert(listen_cs && (strcmp(cf_section_name1(listen_cs), "listen") == 0));
 
-	parent_inst = cf_data_value(cf_data_find(listen_cs, dl_instance_t, "proto_control"));
+	parent_inst = cf_data_value(cf_data_find(listen_cs, dl_module_inst_t, "proto_control"));
 	rad_assert(parent_inst);
 
 //	inst = talloc_get_type_abort(parent_inst->data, proto_control_t);
 
 	/*
-	 *	Parent dl_instance_t added in virtual_servers.c (listen_parse)
+	 *	Parent dl_module_inst_t added in virtual_servers.c (listen_parse)
 	 *
 	 *	We just load proto_control_all.a
 	 *
 	 *	Future changes may allow different types of control access?
 	 */
-	return dl_instance(ctx, out, listen_cs,	parent_inst, "all", DL_TYPE_SUBMODULE);
+	return dl_module_instance(ctx, out, listen_cs,	parent_inst, "all", DL_MODULE_TYPE_SUBMODULE);
 }
 
 /** Wrapper around dl_instance
  *
  * @param[in] ctx	to allocate data in (instance of proto_control).
- * @param[out] out	Where to write a dl_instance_t containing the module handle and instance.
+ * @param[out] out	Where to write a dl_module_inst_t containing the module handle and instance.
  * @param[in] parent	Base structure address.
  * @param[in] ci	#CONF_PAIR specifying the name of the type module.
  * @param[in] rule	unused.
@@ -132,7 +132,7 @@ static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM
 static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
 {
 	char const	*name = cf_pair_value(cf_item_to_pair(ci));
-	dl_instance_t	*parent_inst;
+	dl_module_inst_t	*parent_inst;
 	proto_control_t	*inst;
 	CONF_SECTION	*listen_cs = cf_item_to_section(cf_parent(ci));
 	CONF_SECTION	*transport_cs;
@@ -145,7 +145,7 @@ static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF
 	 */
 	if (!transport_cs) transport_cs = cf_section_alloc(listen_cs, listen_cs, name, NULL);
 
-	parent_inst = cf_data_value(cf_data_find(listen_cs, dl_instance_t, "proto_control"));
+	parent_inst = cf_data_value(cf_data_find(listen_cs, dl_module_inst_t, "proto_control"));
 	rad_assert(parent_inst);
 
 	/*
@@ -155,7 +155,7 @@ static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF
 	inst = talloc_get_type_abort(parent_inst->data, proto_control_t);
 	inst->io.transport = name;
 
-	return dl_instance(ctx, out, transport_cs, parent_inst, name, DL_TYPE_SUBMODULE);
+	return dl_module_instance(ctx, out, transport_cs, parent_inst, name, DL_MODULE_TYPE_SUBMODULE);
 }
 
 /** Decode the packet
@@ -168,7 +168,7 @@ static int mod_decode(void const *instance, REQUEST *request, uint8_t *const dat
 	fr_io_address_t *address = track->address;
 	RADCLIENT const *client;
 
-	rad_assert(data[0] < FR_MAX_PACKET_CODE);
+	rad_assert(data[0] < FR_RADIUS_MAX_PACKET_CODE);
 
 	/*
 	 *	Set the request dictionary so that we can do
@@ -250,7 +250,7 @@ static ssize_t mod_encode(void const *instance, REQUEST *request, uint8_t *buffe
 	 *	"Do not respond"
 	 */
 	if ((request->reply->code == FR_CODE_DO_NOT_RESPOND) ||
-	    (request->reply->code == 0) || (request->reply->code >= FR_MAX_PACKET_CODE)) {
+	    (request->reply->code == 0) || (request->reply->code >= FR_RADIUS_MAX_PACKET_CODE)) {
 		*buffer = false;
 		return 1;
 	}
@@ -438,7 +438,7 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
 	/*
 	 *	Instantiate the process modules
 	 */
-	if (fr_app_process_instantiate(inst->type_submodule, NULL, 0,
+	if (fr_app_process_instantiate(inst->io.server_cs, inst->type_submodule, NULL, 0,
 				       conf) < 0) {
 		return -1;
 	}
@@ -491,7 +491,7 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 	/*
 	 *	Bootstrap the app_process modules.
 	 */
-	if (fr_app_process_bootstrap(inst->type_submodule, conf, inst->io.server_cs) < 0) return -1;
+	if (fr_app_process_bootstrap(inst->io.server_cs, inst->type_submodule, conf) < 0) return -1;
 
 	/*
 	 *	No IO module, it's an empty listener.
@@ -501,11 +501,11 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 	/*
 	 *	These timers are usually protocol specific.
 	 */
-	FR_TIMEVAL_BOUND_CHECK("idle_timeout", &inst->io.idle_timeout, >=, 1, 0);
-	FR_TIMEVAL_BOUND_CHECK("idle_timeout", &inst->io.idle_timeout, <=, 600, 0);
+	FR_TIME_DELTA_BOUND_CHECK("idle_timeout", inst->io.idle_timeout, >=, fr_time_delta_from_sec(1));
+	FR_TIME_DELTA_BOUND_CHECK("idle_timeout", inst->io.idle_timeout, <=, fr_time_delta_from_sec(600));
 
-	FR_TIMEVAL_BOUND_CHECK("nak_lifetime", &inst->io.nak_lifetime, >=, 1, 0);
-	FR_TIMEVAL_BOUND_CHECK("nak_lifetime", &inst->io.nak_lifetime, <=, 600, 0);
+	FR_TIME_DELTA_BOUND_CHECK("nak_lifetime", inst->io.nak_lifetime, >=, fr_time_delta_from_sec(1));
+	FR_TIME_DELTA_BOUND_CHECK("nak_lifetime", inst->io.nak_lifetime, <=, fr_time_delta_from_sec(600));
 
 	/*
 	 *	Tell the master handler about the main protocol instance.
@@ -516,7 +516,7 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 	/*
 	 *	We will need this for dynamic clients and connected sockets.
 	 */
-	inst->io.dl_inst = dl_instance_find(inst);
+	inst->io.dl_inst = dl_module_instance_by_data(inst);
 	rad_assert(inst != NULL);
 
 	/*

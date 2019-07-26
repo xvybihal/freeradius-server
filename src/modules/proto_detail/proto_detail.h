@@ -21,7 +21,7 @@
  * @file proto_detail.h
  * @brief Detail master protocol handler.
  *
- * @copyright 2017  Alan DeKok <alan@freeradius.org>
+ * @copyright 2017 Alan DeKok (alan@freeradius.org)
  */
 RCSIDH(detail_h, "$Id$")
 
@@ -33,11 +33,16 @@ extern "C" {
 #endif
 
 typedef struct {
+	fr_dict_t			*dict;				//!< root dictionary
+	fr_dict_attr_t const		*attr_packet_type;
+} proto_detail_process_t;
+
+typedef struct {
 	CONF_SECTION			*server_cs;			//!< server CS for this listener
 	CONF_SECTION			*cs;				//!< my configuration
 	fr_app_t			*self;				//!< child / parent linking issues
 
-	dl_instance_t			*io_submodule;			//!< As provided by the transport_parse
+	dl_module_inst_t			*io_submodule;			//!< As provided by the transport_parse
 									///< callback.  Broken out into the
 									///< app_io_* fields below for convenience.
 
@@ -46,16 +51,18 @@ typedef struct {
 	CONF_SECTION			*app_io_conf;			//!< Easy access to the app_io's config section.
 //	proto_detail_app_io_t		*app_io_private;		//!< Internal interface for proto_radius.
 
-	dl_instance_t			*work_submodule;		//!< the worker
+	dl_module_inst_t			*work_submodule;		//!< the worker
 
 	fr_app_io_t const		*work_io;			//!< Easy access to the app_io handle.
 	void				*work_io_instance;		//!< Easy access to the app_io instance.
 	CONF_SECTION			*work_io_conf;			//!< Easy access to the app_io's config secti
 
+	void				*process_instance;		//!< app_process instance
 
-	dl_instance_t			*type_submodule;		//!< Instance of the type
+	fr_dict_t			*dict;				//!< root dictionary
+	dl_module_inst_t			*type_submodule;		//!< Instance of the type
 
-	uint32_t			code;				//!< RADIUS code to use for incoming packets
+	uint32_t			code;				//!< packet code to use for incoming packets
 	uint32_t			max_packet_size;		//!< for message ring buffer
 	uint32_t			num_messages;			//!< for message ring buffer
 	uint32_t			priority;			//!< for packet processing, larger == higher
@@ -89,6 +96,7 @@ struct proto_detail_work_s {
 
 	bool				track_progress;		//!< do we track progress by writing?
 	bool				retransmit;		//!< are we retransmitting on error?
+	bool				immediate;		//!< start reading the detail files immediately
 
 	int				mode;			//!< O_RDWR or O_RDONLY
 
@@ -107,13 +115,13 @@ struct proto_detail_work_thread_s {
 	fr_event_list_t			*el;			//!< for various timers
 	fr_network_t			*nr;			//!< for Linux-specific callbacks
 	fr_listen_t			*listen;		//!< talloc_parent() is slow
-	proto_detail_work_thread_t	*file_parent;	//!< thread instance of the directory reader that spawned us
+	proto_detail_work_thread_t	*file_parent;		//!< thread instance of the directory reader that spawned us
 
 	char const			*filename_work;		//!< work file name
 	fr_dlist_head_t			list;			//!< for retransmissions
 
 	uint32_t       			outstanding;		//!< number of currently outstanding records;
-	uint32_t			lock_interval;		//!< interval between trying the locks.
+	fr_time_delta_t			lock_interval;		//!< interval between trying the locks.
 
 	bool				eof;			//!< are we at EOF on reading?
 	bool				closing;		//!< we should be closing the file
@@ -136,11 +144,6 @@ struct proto_detail_work_thread_s {
 	pthread_mutex_t			worker_mutex;		//!< for the workers
 	int				num_workers;		//!< number of workers
 };
-
-typedef struct {
-	rlm_components_t	recv_type;
-	rlm_components_t	send_type;
-} proto_detail_process_t;
 
 #include <pthread.h>
 

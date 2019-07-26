@@ -50,14 +50,12 @@ int main(int argc, char **argv)
 	int			ret;
 	int			sockfd;
 
-	fr_log_fp = stderr;
-
 	conf = talloc_zero(NULL, sync_touch_conf_t);
 	conf->proto = IPPROTO_UDP;
 	conf->dict_dir = DICTDIR;
 	conf->raddb_dir = RADDBDIR;
 	conf->secret = talloc_strdup(conf, "testing123");
-	conf->timeout.tv_sec = 3;
+	conf->timeout = fr_time_delta_from_sec(3);
 	conf->retries = 5;
 
 #ifndef NDEBUG
@@ -102,7 +100,7 @@ int main(int argc, char **argv)
 		       break;
 
 		case 't':
-			if (fr_timeval_from_str(&conf->timeout, optarg) < 0) {
+			if (fr_time_delta_from_str(&conf->timeout, optarg, FR_TIME_RES_SEC) < 0) {
 				PERROR("Failed parsing timeout value");
 				exit(EXIT_FAILURE);
 			}
@@ -140,22 +138,16 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-#if 0
-	if (fr_dict_from_file(&conf->dict, FR_DICTIONARY_FILE) < 0) {
+	if (fr_dict_internal_afrom_file(&conf->dict, FR_DICTIONARY_FILE) < 0) {
 		fr_perror("sync_touch");
 		exit(EXIT_FAILURE);
 	}
-#endif
 
 	if (fr_dict_read(dict_freeradius, conf->raddb_dir, FR_DICTIONARY_FILE) == -1) {
 		fr_perror("sync_touch");
 		exit(EXIT_FAILURE);
 	}
 	fr_strerror();	/* Clear the error buffer */
-
-	if (fr_log_fp) setvbuf(fr_log_fp, NULL, _IONBF, 0);
-
-
 
 	fr_set_signal(SIGPIPE, rs_signal_stop);
 	fr_set_signal(SIGINT, rs_signal_stop);
@@ -169,8 +161,6 @@ int main(int argc, char **argv)
 	DEBUG("Read loop done");
 
 finish:
-	if (fr_log_fp) fflush(fr_log_fp);
-
 	/*
 	 *	Everything should be parented from conf
 	 */

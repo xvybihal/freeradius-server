@@ -99,9 +99,11 @@ static void _ldap_start_tls_io_read(UNUSED fr_event_list_t *el, UNUSED int fd, U
 	fr_ldap_connection_t	*c = tls_ctx->c;
 	int			ret;
 	fr_ldap_rcode_t		status;
-	struct timeval		tv = { 0, 0 };		/* We're I/O driven, if there's no data someone lied to us */
 
-	status = fr_ldap_result(NULL, NULL, c, tls_ctx->msgid, LDAP_MSG_ALL, NULL, &tv);
+	/*
+	 *	We're I/O driven, if there's no data someone lied to us
+	 */
+	status = fr_ldap_result(NULL, NULL, c, tls_ctx->msgid, LDAP_MSG_ALL, NULL, 0);
 	talloc_free(tls_ctx);				/* Free explicitly so we don't accumulate contexts */
 
 	switch (status) {
@@ -110,7 +112,8 @@ static void _ldap_start_tls_io_read(UNUSED fr_event_list_t *el, UNUSED int fd, U
 		 *	If tls_handshake_timeout is NULL ldap_install_tls
 		 *	will block forever.
 		 */
-		fr_ldap_connection_timeout_set(c, &c->config->tls_handshake_timeout);
+		fr_ldap_connection_timeout_set(c, c->config->tls_handshake_timeout);
+
 		/*
 		 *	This call will block for a maximum of tls_handshake_timeout.
 		 *	Patches to libldap are required to fix this.
@@ -148,7 +151,6 @@ static void _ldap_start_tls_io_write(fr_event_list_t *el, int fd, UNUSED int fla
 	fr_ldap_start_tls_ctx_t	*tls_ctx = talloc_get_type_abort(uctx, fr_ldap_start_tls_ctx_t);
 	fr_ldap_connection_t	*c = tls_ctx->c;
 
-	struct timeval		tv = { 0, 0 };
 	int			ret;
 
 	LDAPControl		*our_serverctrls[LDAP_MAX_CONTROLS];
@@ -163,7 +165,7 @@ static void _ldap_start_tls_io_write(fr_event_list_t *el, int fd, UNUSED int fla
 	 *	Set timeout to be 0.0, which is the magic
 	 *	non-blocking value.
 	 */
-	(void) ldap_set_option(c->handle, LDAP_OPT_NETWORK_TIMEOUT, &tv);
+	(void) ldap_set_option(c->handle, LDAP_OPT_NETWORK_TIMEOUT, &fr_time_delta_to_timeval(0));
 	ret = ldap_start_tls(c->handle, our_serverctrls, our_clientctrls, &tls_ctx->msgid);
 	/*
 	 *	If the handle was not connected, this operation

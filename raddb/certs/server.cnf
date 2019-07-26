@@ -54,7 +54,7 @@ localityName		= Somewhere
 organizationName	= Example Inc
 emailAddress		= admin@example.org
 commonName		= "Example Server Certificate"
-
+subjectAltName		= @alt_names
 
 [ v3_radius ]
 basicConstraints	= CA:FALSE

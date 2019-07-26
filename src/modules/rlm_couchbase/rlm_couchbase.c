@@ -20,7 +20,7 @@
  * @brief Integrate FreeRADIUS with the Couchbase document database.
  * @file rlm_couchbase.c
  *
- * @author Aaron Hurt <ahurt@anbcs.com>
+ * @author Aaron Hurt (ahurt@anbcs.com)
  * @copyright 2013-2014 The FreeRADIUS Server Project.
  */
 
@@ -34,7 +34,6 @@ RCSID("$Id$")
 #include <freeradius-devel/server/rad_assert.h>
 #include <freeradius-devel/util/base.h>
 
-#include <libcouchbase/couchbase.h>
 #include <freeradius-devel/json/base.h>
 
 #include "mod.h"
@@ -54,6 +53,7 @@ static const CONF_PARSER client_config[] = {
 static const CONF_PARSER module_config[] = {
 	{ FR_CONF_OFFSET("server", FR_TYPE_STRING | FR_TYPE_REQUIRED, rlm_couchbase_t, server_raw) },
 	{ FR_CONF_OFFSET("bucket", FR_TYPE_STRING | FR_TYPE_REQUIRED, rlm_couchbase_t, bucket) },
+	{ FR_CONF_OFFSET("username", FR_TYPE_STRING, rlm_couchbase_t, username) },
 	{ FR_CONF_OFFSET("password", FR_TYPE_STRING, rlm_couchbase_t, password) },
 #ifdef WITH_ACCOUNTING
 	{ FR_CONF_OFFSET("acct_key", FR_TYPE_TMPL, rlm_couchbase_t, acct_key), .dflt = "radacct_%{%{Acct-Unique-Session-Id}:-%{Acct-Session-Id}}", .quote = T_DOUBLE_QUOTED_STRING },
@@ -257,7 +257,7 @@ static rlm_rcode_t mod_accounting(void *instance, UNUSED void *thread, REQUEST *
 	/* sanity check */
 	if ((vp = fr_pair_find_by_da(request->packet->vps, attr_acct_status_type, TAG_ANY)) == NULL) {
 		/* log debug */
-		RDEBUG("could not find status type in packet");
+		RDEBUG2("could not find status type in packet");
 		/* return */
 		return RLM_MODULE_NOOP;
 	}
@@ -268,7 +268,7 @@ static rlm_rcode_t mod_accounting(void *instance, UNUSED void *thread, REQUEST *
 	/* acknowledge the request but take no action */
 	if (status == FR_STATUS_ACCOUNTING_ON || status == FR_STATUS_ACCOUNTING_OFF) {
 		/* log debug */
-		RDEBUG("handling accounting on/off request without action");
+		RDEBUG2("handling accounting on/off request without action");
 		/* return */
 		return RLM_MODULE_OK;
 	}
@@ -321,7 +321,7 @@ static rlm_rcode_t mod_accounting(void *instance, UNUSED void *thread, REQUEST *
 	/* start json document if needed */
 	if (docfound != 1) {
 		/* debugging */
-		RDEBUG("no existing document found - creating new json document");
+		RDEBUG2("no existing document found - creating new json document");
 		/* create new json object */
 		cookie->jobj = json_object_new_object();
 		/* set 'docType' element for new document */
@@ -428,6 +428,27 @@ static int mod_detach(void *instance)
 
 	if (inst->map) json_object_put(inst->map);
 	if (inst->pool) fr_pool_free(inst->pool);
+	if (inst->api_opts) mod_free_api_opts(inst);
+
+	return 0;
+}
+
+/** Bootstrap the module
+ *
+ * Define attributes.
+ *
+ * @param conf to parse.
+ * @param instance configuration data.
+ * @return
+ *	- 0 on success.
+ *	- < 0 on failure.
+ */
+static int mod_bootstrap(void *instance, CONF_SECTION *conf)
+{
+	rlm_couchbase_t	*inst = instance;
+
+	inst->name = cf_section_name2(conf);
+	if (!inst->name) inst->name = cf_section_name1(conf);
 
 	return 0;
 }
@@ -451,8 +472,8 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
 		size_t len, i;
 		bool sep = false;
 
-		len = talloc_array_length(inst->server_raw);
-		server = p = talloc_array(inst, char, len);
+		len = talloc_array_length(inst->server_raw) - 1;
+		server = p = talloc_array(inst, char, len + 1);
 		for (i = 0; i < len; i++) {
 			switch (inst->server_raw[i]) {
 			case '\t':
@@ -478,6 +499,12 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
 
 	/* setup item map */
 	if (mod_build_attribute_element_map(conf, inst) != 0) {
+		/* fail */
+		return -1;
+	}
+
+	/* setup libcouchbase extra options */
+	if (mod_build_api_opts(conf, inst) != 0) {
 		/* fail */
 		return -1;
 	}
@@ -538,13 +565,14 @@ static int mod_load(void)
 /*
  * Hook into the FreeRADIUS module system.
  */
-extern rad_module_t rlm_couchbase;
-rad_module_t rlm_couchbase = {
+extern module_t rlm_couchbase;
+module_t rlm_couchbase = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "couchbase",
 	.type		= RLM_TYPE_THREAD_SAFE,
 	.inst_size	= sizeof(rlm_couchbase_t),
 	.config		= module_config,
+	.bootstrap	= mod_bootstrap,
 	.onload		= mod_load,
 	.instantiate	= mod_instantiate,
 	.detach		= mod_detach,

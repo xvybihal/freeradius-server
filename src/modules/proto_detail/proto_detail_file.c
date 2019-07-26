@@ -77,9 +77,11 @@ static void mod_vnode_delete(fr_event_list_t *el, int fd, UNUSED int fflags, voi
 static const CONF_PARSER file_listen_config[] = {
 	{ FR_CONF_OFFSET("filename", FR_TYPE_STRING | FR_TYPE_REQUIRED, proto_detail_file_t, filename ) },
 
-	{ FR_CONF_OFFSET("filename_work", FR_TYPE_STRING, proto_detail_work_t, filename_work ) },
+	{ FR_CONF_OFFSET("filename_work", FR_TYPE_STRING, proto_detail_file_t, filename_work ) },
 
 	{ FR_CONF_OFFSET("poll_interval", FR_TYPE_UINT32, proto_detail_file_t, poll_interval), .dflt = "5" },
+
+	{ FR_CONF_OFFSET("immediate", FR_TYPE_BOOL, proto_detail_file_t, immediate) },
 
 	CONF_PARSER_TERMINATOR
 };
@@ -127,27 +129,31 @@ static int mod_open(fr_listen_t *li)
 {
 	proto_detail_file_t const  *inst = talloc_get_type_abort_const(li->app_io_instance, proto_detail_file_t);
 	proto_detail_file_thread_t *thread = talloc_get_type_abort(li->thread_instance, proto_detail_file_thread_t);
-	int oflag;
+
+	if (inst->poll_interval == 0) {
+		int oflag;
 
 #ifdef O_EVTONLY
-	oflag = O_EVTONLY;
+		oflag = O_EVTONLY;
 #else
-	oflag = O_RDONLY;
+		oflag = O_RDONLY;
 #endif
-
-	li->fd = thread->fd = open(inst->directory, oflag);
+		li->fd = thread->fd = open(inst->directory, oflag);
+	} else {
+		li->fd = thread->fd = open("/dev/null", O_RDONLY);
+	}
 	if (thread->fd < 0) {
 		cf_log_err(inst->cs, "Failed opening %s: %s", inst->directory, fr_syserror(errno));
 		return -1;
 	}
 
 	thread->inst = inst;
-	thread->name = talloc_typed_asprintf(inst, "proto_detail polling for files matching %s", inst->filename);
+	thread->name = talloc_typed_asprintf(thread, "detail polling for files matching %s", inst->filename);
 	thread->vnode_fd = -1;
 	pthread_mutex_init(&thread->worker_mutex, NULL);
 
-	DEBUG("Listening on %s bound to virtual server %s FD %d",
-	      thread->name, cf_section_name2(inst->parent->server_cs), thread->fd);
+	DEBUG("Listening on %s bound to virtual server %s",
+	      thread->name, cf_section_name2(inst->parent->server_cs));
 
 	return 0;
 }
@@ -220,7 +226,7 @@ static int work_rename(proto_detail_file_thread_t *thread)
 /*
  *	Start polling again after a timeout.
  */
-static void work_retry_timer(UNUSED fr_event_list_t *el, UNUSED struct timeval *now, void *uctx)
+static void work_retry_timer(UNUSED fr_event_list_t *el, UNUSED fr_time_t now, void *uctx)
 {
 	proto_detail_file_thread_t *thread = talloc_get_type_abort(uctx, proto_detail_file_thread_t);
 
@@ -246,30 +252,27 @@ static int work_exists(proto_detail_file_thread_t *thread, int fd)
 	 *	"detail.work" exists, try to lock it.
 	 */
 	if (rad_lockfd_nonblock(fd, 0) < 0) {
-		struct timeval when, now;
+		fr_time_t delay;
 
 		DEBUG3("proto_detail (%s): Failed locking %s: %s",
 		       thread->name, inst->filename_work, fr_syserror(errno));
 
 		close(fd);
 
-		when.tv_usec = thread->lock_interval % USEC;
-		when.tv_sec = thread->lock_interval / USEC;
+		delay = thread->lock_interval;
 
 		/*
-		 *	Ensure that we don't do massive busy-polling.
+		 *	Set the next interval, and ensure that we
+		 *	don't do massive busy-polling.
 		 */
 		thread->lock_interval += thread->lock_interval / 2;
-		if (thread->lock_interval > (30 * USEC)) thread->lock_interval = 30 * USEC;
+		if (thread->lock_interval > ((fr_time_delta_t) 30) * NSEC) thread->lock_interval = ((fr_time_delta_t) 30) * NSEC;
 
 		DEBUG3("proto_detail (%s): Waiting %d.%06ds for lock on file %s",
-		       thread->name, (int) when.tv_sec, (int) when.tv_usec, inst->filename_work);
+		       thread->name, (int) (delay / NSEC), (int) ((delay % NSEC) / 1000), inst->filename_work);
 
-		gettimeofday(&now, NULL);
-		fr_timeval_add(&when, &when, &now);
-
-		if (fr_event_timer_insert(thread, thread->el, &thread->ev,
-					  &when, work_retry_timer, thread) < 0) {
+		if (fr_event_timer_in(thread, thread->el, &thread->ev,
+				      delay, work_retry_timer, thread) < 0) {
 			ERROR("Failed inserting retry timer for %s", inst->filename_work);
 		}
 		return 0;
@@ -325,7 +328,7 @@ static int work_exists(proto_detail_file_thread_t *thread, int fd)
 
 	li->app_io_instance = inst->parent->work_io_instance;
 	work->inst = li->app_io_instance;
-	work->file_parent = li->thread_instance;
+	work->file_parent = thread;
 	work->ev = NULL;
 
 	li->fd = work->fd = dup(fd);
@@ -502,38 +505,26 @@ retry:
 	 *	in the directory changed.
 	 */
 	if (fd < 0) {
-		struct timeval when, now;
-
-#ifdef __linux__
 		/*
 		 *	Wait for the directory to change before
 		 *	looking for another "detail" file.
 		 */
 		if (!inst->poll_interval) return;
-#endif
 
 delay:
 		/*
 		 *	Check every N seconds.
 		 */
-		when.tv_sec = inst->poll_interval;
-		when.tv_usec = 0;
+		DEBUG3("Waiting %d.000000s for new files in %s", inst->poll_interval, thread->name);
 
-		DEBUG3("Waiting %d.%06ds for new files in %s",
-		       (int) when.tv_sec, (int) when.tv_usec, thread->name);
-
-		gettimeofday(&now, NULL);
-
-		fr_timeval_add(&when, &when, &now);
-
-		if (fr_event_timer_insert(thread, thread->el, &thread->ev,
-					  &when, work_retry_timer, thread) < 0) {
+		if (fr_event_timer_in(thread, thread->el, &thread->ev,
+				      fr_time_delta_from_sec(inst->poll_interval), work_retry_timer, thread) < 0) {
 			ERROR("Failed inserting poll timer for %s", inst->filename_work);
 		}
 		return;
 	}
 
-	thread->lock_interval = USEC / 10;
+	thread->lock_interval = NSEC / 10;
 
 	/*
 	 *	It exists, go process it!
@@ -564,25 +555,12 @@ delay:
  */
 static void mod_event_list_set(fr_listen_t *li, fr_event_list_t *el, UNUSED void *nr)
 {
+	proto_detail_file_t const  *inst = talloc_get_type_abort_const(li->app_io_instance, proto_detail_file_t);
 	proto_detail_file_thread_t *thread = talloc_get_type_abort(li->thread_instance, proto_detail_file_thread_t);
-#ifdef __linux__
-	struct timeval when;
-#endif
 
 	thread->el = el;
 
-	/*
-	 *	Initialize the work state machine.
-	 */
-#ifndef __linux__
-	work_init(thread);
-#else
-
-	/*
-	 *	We're not changing UID, etc.  Start processing the
-	 *	detail files now.
-	 */
-	if (!main_config->allow_core_dumps) {
+	if (inst->immediate) {
 		work_init(thread);
 		return;
 	}
@@ -594,14 +572,10 @@ static void mod_event_list_set(fr_listen_t *li, fr_event_list_t *el, UNUSED void
 	 *	therefore change permissions, so that libkqueue can
 	 *	read it.
 	 */
-	gettimeofday(&when, NULL);
-	when.tv_sec +=1;
-
-	if (fr_event_timer_insert(thread, thread->el, &thread->ev,
-				  &when, work_retry_timer, thread) < 0) {
+	if (fr_event_timer_in(thread, thread->el, &thread->ev,
+			      fr_time_delta_from_sec(1), work_retry_timer, thread) < 0) {
 		ERROR("Failed inserting poll timer for %s", thread->filename_work);
 	}
-#endif
 }
 
 
@@ -616,7 +590,7 @@ static char const *mod_name(fr_listen_t *li)
 static int mod_bootstrap(void *instance, CONF_SECTION *cs)
 {
 	proto_detail_file_t	*inst = talloc_get_type_abort(instance, proto_detail_file_t);
-	dl_instance_t const	*dl_inst;
+	dl_module_inst_t const	*dl_inst;
 	char			*p;
 
 #ifdef __linux__
@@ -642,11 +616,11 @@ static int mod_bootstrap(void *instance, CONF_SECTION *cs)
 #endif
 
 	/*
-	 *	Find the dl_instance_t holding our instance data
+	 *	Find the dl_module_inst_t holding our instance data
 	 *	so we can find out what the parent of our instance
 	 *	was.
 	 */
-	dl_inst = dl_instance_find(instance);
+	dl_inst = dl_module_instance_by_data(instance);
 	rad_assert(dl_inst);
 
 #ifndef __linux__

@@ -17,7 +17,7 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2016  Alan DeKok <aland@freeradius.org>
+ * @copyright 2016 Alan DeKok (aland@freeradius.org)
  */
 
 RCSID("$Id$")
@@ -190,7 +190,7 @@ static void NEVER_RETURNS usage(void)
 	fprintf(stderr, "  -t                     Touch 'packet' memory.\n");
 	fprintf(stderr, "  -x                     Debugging mode.\n");
 
-	exit(EXIT_FAILURE);
+	exit(EXIT_SUCCESS);
 }
 
 int main(int argc, char *argv[])
@@ -323,6 +323,8 @@ int main(int argc, char *argv[])
 
 	if (debug_lvl) fr_message_set_debug(ms, stdout);
 
+#if 0
+
 	/*
 	 *	Double the number of the allocations again,
 	 *	leaving the allocation size alone.
@@ -362,6 +364,7 @@ int main(int argc, char *argv[])
 	MPRINT1("TEST 6 used %d\n", fr_message_set_messages_used(ms));
 
 	if (debug_lvl) fr_message_set_debug(ms, stdout);
+#endif
 
 	my_alloc_size = end - start;
 	free_blocks(ms, &seed, &start, &end);
@@ -373,9 +376,9 @@ int main(int argc, char *argv[])
 	}
 
 	if (debug_lvl) {
-		struct timeval start_t, end_t;
+		fr_time_t start_t, end_t;
 
-		gettimeofday(&start_t, NULL);
+		start_t = fr_time();
 
 		/*
 		 *	Do another 10000 rounds of alloc / free.
@@ -388,23 +391,10 @@ int main(int argc, char *argv[])
 			free_blocks(ms, &seed, &start, &end);
 		}
 
-		gettimeofday(&end_t, NULL);
+		end_t = fr_time();
 
-		end_t.tv_sec -= start_t.tv_sec;
-		if (end_t.tv_sec > 0) {
-			end_t.tv_usec += 1000000;
-			end_t.tv_sec--;
-
-			end_t.tv_usec -= start_t.tv_usec;
-			if (end_t.tv_usec > 1000000) {
-				end_t.tv_usec -= 1000000;
-				end_t.tv_sec++;
-			}
-		} else {
-			end_t.tv_usec -= start_t.tv_usec;
-		}
-
-		printf("\nELAPSED %d.%06d seconds, %d allocation / free cycles\n\n", (int) end_t.tv_sec, (int) end_t.tv_usec,
+		printf("\nELAPSED %d.%06d seconds, %d allocation / free cycles\n\n",
+		       (int) (end_t - start_t) / NSEC, (int) ((end_t - start_t) % NSEC),
 		       my_alloc_size * 10000);
 	}
 

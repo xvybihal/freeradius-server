@@ -1,10 +1,11 @@
-# -*- text -*-
+#  -*- text -*-
 #
-# :toc:
-#
-# # The default Virtual Server
 #
 #  $Id$
+
+#######################################################################
+#
+#  = The default Virtual Server
 #
 #  The `default` virtual server is the first one that is enabled on a
 #  default installation of FreeRADIUS.  This configuration is
@@ -26,7 +27,7 @@
 #  in via PAP, CHAP, MS-CHAP, etc.  You should so test the server via
 #  `radtest` to verify that it works.
 #
-# ## Editing this file
+#  ## Editing this file
 #
 #  Please read "man radiusd" before editing this file.  See the
 #  section titled DEBUGGING.  It outlines a method where you can
@@ -55,11 +56,13 @@
 #  In most cases, those small changes will result in the server being
 #  able to connect to the database, and to authenticate users.
 
-# ## The Virtual Server
+#  ## The Virtual Server
 #
 #  This is the `default` virtual server.
 #
 server default {
+	#
+	#  namespace::
 	#
 	#  In v4, all "server" sections MUST start with a "namespace"
 	#  parameter.  This tells the server which protocol is being used.
@@ -70,7 +73,7 @@ server default {
 	namespace = radius
 
 	#
-	# ### The listen section
+	#  ### The listen section
 	#
 	#  The `listen` sections in v4 are very different from the
 	#  `listen sections in v3.  The changes were necessary in
@@ -263,7 +266,7 @@ server default {
 			#  dynamic clients.
 			#
 			#  If set to `true`, then packets from unknown
-			#  clients are passed through the `qnew
+			#  clients are passed through the `new
 			#  client` subsection below.  See that section
 			#  for more information about how dynamic
 			#  clients work.
@@ -326,7 +329,6 @@ server default {
 			}
 		}
 
-
 		#
 		#  #### TCP Transport
 		#
@@ -340,14 +342,26 @@ server default {
 		#
 		tcp {
 			#
-			#  As with v3, "ipaddr", "ipv4addr", and "ipv6addr"
+			#  NOTE: As with v3, `ipaddr`, `ipv4addr`, and `ipv6addr`
 			#  are all allowed.
 			#
+
+			#
+			#  ipaddr::
+			#
 			ipaddr = *
+
+			#
+			#  port:: the TCP where FreeRADIUS accepts
+			#  packets.
+			#
+			#  The default port for Access-Accept packets
+			#  is `1812`.
+			#
 			port = 1812
 
 			#
-			#  Whether or not we allow dynamic clients.
+			#  dynamic_clients:: Whether or not we allow dynamic clients.
 			#
 			#  If set to true, then packets from unknown
 			#  clients are passed through the "new client"
@@ -357,6 +371,8 @@ server default {
 #			dynamic_clients = true
 
 			#
+			#  networks { ... }::
+			#
 			#  If dynamic clients are allowed, then limit
 			#  them to only a small set of source
 			#  networks.
@@ -365,6 +381,9 @@ server default {
 			#  this section is ignored.
 			#
 			networks {
+				#
+				#  allow::
+				#  deny::
 				#
 				#  Allow packets from these networks
 				#  to define dynamic clients.
@@ -412,14 +431,16 @@ server default {
 			#  increased flexibility.
 			#
 			log {
+				#
 				#  stripped_names:: Log the full
 				#  `User-Name` attribute, as it was
 				#  found in the request.
 				#
-				# allowed values: {no, yes}
+				#  allowed values: {no, yes}
 				#
 				stripped_names = no
 
+				#
 				#  auth:: Log authentication requests
 				#  to the log file.
 				#
@@ -427,15 +448,8 @@ server default {
 				#
 				auth = no
 
+				#
 				#  auth_goodpass:: Log "good"
-				#  passwords with the authentication
-				#  requests.
-				#
-				#  allowed values: {no, yes}
-				#
-				auth_badpass = no
-
-				#  auth_badpass:: Log "bad"
 				#  passwords with the authentication
 				#  requests.
 				#
@@ -443,6 +457,19 @@ server default {
 				#
 				auth_goodpass = no
 
+				#
+				#  auth_badpass:: Log "bad"
+				#  passwords with the authentication
+				#  requests.
+				#
+				#  allowed values: {no, yes}
+				#
+				auth_badpass = no
+
+				#
+				#  msg_goodpass::
+				#  msg_badpass::
+				#
 				#  Log additional text at the end of the "Login OK" messages.
 				#  for these to work, the "auth" and "auth_goodpass" or "auth_badpass"
 				#  configurations above have to be set to "yes".
@@ -455,6 +482,9 @@ server default {
 #				msg_goodpass = ""
 #				msg_badpass = ""
 
+				#
+				#  msg_denied::
+				#
 				#  The message when the user exceeds the Simultaneous-Use limit.
 				#
 				msg_denied = "You are already logged in - access denied"
@@ -475,6 +505,7 @@ server default {
 				#
 #				max = 4096
 
+				#
 				#  timeout:: How long to wait before expiring a
 				#  session.
 				#
@@ -573,7 +604,7 @@ server default {
 				#  `User-Name` attribute, as it was
 				#  found in the request.
 				#
-				# allowed values: {no, yes}
+				#  allowed values: {no, yes}
 				#
 				stripped_names = no
 
@@ -662,7 +693,7 @@ server default {
 
 
 	#
-	# ### Local Clients
+	#  ### Local Clients
 	#
 	#  The "client" sections can can also be placed here.  Unlike
 	#  v3, they do not need to be wrapped in a "clients" section.
@@ -679,8 +710,8 @@ server default {
 		ipaddr = 192.0.2.1
 		secret = testing123
 
-		# The other "client" configuration items can be added
-		# here, too.
+		#  The other "client" configuration items can be added
+		#  here, too.
 	}
 
 
@@ -710,15 +741,6 @@ recv Access-Request {
 	#
 	filter_username
 
-#	if (!&Proxy-State) {
-#		radius
-#	}
-
-
-	update reply {
-		&DHCP-Client-FQDN := "example.org"
-	}
-
 	#
 	#  Some broken equipment sends passwords with embedded
 	#  zeros, i.e. the debug output will show:
@@ -746,7 +768,7 @@ recv Access-Request {
 	#
 #	if (&User-Name =~ /@example\.com$/) {
 #		update control {
-#			Auth-Type := "proxy-example.com"
+#			&Auth-Type := "proxy-example.com"
 #		}
 #	}
 
@@ -962,7 +984,7 @@ recv Status-Server {
 ######################################################################
 
 #
-# ### PAP Authentication
+#  ### PAP Authentication
 #
 #  For users who are using PAP authentication. A back-end database
 #  listed in the "recv Access-Request" section MUST supply a "known
@@ -974,7 +996,7 @@ authenticate pap {
 }
 
 #
-# ### CHAP Authentication
+#  ### CHAP Authentication
 #
 #  For users who are using CHAP authentication. A back-end database
 #  listed in the "recv Access-Request" section MUST supply a
@@ -997,7 +1019,7 @@ authenticate mschap {
 }
 
 #
-# ### SIP Digest Authentication
+#  ### SIP Digest Authentication
 #
 #  For users who are using SIP Digest authentication.
 #
@@ -1017,9 +1039,9 @@ authenticate digest {
 #  that anything that can be done in PAM can be done easier in
 #  FreeRADIUS.
 #
-authenticate pam {
-	pam
-}
+#authenticate pam {
+#	pam
+#}
 
 #
 #  ### LDAP Authentication
@@ -1134,7 +1156,7 @@ send Access-Accept {
 	#
 #	if (!&reply:State) {
 #		update reply {
-#			State := "0x%{randstr:16h}"
+#			&State := "0x%{randstr:16h}"
 #		}
 #	}
 
@@ -1237,19 +1259,19 @@ send Access-Accept {
 	#  available).
 	#
 #	update reply {
-#		Reply-Message += "%{session-state:TLS-Cert-Serial}"
-#		Reply-Message += "%{session-state:TLS-Cert-Expiration}"
-#		Reply-Message += "%{session-state:TLS-Cert-Subject}"
-#		Reply-Message += "%{session-state:TLS-Cert-Issuer}"
-#		Reply-Message += "%{session-state:TLS-Cert-Common-Name}"
-#		Reply-Message += "%{session-state:TLS-Cert-Subject-Alt-Name-Email}"
+#		&Reply-Message += "%{session-state:TLS-Cert-Serial}"
+#		&Reply-Message += "%{session-state:TLS-Cert-Expiration}"
+#		&Reply-Message += "%{session-state:TLS-Cert-Subject}"
+#		&Reply-Message += "%{session-state:TLS-Cert-Issuer}"
+#		&Reply-Message += "%{session-state:TLS-Cert-Common-Name}"
+#		&Reply-Message += "%{session-state:TLS-Cert-Subject-Alt-Name-Email}"
 #
-#		Reply-Message += "%{session-state:TLS-Client-Cert-Serial}"
-#		Reply-Message += "%{session-state:TLS-Client-Cert-Expiration}"
-#		Reply-Message += "%{session-state:TLS-Client-Cert-Subject}"
-#		Reply-Message += "%{session-state:TLS-Client-Cert-Issuer}"
-#		Reply-Message += "%{session-state:TLS-Client-Cert-Common-Name}"
-#		Reply-Message += "%{session-state:TLS-Client-Cert-Subject-Alt-Name-Email}"
+#		&Reply-Message += "%{session-state:TLS-Client-Cert-Serial}"
+#		&Reply-Message += "%{session-state:TLS-Client-Cert-Expiration}"
+#		&Reply-Message += "%{session-state:TLS-Client-Cert-Subject}"
+#		&Reply-Message += "%{session-state:TLS-Client-Cert-Issuer}"
+#		&Reply-Message += "%{session-state:TLS-Client-Cert-Common-Name}"
+#		&Reply-Message += "%{session-state:TLS-Client-Cert-Subject-Alt-Name-Email}"
 #	}
 
 	#
@@ -1276,7 +1298,7 @@ send Access-Accept {
 #
 #	if (&reply:EAP-Session-Id) {
 #		update reply {
-#			EAP-Key-Name := &reply:EAP-Session-Id
+#			&EAP-Key-Name := &reply:EAP-Session-Id
 #		}
 #	}
 
@@ -1302,19 +1324,19 @@ send Access-Accept {
 #
 send Access-Reject {
 	#
-	# Log failed authentications in SQL, too.
+	#  Log failed authentications in SQL, too.
 	#
 	-sql
 
 	#
-	# Filter out attributes that should not be in
-	# Access-Reject packets.
+	#  Filter out attributes that should not be in
+	#  Access-Reject packets.
 	#
 	attr_filter.access_reject
 
 	#
-	# Insert an EAP-Failure message if the request was rejected by
-	# policy, instead of from an authentication failure.
+	#  Insert an EAP-Failure message if the request was rejected by
+	#  policy, instead of from an authentication failure.
 	#
 	eap
 
@@ -1326,6 +1348,12 @@ send Access-Reject {
 	#  drop the network connection.
 	#
 	remove_reply_message_if_eap
+
+	#
+	#  Delay sending the `Access-Reject` packet. This is no
+	#  longer automatic as it was in version 3.
+	#
+	delay_reject
 }
 
 
@@ -1382,6 +1410,72 @@ recv Accounting-Request {
 	#
 	files
 }
+
+#
+#  Version 4 allows for sections specific to Acct-Status-Type.
+#
+#  Once the `recv Accounting-Request` section is processed, one of the
+#  `accounting ... { ... }` sections will be run, based on the
+#  value of the `Acct-Status-Type` attribute.
+#
+#  After the `accounting ... { ... }` section has been run, it will
+#  then process the `send Accounting-Response` section
+#
+
+#
+#  Session start
+#
+accounting Start {
+
+}
+
+#
+#  Session stop
+#
+accounting Stop {
+
+}
+
+#
+#  Session is still alive
+#
+accounting Alive {
+
+}
+
+#
+#  The NAS has just booted up.
+#
+accounting Accounting-On {
+
+}
+
+#
+#  The NAS is about to go down
+#
+accounting Accounting-Off {
+
+}
+
+#
+#  Session failed to do something
+#
+accounting Failed {
+
+}
+
+#
+#  There are many other values for `Acct-Status-Type` such as:
+#
+#  * Tunnel-Start
+#  * Tunnel-Stop
+#  * Tunnel-Reject
+#  * Tunnel-Link-Start
+#  * Tunnel-Link-Stop
+#  * Tunnel-Link-Reject
+#
+#  Some vendors also define their own values, which is a very bad idea.
+#
 
 #
 #  Send Accounting-Response.

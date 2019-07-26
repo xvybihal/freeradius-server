@@ -8,6 +8,11 @@
 #
 
 #
+#	we didn't called ./configure? just define the version.
+#
+RADIUSD_VERSION_STRING := $(shell cat VERSION)
+
+#
 #  The default rule is "all".
 #
 all:
@@ -27,9 +32,13 @@ endif
 #  the debian packages.
 #
 ifneq "$(MAKECMDGOALS)" "deb"
+ifneq "$(MAKECMDGOALS)" "rpm"
+ifeq "$(findstring crossbuild,$(MAKECMDGOALS))" ""
 $(if $(wildcard Make.inc),,$(error Missing 'Make.inc' Run './configure [options]' and retry))
 
 include Make.inc
+endif
+endif
 endif
 
 MFLAGS += --no-print-directory
@@ -43,9 +52,16 @@ endif
 export DESTDIR := $(R)
 export PROJECT_NAME := freeradius
 
+#
+#  src/include/all.mk needs these, so define them before we include that file.
+#
+PROTOCOLS    := dhcpv4 eap/sim eap/aka freeradius snmp vmps dhcpv6 ethernet radius tacacs arp
+
 # And over-ride all of the other magic.
 ifneq "$(MAKECMDGOALS)" "deb"
+ifeq "$(findstring crossbuild,$(MAKECMDGOALS))" ""
 include scripts/boiler.mk
+endif
 endif
 
 #
@@ -69,26 +85,28 @@ $(BUILD_DIR)/tests/radiusd-c: raddb/test.conf ${BUILD_DIR}/bin/radiusd $(GENERAT
 		rm -f raddb/test.conf; \
 		cat $(BUILD_DIR)/tests/radiusd.config.log; \
 		echo "fail"; \
-		echo "FR_LIBRARY_PATH=./build/lib/local/.libs/ ./build/make/jlibtool --mode=execute ./build/bin/local/radiusd -XCd ./raddb -n debug -D ./share -n test"; \
+		echo "FR_LIBRARY_PATH=./build/lib/local/.libs/ ./build/make/jlibtool --mode=execute ./build/bin/local/radiusd -XCMd ./raddb -n debug -D ./share/dictionary"; \
 		exit 1; \
 	fi
 	@rm -f raddb/test.conf
 	@echo "ok"
 	@touch $@
 
-test: ${BUILD_DIR}/bin/radiusd ${BUILD_DIR}/bin/radclient tests.trie tests.unit tests.xlat tests.keywords tests.auth tests.modules $(BUILD_DIR)/tests/radiusd-c tests.eap | build.raddb
+test: ${BUILD_DIR}/bin/radiusd ${BUILD_DIR}/bin/radclient tests.bin tests.trie tests.unit tests.xlat tests.map tests.keywords tests.auth tests.modules $(BUILD_DIR)/tests/radiusd-c tests.eap | build.raddb
 	@$(MAKE) -C src/tests tests
+
+.PHONY: clean.test
+clean.test: clean.tests.modules
+	@$(MAKE) -C src/tests clean
 
 #  Tests specifically for Travis. We do a LOT more than just
 #  the above tests
-ifneq "$(findstring travis,${prefix})" ""
 travis-test: raddb/test.conf test
 	@FR_LIBRARY_PATH=./build/lib/local/.libs/ ./build/make/jlibtool --mode=execute ./build/bin/local/radiusd -xxxv -n test
 	@rm -f raddb/test.conf
 	@$(MAKE) install
 	@perl -p -i -e 's/allow_vulnerable_openssl = no/allow_vulnerable_openssl = yes/' ${raddbdir}/radiusd.conf
 	@${sbindir}/radiusd -XC
-endif
 
 #
 # The $(R) is a magic variable not defined anywhere in this source.
@@ -109,12 +127,17 @@ endif
 #
 export DESTDIR := $(R)
 
-DICTIONARIES := $(shell find share/dictionary -type f -name dictionary*)
+DICTIONARIES := $(wildcard $(addsuffix /dictionary*,$(addprefix share/dictionary/,$(PROTOCOLS))))
+
 install.share: $(addprefix $(R)$(dictdir)/,$(patsubst share/dictionary/%,%,$(DICTIONARIES)))
 
 $(R)$(dictdir)/%: share/dictionary/%
 	@echo INSTALL $(patsubst share/dictionary/%,%,$<)
 	@$(INSTALL) -m 644 $< $@
+
+.PHONY: dictionary.format
+dictionary.format: $(DICTIONARIES)
+	@./scripts/dict/format.pl $(DICTIONARIES)
 
 MANFILES := $(wildcard man/man*/*.?)
 install.man: $(subst man/,$(R)$(mandir)/,$(MANFILES))
@@ -321,8 +344,30 @@ dist-tag: freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz freeradius-server-$
 #
 .PHONY: deb
 deb:
+	@if ! which fakeroot; then \
+		if ! which apt-get; then \
+		  echo "'make deb' only works on debian systems" ; \
+		  exit 1; \
+		fi ; \
+		echo "Please run 'apt-get install build-essentials' "; \
+		exit 1; \
+	fi
 	fakeroot debian/rules debian/control #clean
 	fakeroot dpkg-buildpackage -b -uc
+
+.PHONY: rpm
+
+rpmbuild/SOURCES/freeradius-server-$(RADIUSD_VERSION_STRING).tar.bz2: freeradius-server-$(RADIUSD_VERSION_STRING).tar.bz2
+	@mkdir -p $(addprefix rpmbuild/,SOURCES SPECS BUILD RPMS SRPMS BUILDROOT)
+	@for file in `awk '/^Source...:/ {print $$2}' redhat/freeradius.spec` ; do cp redhat/$$file rpmbuild/SOURCES/$$file ; done
+	@cp $< $@
+
+rpm: rpmbuild/SOURCES/freeradius-server-$(RADIUSD_VERSION_STRING).tar.bz2
+	@if ! yum-builddep -q -C --assumeno redhat/freeradius.spec 1> /dev/null 2>&1; then \
+		echo "ERROR: Required depdendencies not found, install them with: yum-builddep redhat/freeradius.spec"; \
+		exit 1; \
+	fi
+	@QA_RPATHS=0x0003 rpmbuild --define "_topdir `pwd`/rpmbuild" -bb redhat/freeradius.spec
 
 # Developer checks
 .PHONY: warnings
@@ -338,3 +383,10 @@ warnings:
 whitespace:
 	@for x in $$(git ls-files raddb/ src/); do unexpand $$x > $$x.bak; cp $$x.bak $$x; rm -f $$x.bak;done
 	@perl -p -i -e 'trim' $$(git ls-files src/)
+
+#
+#  Include the crossbuild make file only if we're cross building
+#
+ifneq "$(findstring crossbuild,$(MAKECMDGOALS))" ""
+include scripts/docker/crossbuild/crossbuild.mk
+endif

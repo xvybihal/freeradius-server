@@ -17,7 +17,7 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2003,2006  The FreeRADIUS server project
+ * @copyright 2003,2006 The FreeRADIUS server project
  */
 
 RCSID("$Id$")
@@ -144,7 +144,7 @@ static int eapmschapv2_compose(rlm_eap_mschapv2_t const *inst, eap_session_t *ea
 	REQUEST			*request = eap_session->request;
 
 	eap_round->request->code = FR_EAP_CODE_REQUEST;
-	eap_round->request->type.num = FR_EAP_MSCHAPV2;
+	eap_round->request->type.num = FR_EAP_METHOD_MSCHAPV2;
 
 	/*
 	 *	Always called with vendor Microsoft
@@ -246,7 +246,7 @@ static int eapmschapv2_compose(rlm_eap_mschapv2_t const *inst, eap_session_t *ea
 }
 
 
-static rlm_rcode_t CC_HINT(nonnull) mod_process(void *instance, eap_session_t *eap_session);
+static rlm_rcode_t CC_HINT(nonnull) mod_process(void *instance, void *thread, REQUEST *request);
 
 #ifdef WITH_PROXY
 /*
@@ -409,13 +409,13 @@ static rlm_rcode_t mschap_finalize(REQUEST *request, rlm_eap_mschapv2_t *inst,
 /*
  *	Keep processing the Auth-Type until it doesn't return YIELD.
  */
-static rlm_rcode_t mod_process_auth_type(void *instance, eap_session_t *eap_session)
+static rlm_rcode_t mod_process_auth_type(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	rlm_rcode_t	rcode;
-	rlm_eap_mschapv2_t	*inst = instance;
-	REQUEST		*request = eap_session->request;
+	rlm_rcode_t		rcode;
+	rlm_eap_mschapv2_t	*inst = talloc_get_type_abort(instance, rlm_eap_mschapv2_t);
+	eap_session_t		*eap_session = eap_session_get(request);
 
-	rcode = unlang_interpret_continue(request);
+	rcode = unlang_interpret_resume(request);
 
 	if (request->master_state == REQUEST_STOP_PROCESSING) return RLM_MODULE_REJECT;
 
@@ -426,19 +426,20 @@ static rlm_rcode_t mod_process_auth_type(void *instance, eap_session_t *eap_sess
 /*
  *	Authenticate a previously sent challenge.
  */
-static rlm_rcode_t CC_HINT(nonnull) mod_process(void *instance, eap_session_t *eap_session)
+static rlm_rcode_t CC_HINT(nonnull) mod_process(void *instance, UNUSED void *thread, REQUEST *request)
 {
+	rlm_eap_mschapv2_t	*inst = talloc_get_type_abort(instance, rlm_eap_mschapv2_t);
+	eap_session_t		*eap_session = eap_session_get(request);
+	mschapv2_opaque_t	*data = talloc_get_type_abort(eap_session->opaque, mschapv2_opaque_t);
+	eap_round_t		*eap_round = eap_session->this_round;
+	VALUE_PAIR		*auth_challenge, *response, *name;
+
+	CONF_SECTION		*unlang;
 	rlm_rcode_t		rcode;
 	int			ccode;
 	uint8_t			*p;
 	size_t			length;
 	char			*q;
-	mschapv2_opaque_t	*data = talloc_get_type_abort(eap_session->opaque, mschapv2_opaque_t);
-	eap_round_t		*eap_round = eap_session->this_round;
-	VALUE_PAIR		*auth_challenge, *response, *name;
-	rlm_eap_mschapv2_t	*inst = (rlm_eap_mschapv2_t *)instance;
-	REQUEST			*request = eap_session->request;
-	CONF_SECTION		*unlang;
 
 	if (!fr_cond_assert(eap_session->inst)) return 0;
 
@@ -474,14 +475,14 @@ static rlm_rcode_t CC_HINT(nonnull) mod_process(void *instance, eap_session_t *e
 			RDEBUG2("Password change packet received");
 
 			MEM(pair_update_request(&auth_challenge, attr_ms_chap_challenge) >= 0);
-			fr_pair_value_memcpy(auth_challenge, data->auth_challenge, MSCHAPV2_CHALLENGE_LEN);
+			fr_pair_value_memcpy(auth_challenge, data->auth_challenge, MSCHAPV2_CHALLENGE_LEN, false);
 
 			MEM(pair_update_request(&cpw, attr_ms_chap2_cpw) >= 0);
 			p = talloc_array(cpw, uint8_t, 68);
 			p[0] = 7;
 			p[1] = mschap_id;
 			memcpy(p + 2, eap_round->response->type.data + 520, 66);
-			fr_pair_value_memsteal(cpw, p);
+			fr_pair_value_memsteal(cpw, p, false);
 
 			/*
 			 * break the encoded password into VPs (3 of them)
@@ -499,7 +500,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_process(void *instance, eap_session_t *e
 				p[2] = 0;
 				p[3] = seq++;
 				memcpy(p + 4, eap_round->response->type.data + 4 + copied, to_copy);
-				fr_pair_value_memsteal(nt_enc, p);
+				fr_pair_value_memsteal(nt_enc, p, false);
 
 				copied += to_copy;
 			}
@@ -623,7 +624,7 @@ failure:
 	 *	but it works.
 	 */
 	MEM(pair_update_request(&auth_challenge, attr_ms_chap_challenge) >= 0);
-	fr_pair_value_memcpy(auth_challenge, data->auth_challenge, MSCHAPV2_CHALLENGE_LEN);
+	fr_pair_value_memcpy(auth_challenge, data->auth_challenge, MSCHAPV2_CHALLENGE_LEN, false);
 
 	MEM(pair_update_request(&response, attr_ms_chap2_response) >= 0);
 	p = talloc_array(response, uint8_t, MSCHAPV2_RESPONSE_LEN);
@@ -636,7 +637,7 @@ failure:
 	 *	the challenge sent by the client.
 	 */
 	if (data->has_peer_challenge) memcpy(p + 2, data->peer_challenge, MSCHAPV2_CHALLENGE_LEN);
-	fr_pair_value_memsteal(response, p);
+	fr_pair_value_memsteal(response, p, false);
 
 	/*
 	 *	MS-Length - MS-Value - 5.
@@ -729,8 +730,8 @@ packet_ready:
 	if (!unlang) {
 		rcode = process_authenticate(inst->auth_type->value->vb_uint32, request);
 	} else {
-		unlang_push_section(request, unlang, RLM_MODULE_FAIL, UNLANG_TOP_FRAME);
-		rcode = unlang_interpret_continue(request);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_FAIL, UNLANG_TOP_FRAME);
+		rcode = unlang_interpret_resume(request);
 
 		/*
 		 *	If it's yielding, set up the process function
@@ -748,14 +749,15 @@ packet_ready:
 /*
  *	Initiate the EAP-MSCHAPV2 session by sending a challenge to the peer.
  */
-static rlm_rcode_t mod_session_init(void *instance, eap_session_t *eap_session)
+static rlm_rcode_t mod_session_init(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	int			i;
+	eap_session_t		*eap_session = eap_session_get(request);
 	VALUE_PAIR		*auth_challenge;
 	VALUE_PAIR		*peer_challenge;
 	mschapv2_opaque_t	*data;
-	REQUEST			*request = eap_session->request;
+
 	uint8_t 		*p;
+	int			i;
 	bool			created_auth_challenge;
 
 	if (!fr_cond_assert(instance)) return RLM_MODULE_FAIL;
@@ -791,7 +793,7 @@ static rlm_rcode_t mod_session_init(void *instance, eap_session_t *eap_session)
 		MEM(auth_challenge = fr_pair_afrom_da(eap_session, attr_ms_chap_challenge));
 		p = talloc_array(auth_challenge, uint8_t, MSCHAPV2_CHALLENGE_LEN);
 		for (i = 0; i < MSCHAPV2_CHALLENGE_LEN; i++) p[i] = fr_rand();
-		fr_pair_value_memsteal(auth_challenge, p);
+		fr_pair_value_memsteal(auth_challenge, p, false);
 	}
 	RDEBUG2("Issuing Challenge");
 
@@ -869,7 +871,7 @@ rlm_eap_submodule_t rlm_eap_mschapv2 = {
 	.name		= "eap_mschapv2",
 	.magic		= RLM_MODULE_INIT,
 
-	.provides	= { FR_EAP_MSCHAPV2 },
+	.provides	= { FR_EAP_METHOD_MSCHAPV2 },
 	.inst_size	= sizeof(rlm_eap_mschapv2_t),
 	.config		= submodule_config,
 	.instantiate	= mod_instantiate,	/* Create new submodule instance */

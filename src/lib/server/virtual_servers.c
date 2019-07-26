@@ -20,18 +20,18 @@
  * @file virtual_servers.c
  * @brief Defines functions for virtual_server initialisation.
  *
- * @copyright 2003,2006  The FreeRADIUS server project
- * @copyright 2000  Alan DeKok <aland@freeradius.org>
- * @copyright 2000  Alan Curry <pacman@world.std.com>
+ * @copyright 2003,2006 The FreeRADIUS server project
+ * @copyright 2000 Alan DeKok (aland@freeradius.org)
+ * @copyright 2000 Alan Curry (pacman@world.std.com)
  */
 
 RCSID("$Id$")
 
 #include <freeradius-devel/server/base.h>
 #include <freeradius-devel/server/command.h>
-#include <freeradius-devel/server/dl.h>
+#include <freeradius-devel/server/dl_module.h>
 #include <freeradius-devel/server/modpriv.h>
-#include <freeradius-devel/server/parser.h>
+#include <freeradius-devel/server/cond.h>
 #include <freeradius-devel/server/protocol.h>
 
 #include <freeradius-devel/io/application.h>
@@ -39,25 +39,7 @@ RCSID("$Id$")
 
 #include <freeradius-devel/unlang/base.h>
 
-
-
-/*
- *	Ordered by component
- */
-const section_type_value_t section_type_value[MOD_COUNT] = {
-	{ "authenticate", "Auth-Type",      FR_AUTH_TYPE },
-	{ "authorize",   "Autz-Type",      FR_AUTZ_TYPE },
-	{ "preacct",     "Pre-Acct-Type",  FR_PRE_ACCT_TYPE },
-	{ "accounting",  "Acct-Type",      FR_ACCT_TYPE },
-	{ "pre-proxy",   "Pre-Proxy-Type", FR_PRE_PROXY_TYPE },
-	{ "post-proxy",  "Post-Proxy-Type", FR_POST_PROXY_TYPE },
-	{ "post-auth",   "Post-Auth-Type", FR_POST_AUTH_TYPE }
-#ifdef WITH_COA
-	,
-	{ "recv-coa",    "Recv-CoA-Type",  FR_RECV_COA_TYPE },
-	{ "send-coa",    "Send-CoA-Type",  FR_SEND_COA_TYPE }
-#endif
-};
+#include "virtual_servers.h"
 
 typedef struct {
 	char const		*namespace;		//!< Namespace function is registered to.
@@ -65,7 +47,7 @@ typedef struct {
 } fr_virtual_namespace_t;
 
 typedef struct {
-	dl_instance_t		*proto_module;		//!< The proto_* module for a listen section.
+	dl_module_inst_t		*proto_module;		//!< The proto_* module for a listen section.
 	fr_app_t const		*app;			//!< Easy access to the exported struct.
 } fr_virtual_listen_t;
 
@@ -86,6 +68,15 @@ static fr_virtual_server_t **virtual_servers;
  * other virtual server functions.
  */
 static CONF_SECTION *virtual_server_root;
+
+static rbtree_t *listen_addr_root = NULL;
+
+/** Lookup allowed section names for modules
+ */
+static rbtree_t *server_section_name_tree = NULL;
+
+static int server_section_name_cmp(void const *one, void const *two);
+static int virtual_server_section_register(virtual_server_compile_t const *entry);
 
 static int namespace_on_read(UNUSED TALLOC_CTX *ctx, UNUSED void *out, UNUSED void *parent,
 			     CONF_ITEM *ci, UNUSED CONF_PARSER const *rule);
@@ -118,13 +109,17 @@ const CONF_PARSER virtual_servers_on_read_config[] = {
 };
 
 static const CONF_PARSER server_config[] = {
-	{ FR_CONF_OFFSET("namespace", FR_TYPE_STRING | FR_TYPE_ON_READ, fr_virtual_server_t, namespace),
-	  .func = namespace_on_read },
-
 	{ FR_CONF_OFFSET("listen", FR_TYPE_SUBSECTION | FR_TYPE_MULTI | FR_TYPE_OK_MISSING,
-			 fr_virtual_server_t, listener), \
+			 fr_virtual_server_t, listener),		\
 			 .subcs_size = sizeof(fr_virtual_listen_t), .subcs_type = "fr_virtual_listen_t",
 			 .func = listen_parse },
+
+	CONF_PARSER_TERMINATOR
+};
+
+static const CONF_PARSER namespace_config[] = {
+	{ FR_CONF_OFFSET("namespace", FR_TYPE_STRING | FR_TYPE_ON_READ, fr_virtual_server_t, namespace),
+	  .func = namespace_on_read },
 
 	CONF_PARSER_TERMINATOR
 };
@@ -159,18 +154,18 @@ static int listen_on_read(UNUSED TALLOC_CTX *ctx, UNUSED void *out, UNUSED void 
 	CONF_SECTION		*listen_cs = cf_item_to_section(ci);
 	CONF_SECTION		*server_cs = cf_item_to_section(cf_parent(ci));
 	CONF_PAIR		*namespace = cf_pair_find(server_cs, "namespace");
-	dl_t const		*module;
+	dl_module_t const	*module;
 
 	if (!namespace) {
-		cf_log_err(listen_cs, "No namespace set for virtual server");
-		cf_log_err(listen_cs, "Add namespace = <protocol> inside %s %s { ... } section",
-			   cf_section_name1(listen_cs), cf_section_name2(listen_cs));
+		cf_log_err(listen_cs, "No 'namespace' set for virtual server");
+		cf_log_err(listen_cs, "Please add 'namespace = <protocol>' inside of the 'server %s { ... }' section",
+			   cf_section_name2(server_cs));
 		return -1;
 	}
 
 	if (DEBUG_ENABLED4) cf_log_debug(ci, "Loading proto_%s", cf_pair_value(namespace));
 
-	module = dl_module(listen_cs, NULL, cf_pair_value(namespace), DL_TYPE_PROTO);
+	module = dl_module(listen_cs, NULL, cf_pair_value(namespace), DL_MODULE_TYPE_PROTO);
 	if (!module) {
 		cf_log_err(listen_cs, "Failed loading proto_%s module", cf_pair_value(namespace));
 		return -1;
@@ -211,10 +206,15 @@ static int namespace_on_read(TALLOC_CTX *ctx, UNUSED void *out, UNUSED void *par
 
 	if (DEBUG_ENABLED4) cf_log_debug(ci, "Initialising namespace \"%s\"", namespace);
 
-	if (fr_dict_protocol_afrom_file(&dict, namespace) < 0) {
-		cf_log_perr(ci, "Failed initialising namespace \"%s\"", namespace);
+	if (fr_dict_protocol_afrom_file(&dict, namespace, NULL) < 0) {
+#if 1
+		return 0;
+#else
+		cf_log_perr("Failed initialising namespace \"%s\" - %s", namespace, fr_strerror());
 		return -1;
+#endif
 	}
+
 	dict_p = talloc_zero(ctx, fr_dict_t *);
 	*dict_p = dict;
 	talloc_set_destructor(dict_p, namespace_dict_free);
@@ -236,14 +236,9 @@ static int namespace_on_read(TALLOC_CTX *ctx, UNUSED void *out, UNUSED void *par
  *	- -1 on failure.
  */
 static int server_on_read(UNUSED TALLOC_CTX *ctx, UNUSED void *out, UNUSED void *parent,
-			  UNUSED CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
+			  CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
 {
-
-	/*
-	 *	Just a place-holder which does nothing.
-	 */
-
-	return 0;
+	return cf_section_rules_push(cf_item_to_section(ci), namespace_config);
 }
 
 /** dl_open a proto_* module
@@ -266,7 +261,7 @@ static int listen_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_IT
 
 	if (DEBUG_ENABLED4) cf_log_debug(ci, "Loading %s listener into %p", cf_pair_value(namespace), out);
 
-	if (dl_instance(ctx, &listen->proto_module, listen_cs, NULL, cf_pair_value(namespace), DL_TYPE_PROTO) < 0) {
+	if (dl_module_instance(ctx, &listen->proto_module, listen_cs, NULL, cf_pair_value(namespace), DL_MODULE_TYPE_PROTO) < 0) {
 		cf_log_err(listen_cs, "Failed loading proto module");
 		return -1;
 	}
@@ -309,83 +304,6 @@ static int server_parse(UNUSED TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 	return 0;
 }
 
-/**
- */
-rlm_rcode_t process_authenticate(int auth_type, REQUEST *request)
-{
-	rlm_rcode_t	rcode;
-	CONF_SECTION	*cs, *server_cs;
-	char const	*module;
-	char const	*component;
-	fr_dict_attr_t const *da;
-	fr_dict_enum_t const *dv;
-	CONF_SECTION	*subcs;
-
-	rad_assert(request->server_cs != NULL);
-
-	/*
-	 *	Cache the old server_cs in case it was changed.
-	 *
-	 *	FIXME: request->server_cs should NOT be changed.
-	 *	Instead, we should always create a child REQUEST when
-	 *	we need to use a different virtual server.
-	 *
-	 *	This is mainly for things like proxying
-	 */
-	server_cs = request->server_cs;
-	cs = cf_section_find(request->server_cs, "authenticate", NULL);
-	if (!cs) {
-		RDEBUG2("Empty 'authenticate' section in virtual server \"%s\".  Using default return value (%s)",
-			cf_section_name2(request->server_cs),
-			fr_int2str(mod_rcode_table, RLM_MODULE_REJECT, "<invalid>"));
-		return RLM_MODULE_REJECT;
-	}
-
-	/*
-	 *	Figure out which section to run.
-	 */
-	if (!auth_type) {
-		RERROR("An 'Auth-Type' MUST be specified");
-		return RLM_MODULE_REJECT;
-	}
-
-	da = fr_dict_attr_child_by_num(fr_dict_root(fr_dict_internal), FR_AUTH_TYPE);
-	if (!da) return RLM_MODULE_FAIL;
-
-	dv = fr_dict_enum_by_value(da, fr_box_uint32((uint32_t) auth_type));
-	if (!dv) return RLM_MODULE_FAIL;
-
-	subcs = cf_section_find(cs, da->name, dv->alias);
-	if (!subcs) {
-		RDEBUG2("%s %s sub-section not found.  Using default return values.",
-			da->name, dv->alias);
-		return RLM_MODULE_REJECT;
-	}
-
-	RDEBUG("Running %s %s from file %s",
-	       da->name, dv->alias, cf_filename(subcs));
-	cs = subcs;
-
-	/*
-	 *	Cache and restore these, as they're re-set when
-	 *	looping back from inside a module like eap-gtc.
-	 */
-	module = request->module;
-	component = request->component;
-
-	request->module = NULL;
-	request->component = "authenticate";
-
-	rcode = unlang_interpret(request, cs, RLM_MODULE_REJECT);
-
-	request->component = component;
-	request->module = module;
-	request->server_cs = server_cs;
-
-	return rcode;
-}
-
-
 /** Define a values for Auth-Type attributes by the sections present in a virtual-server
  *
  * The ident2 value of any sections found will be converted into values of the specified da.
@@ -399,6 +317,7 @@ rlm_rcode_t process_authenticate(int auth_type, REQUEST *request)
  */
 int virtual_server_section_attribute_define(CONF_SECTION *server_cs, char const *subcs_name, fr_dict_attr_t const *da)
 {
+	int			rcode = 0;
 	CONF_SECTION		*subcs = NULL;
 
 	rad_assert(strcmp(cf_section_name1(server_cs), "server") == 0);
@@ -432,9 +351,11 @@ int virtual_server_section_attribute_define(CONF_SECTION *server_cs, char const 
 			PERROR("Failed adding section value");
 			return -1;
 		}
+
+		rcode = 1;
 	}
 
-	return 0;
+	return rcode;
 }
 
 
@@ -471,63 +392,102 @@ static fr_cmd_table_t cmd_table[] = {
 	CMD_TABLE_END
 
 };
-/** Open all the listen sockets
+
+/** Compare listeners by app_io_addr
  *
- * @param[in] sc	Scheduler to add I/O paths to.
- * @return
- *	- 0 on success.
- *	- -1 on failure.
+ *  Only works for IP addresses, and will blow up on file names
  */
-int virtual_servers_open(fr_schedule_t *sc)
+static int listen_addr_cmp(void const *one, void const *two)
 {
-	size_t i, server_cnt = virtual_servers ? talloc_array_length(virtual_servers) : 0;
+	fr_listen_t const *a = one;
+	fr_listen_t const *b = two;
+	fr_ipaddr_t aip, bip;
+	int rcode;
 
-	rad_assert(virtual_servers);
+	/*
+	 *	The caller must ensure that the address field is set.
+	 */
+	if (!a->app_io_addr && !b->app_io_addr) return 0;
+	if (!a->app_io_addr && b->app_io_addr) return -1;
+	if (a->app_io_addr && !b->app_io_addr) return +1;
 
-	DEBUG2("#### Opening listener interfaces ####");
+	/*
+	 *	UDP vs TCP
+	 */
+	rcode = a->app_io_addr->proto - b->app_io_addr->proto;
+	if (rcode != 0) return rcode;
 
-	for (i = 0; i < server_cnt; i++) {
-		fr_virtual_listen_t	**listener;
-		size_t			j, listen_cnt;
+	/*
+	 *	Check ports.
+	 */
+	rcode = a->app_io_addr->port - b->app_io_addr->port;
+	if (rcode != 0) return rcode;
 
- 		listener = virtual_servers[i]->listener;
- 		listen_cnt = talloc_array_length(listener);
+	/*
+	 *	Don't call fr_ipaddr_cmp(), as we need to do our own
+	 *	checks here.  We have various wildcard checks which
+	 *	aren't globally applicable.
+	 */
 
-		for (j = 0; j < listen_cnt; j++) {
-			fr_virtual_listen_t *listen = listener[j];
+	/*
+	 *	Different address families.
+	 */
+	rcode = a->app_io_addr->ipaddr.af - b->app_io_addr->ipaddr.af;
+	if (rcode != 0) return rcode;
 
-			rad_assert(listen != NULL);
-			rad_assert(listen->proto_module != NULL);
-			rad_assert(listen->app != NULL);
-
-			/*
-			 *	The socket is opened with app_instance,
-			 *	but all subsequent calls (network.c, etc.) use app_io_instance.
-			 *
-			 *	The reason is that we call (for example) proto_radius to
-			 *	open the socket, and proto_radius is responsible for setting up
-			 *	proto_radius_udp, and then calling proto_radius_udp->open.
-			 *
-			 *	Even then, proto_radius usually calls fr_master_io_listen() in order
-			 *	to create the fr_listen_t structure.
-			 */
-			if (listen->app->open &&
-			    listen->app->open(listen->proto_module->data, sc, listen->proto_module->conf) < 0) {
-				cf_log_err(listen->proto_module->conf, "Opening %s I/O interface failed",
-					   listen->app->name);
-				return -1;
-			}
-
-			/*
-			 *	Socket information is printed out by
-			 *	the socket handlers.  e.g. proto_radius_udp
-			 */
-			DEBUG3("Opened listener for %s", listen->app->name);
-		}
+	/*
+	 *	If both are bound to interfaces, AND the interfaces
+	 *	are different, then there is no conflict.
+	 */
+	if (a->app_io_addr->ipaddr.scope_id && b->app_io_addr->ipaddr.scope_id) {
+		rcode = a->app_io_addr->ipaddr.scope_id - b->app_io_addr->ipaddr.scope_id;
+		if (rcode != 0) return rcode;
 	}
 
-	return 0;
+	rcode = a->app_io_addr->ipaddr.prefix - b->app_io_addr->ipaddr.prefix;
+	aip = a->app_io_addr->ipaddr;
+	bip = b->app_io_addr->ipaddr;
+
+	/*
+	 *	Mask out the longer prefix to match the shorter
+	 *	prefix.
+	 */
+	if (rcode < 0) {
+		fr_ipaddr_mask(&bip, a->app_io_addr->ipaddr.prefix);
+
+	} else if (rcode > 0) {
+		fr_ipaddr_mask(&aip, b->app_io_addr->ipaddr.prefix);
+
+	}
+
+	return fr_ipaddr_cmp(&aip, &bip);
 }
+
+/** See if another global listener is using a particular IP / port
+ *
+ */
+fr_listen_t *listen_find_any(fr_listen_t *li)
+{
+	if (!listen_addr_root) return false;
+
+	return rbtree_finddata(listen_addr_root, li);
+}
+
+
+/**  Record that we're listening on a particular IP / port
+ *
+ */
+bool listen_record(fr_listen_t *li)
+{
+	if (!listen_addr_root) return false;
+
+	if (!li->app_io_addr) return true;
+
+	if (listen_find_any(li) != NULL) return false;
+
+	return rbtree_insert(listen_addr_root, li);
+}
+
 
 /** Instantiate all the virtual servers
  *
@@ -637,8 +597,6 @@ int virtual_servers_bootstrap(CONF_SECTION *config)
 	size_t i, server_cnt = 0;
 	CONF_SECTION *cs = NULL;
 
-	virtual_server_root = config;
-
 	if (!virtual_servers) {
 		ERROR("No server { ... } sections found");
 		return -1;
@@ -696,7 +654,7 @@ int virtual_servers_bootstrap(CONF_SECTION *config)
 
 			(void) talloc_get_type_abort(listen, fr_virtual_listen_t);
 
-			talloc_get_type_abort(listen->proto_module, dl_instance_t);
+			talloc_get_type_abort(listen->proto_module, dl_module_inst_t);
 			listen->app = (fr_app_t const *)listen->proto_module->module->common;
 
 			if (listen->app->bootstrap &&
@@ -704,6 +662,64 @@ int virtual_servers_bootstrap(CONF_SECTION *config)
 				cf_log_err(listen->proto_module->conf, "Bootstrap failed");
 				return -1;
 			}
+		}
+	}
+
+	return 0;
+}
+
+/** Open all the listen sockets
+ *
+ * @param[in] sc	Scheduler to add I/O paths to.
+ * @return
+ *	- 0 on success.
+ *	- -1 on failure.
+ */
+int virtual_servers_open(fr_schedule_t *sc)
+{
+	size_t i, server_cnt = virtual_servers ? talloc_array_length(virtual_servers) : 0;
+
+	rad_assert(virtual_servers);
+
+	DEBUG2("#### Opening listener interfaces ####");
+
+	for (i = 0; i < server_cnt; i++) {
+		fr_virtual_listen_t	**listener;
+		size_t			j, listen_cnt;
+
+ 		listener = virtual_servers[i]->listener;
+ 		listen_cnt = talloc_array_length(listener);
+
+		for (j = 0; j < listen_cnt; j++) {
+			fr_virtual_listen_t *listen = listener[j];
+
+			rad_assert(listen != NULL);
+			rad_assert(listen->proto_module != NULL);
+			rad_assert(listen->app != NULL);
+
+			/*
+			 *	The socket is opened with app_instance,
+			 *	but all subsequent calls (network.c, etc.) use app_io_instance.
+			 *
+			 *	The reason is that we call (for example) proto_radius to
+			 *	open the socket, and proto_radius is responsible for setting up
+			 *	proto_radius_udp, and then calling proto_radius_udp->open.
+			 *
+			 *	Even then, proto_radius usually calls fr_master_io_listen() in order
+			 *	to create the fr_listen_t structure.
+			 */
+			if (listen->app->open &&
+			    listen->app->open(listen->proto_module->data, sc, listen->proto_module->conf) < 0) {
+				cf_log_err(listen->proto_module->conf, "Opening %s I/O interface failed",
+					   listen->app->name);
+				return -1;
+			}
+
+			/*
+			 *	Socket information is printed out by
+			 *	the socket handlers.  e.g. proto_radius_udp
+			 */
+			DEBUG3("Opened listener for %s", listen->app->name);
 		}
 	}
 
@@ -722,6 +738,18 @@ int virtual_servers_bootstrap(CONF_SECTION *config)
 CONF_SECTION *virtual_server_find(char const *name)
 {
 	return cf_section_find(virtual_server_root, "server", name);
+}
+
+/** Find a virtual server using one of its sections
+ *
+ * @param[in] section	to find parent virtual server for.
+ * @return
+ *	- The virtual server section on success.
+ *	- NULL if the child isn't associated with any virtual server section.
+ */
+CONF_SECTION *virtual_server_by_child(CONF_SECTION *section)
+{
+	return cf_section_find_in_parent(section, "server", CF_IDENT_ANY);
 }
 
 /** Free a virtual namespace callback
@@ -784,6 +812,169 @@ int virtual_server_namespace_register(char const *namespace, fr_virtual_server_c
 	return 0;
 }
 
+/** Return the namespace for a given virtual server
+ *
+ * @param[in] virtual_server	to look for namespace in.
+ * @return
+ *	- NULL on error.
+ *	- Namespace on success.
+ */
+fr_dict_t *virtual_server_namespace(char const *virtual_server)
+{
+	CONF_SECTION const *server_cs;
+	CONF_DATA const *cd;
+
+	server_cs = virtual_server_find(virtual_server);
+	if (!server_cs) return NULL;
+
+	cd = cf_data_find(server_cs, fr_dict_t *, "dictionary");
+	if (!cd) return NULL;
+
+	return *(fr_dict_t **) cf_data_value(cd);
+}
+
+/** Verify that a given virtual_server exists and is of a particular namespace
+ *
+ * Mostly used by modules to check virtual servers specified by their configs.
+ *
+ * @param[out] out		we found. May be NULL if just checking for existence.
+ * @param[in] virtual_server	to check.
+ * @param[in] namespace		the virtual server must belong to.
+ * @param[in] ci		to log errors against. May be NULL if caller
+ *				doesn't want errors logged.
+ * @return
+ *	- 0 on success.
+ *	- -1 if no virtual server could be found.
+ *	- -2 if virtual server is not of the correct namespace.
+ */
+int virtual_server_has_namespace(CONF_SECTION **out,
+				 char const *virtual_server, fr_dict_t const *namespace, CONF_ITEM *ci)
+{
+	CONF_SECTION	*server_cs;
+	fr_dict_t const	*dict;
+
+	if (out) *out = NULL;
+
+	server_cs = virtual_server_find(virtual_server);
+	if (!server_cs) {
+		if (ci) cf_log_err(ci, "Can't find virtual server \"%s\"", virtual_server);
+		return -1;
+	}
+	dict = virtual_server_namespace(virtual_server);
+	if (!dict) {
+		/*
+		 *	Not sure this is even a valid state?
+		 */
+		if (ci) cf_log_err(ci, "No namespace found in virtual server \"%s\"", virtual_server);
+		return -2;
+	}
+
+	if (dict != namespace) {
+		if (ci) {
+			cf_log_err(ci,
+				   "Expected virtual server \"%s\" to be of namespace \"%s\", got namespace \"%s\"",
+				   virtual_server, fr_dict_root(namespace)->name, fr_dict_root(dict)->name);
+		}
+		return -2;
+	}
+
+	if (out) *out = server_cs;
+
+	return 0;
+}
+
+int virtual_servers_init(CONF_SECTION *config)
+{
+	virtual_server_root = config;
+
+	MEM(listen_addr_root = rbtree_create(config, listen_addr_cmp, NULL, RBTREE_FLAG_NONE));
+	MEM(server_section_name_tree = rbtree_create(config, server_section_name_cmp, NULL, RBTREE_FLAG_NONE));
+
+	return 0;
+}
+
+int virtual_servers_free(void)
+{
+	return 0;
+}
+
+
+/**
+ */
+rlm_rcode_t process_authenticate(int auth_type, REQUEST *request)
+{
+	rlm_rcode_t	rcode;
+	CONF_SECTION	*cs, *server_cs;
+	char const	*module;
+	char const	*component;
+	fr_dict_attr_t const *da;
+	fr_dict_enum_t const *dv;
+	CONF_SECTION	*subcs;
+
+	rad_assert(request->server_cs != NULL);
+
+	/*
+	 *	Cache the old server_cs in case it was changed.
+	 *
+	 *	FIXME: request->server_cs should NOT be changed.
+	 *	Instead, we should always create a child REQUEST when
+	 *	we need to use a different virtual server.
+	 *
+	 *	This is mainly for things like proxying
+	 */
+	server_cs = request->server_cs;
+	cs = cf_section_find(request->server_cs, "authenticate", NULL);
+	if (!cs) {
+		RDEBUG2("Empty 'authenticate' section in virtual server \"%s\".  Using default return value (%s)",
+			cf_section_name2(request->server_cs),
+			fr_int2str(mod_rcode_table, RLM_MODULE_REJECT, "<invalid>"));
+		return RLM_MODULE_REJECT;
+	}
+
+	/*
+	 *	Figure out which section to run.
+	 */
+	if (!auth_type) {
+		RERROR("An 'Auth-Type' MUST be specified");
+		return RLM_MODULE_REJECT;
+	}
+
+	da = fr_dict_attr_child_by_num(fr_dict_root(fr_dict_internal), FR_AUTH_TYPE);
+	if (!da) return RLM_MODULE_FAIL;
+
+	dv = fr_dict_enum_by_value(da, fr_box_uint32((uint32_t) auth_type));
+	if (!dv) return RLM_MODULE_FAIL;
+
+	subcs = cf_section_find(cs, da->name, dv->alias);
+	if (!subcs) {
+		RDEBUG2("%s %s sub-section not found.  Using default return values.",
+			da->name, dv->alias);
+		return RLM_MODULE_REJECT;
+	}
+
+	RDEBUG("Running %s %s from file %s",
+	       da->name, dv->alias, cf_filename(subcs));
+	cs = subcs;
+
+	/*
+	 *	Cache and restore these, as they're re-set when
+	 *	looping back from inside a module like eap-gtc.
+	 */
+	module = request->module;
+	component = request->component;
+
+	request->module = NULL;
+	request->component = "authenticate";
+
+	rcode = unlang_interpret(request, cs, RLM_MODULE_REJECT);
+
+	request->component = component;
+	request->module = module;
+	request->server_cs = server_cs;
+
+	return rcode;
+}
+
 /*
  *	Hack for unit_test_module.c
  */
@@ -812,4 +1003,325 @@ void fr_request_async_bootstrap(REQUEST *request, fr_event_list_t *el)
 	request->async->listen = NULL;
 	request->async->packet_ctx = NULL;
 	listener[0]->app->entry_point_set(listener[0]->proto_module->data, request);
+}
+
+int fr_app_process_bootstrap(CONF_SECTION *server, dl_module_inst_t **type_submodule, CONF_SECTION *conf)
+{
+	int i = 0;
+	CONF_PAIR *cp = NULL;
+
+	/*
+	 *	Bootstrap the process modules
+	 */
+	while ((cp = cf_pair_find_next(conf, cp, "type"))) {
+		char const		*value;
+		dl_module_t const	*module = talloc_get_type_abort_const(type_submodule[i]->module, dl_module_t);
+		fr_app_worker_t const	*app_process = (fr_app_worker_t const *)(module->common);
+
+		if (app_process->bootstrap && (app_process->bootstrap(type_submodule[i]->data,
+								      type_submodule[i]->conf) < 0)) {
+			cf_log_err(conf, "Bootstrap failed for \"%s\"", app_process->name);
+			return -1;
+		}
+
+		value = cf_pair_value(cp);
+
+		/*
+		 *	Save the process / instance data
+		 *
+		 *	This is so that when one virtual server wants
+		 *	to call another, it just looks up the data
+		 *	here by packet name, and doesn't need to root
+		 *	through all of the listeners.
+		 */
+		if (!cf_data_find(server, fr_io_process_t, value)) {
+			fr_io_process_t *process_p = talloc(server, fr_io_process_t);
+			*process_p = app_process->entry_point;
+
+			(void) cf_data_add(server, process_p, value, NULL);
+
+			if (type_submodule[i]->data) {
+				(void) cf_data_add(server, type_submodule[i]->data, value, NULL);
+			}
+		}
+
+		/*
+		 *	Register the processing sections with the
+		 *	module manager.
+		 */
+		if (app_process->compile_list) {
+			int j;
+			virtual_server_compile_t const *list = app_process->compile_list;
+
+			for (j = 0; list[j].name != NULL; j++) {
+				if (list[j].name == CF_IDENT_ANY) continue;
+
+				if (virtual_server_section_register(&list[j]) < 0) {
+					cf_log_err(conf, "Failed registering section name for %s",
+						app_process->name);
+					return -1;
+				}
+
+			}
+		}
+
+
+		i++;
+	}
+
+	return i;
+}
+
+
+int fr_app_process_instantiate(CONF_SECTION *server, dl_module_inst_t **type_submodule, dl_module_inst_t **type_submodule_by_code, int code_max, CONF_SECTION *conf)
+{
+	int i;
+	CONF_PAIR *cp = NULL;
+	vp_tmpl_rules_t		parse_rules;
+
+	memset(&parse_rules, 0, sizeof(parse_rules));
+	parse_rules.dict_def = virtual_server_namespace(cf_section_name2(server));
+
+	/*
+	 *	Instantiate the process modules
+	 */
+	i = 0;
+	while ((cp = cf_pair_find_next(conf, cp, "type"))) {
+		fr_app_worker_t const	*app_process;
+		fr_dict_enum_t const	*enumv;
+		int			code;
+
+		app_process = (fr_app_worker_t const *)type_submodule[i]->module->common;
+		if (app_process->instantiate &&
+		    (app_process->instantiate(type_submodule[i]->data, type_submodule[i]->conf) < 0)) {
+			cf_log_err(conf, "Instantiation failed for \"%s\"", app_process->name);
+			return -1;
+		}
+
+		/*
+		 *	Compile the processing sections.
+		 */
+		if (app_process->compile_list &&
+		    (virtual_server_compile_sections(server, app_process->compile_list, &parse_rules) < 0)) {
+			return -1;
+		}
+
+		/*
+		 *	We've already done bounds checking in the type_parse function
+		 */
+		enumv = cf_data_value(cf_data_find(cp, fr_dict_enum_t, NULL));
+		if (!fr_cond_assert(enumv)) return -1;
+
+		code = enumv->value->vb_uint32;
+		if (code >= code_max) {
+			cf_log_err(conf, "Invalid type code \"%s\" for \"%s\"", enumv->alias, app_process->name);
+			return -1;
+		}
+
+		type_submodule_by_code[code] = type_submodule[i];	/* Store the process function */
+		i++;
+	}
+
+	return 0;
+}
+
+
+/** Compile sections for a virtual server.
+ *
+ *  When the "proto_foo" module calls fr_app_process_instantiate(), it
+ *  loads the compile list from the #fr_app_worker_t, and calls this
+ *  function.
+ *
+ *  This function walks down the registration table, compiling each
+ *  named section.
+ */
+int virtual_server_compile_sections(CONF_SECTION *server, virtual_server_compile_t const *list, vp_tmpl_rules_t const *rules)
+{
+	int i;
+	CONF_SECTION *subcs = NULL;
+
+	/*
+	 *	The sections are in trees, so this isn't as bad as it
+	 *	looks.  It's not O(n^2), but O(n logn).  But it could
+	 *	still be improved.
+	 */
+	for (i = 0; list[i].name != NULL; i++) {
+		int rcode;
+
+		/*
+		 *	We are looking for a specific subsection.
+		 *	Warn if it isn't found, or compile it if
+		 *	found.
+		 */
+		if (list[i].name2 != CF_IDENT_ANY) {
+			subcs = cf_section_find(server, list[i].name, list[i].name2);
+			if (!subcs) {
+				DEBUG3("Warning: Skipping %s %s { ... } as it was not found.",
+				       list[i].name, list[i].name2);
+				continue;
+			}
+
+			rcode = unlang_compile_subsection(subcs, list[i].component, rules);
+			if (rcode < 0) return -1;
+			continue;
+		}
+
+		/*
+		 *	Find all subsections with the given first name
+		 *	and compile them.
+		 */
+		while ((subcs = cf_section_find_next(server, subcs, list[i].name, CF_IDENT_ANY))) {
+			char const	*name2;
+
+			name2 = cf_section_name2(subcs);
+			if (!name2) {
+				cf_log_err(subcs, "Invalid '%s { ... }' section, it must have a name", list[i].name);
+				return -1;
+			}
+
+			rcode = unlang_compile_subsection(subcs, list[i].component, rules);
+			if (rcode < 0) return -1;
+		}
+	}
+
+	return 0;
+}
+
+static int server_section_name_cmp(void const *one, void const *two)
+{
+	int rcode;
+	virtual_server_compile_t const *a = one;
+	virtual_server_compile_t const *b = two;
+
+	rcode = strcmp(a->name, b->name);
+	if (rcode != 0) return rcode;
+
+	if (a->name2 == b->name2) return 0;
+	if ((a->name2 == CF_IDENT_ANY) && (b->name2 != CF_IDENT_ANY)) return -1;
+	if ((a->name2 != CF_IDENT_ANY) && (b->name2 == CF_IDENT_ANY)) return +1;
+
+	return strcmp(a->name2, b->name2);
+}
+
+/** Register name1 / name2 as allowed processing sections
+ *
+ *  This function is called from the virtual server bootstrap routine,
+ *  which happens before module_bootstrap();
+ */
+static int virtual_server_section_register(virtual_server_compile_t const *entry)
+{
+	virtual_server_compile_t *old;
+
+	rad_assert(server_section_name_tree != NULL);
+
+	old = rbtree_finddata(server_section_name_tree, entry);
+	if (old) return 0;
+
+#ifndef NDEBUG
+	/*
+	 *	Catch stupid programmers.
+	 *
+	 *	Processing sections can't allow "*" for module
+	 *	methods, because otherwise you would be allowed to run
+	 *	DHCP things in a RADIUS accounting section.  And that
+	 *	would be bad.
+	 */
+	if (entry->methods) {
+		int i;
+
+		for (i = 0; entry->methods[i].name != NULL; i++) {
+			if (entry->methods[i].name == CF_IDENT_ANY) {
+				ERROR("Processing sections cannot allow \"*\"");
+				return -1;
+			}
+
+			if (entry->methods[i].name2 == CF_IDENT_ANY) {
+				ERROR("Processing sections cannot allow \"%s *\"",
+					entry->methods[i].name);
+				return -1;
+			}
+		}
+	}
+#endif
+
+	if (!rbtree_insert(server_section_name_tree, entry)) {
+		fr_strerror_printf("Failed inserting entry into internal tree");
+		return -1;
+	}
+
+	return 0;
+}
+
+
+/** Find the component for a section
+ *
+ */
+int virtual_server_section_component(rlm_components_t *component, char const *name1, char const *name2)
+{
+	virtual_server_compile_t *entry;
+
+	rad_assert(server_section_name_tree != NULL);
+
+	/*
+	 *	Look up the specific name first.  That way we can
+	 *	define both "accounting on", and "accounting *".
+	 */
+	if (name2 != CF_IDENT_ANY) {
+		entry = rbtree_finddata(server_section_name_tree,
+					&(virtual_server_compile_t) {
+						.name = name1,
+						.name2 = name2,
+					});
+		if (entry) goto done;
+	}
+
+	/*
+	 *	Then look up the wildcard, if we didn't find any matching name2.
+	 */
+	entry = rbtree_finddata(server_section_name_tree,
+				&(virtual_server_compile_t) {
+					.name = name1,
+					.name2 = CF_IDENT_ANY,
+				});
+	if (!entry) return -1;
+
+done:
+	*component = entry->component;
+
+	return 0;
+}
+
+/** Find the component for a section
+ *
+ */
+virtual_server_method_t *virtual_server_section_methods(char const *name1, char const *name2)
+{
+	virtual_server_compile_t *entry;
+
+	rad_assert(server_section_name_tree != NULL);
+
+	/*
+	 *	Look up the specific name first.  That way we can
+	 *	define both "accounting on", and "accounting *".
+	 */
+	if (name2 != CF_IDENT_ANY) {
+		entry = rbtree_finddata(server_section_name_tree,
+					&(virtual_server_compile_t) {
+						.name = name1,
+						.name2 = name2,
+					});
+		if (entry) return entry->methods;
+	}
+
+	/*
+	 *	Then look up the wildcard, if we didn't find any matching name2.
+	 */
+	entry = rbtree_finddata(server_section_name_tree,
+				&(virtual_server_compile_t) {
+					.name = name1,
+					.name2 = CF_IDENT_ANY,
+				});
+	if (!entry) return NULL;
+
+	return entry->methods;
 }

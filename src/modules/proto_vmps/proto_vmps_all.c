@@ -30,7 +30,7 @@
 #include <freeradius-devel/server/rad_assert.h>
 #include <freeradius-devel/vqp/vqp.h>
 
-#include <freeradius-devel/protocol/vqp/vqp.h>
+#include <freeradius-devel/protocol/vmps/vmps.h>
 
 static fr_dict_t *dict_vmps;
 
@@ -40,15 +40,15 @@ fr_dict_autoload_t proto_vmps_all_dict[] = {
 	{ NULL }
 };
 
-static fr_dict_attr_t const *attr_vmps_packet_type;
+static fr_dict_attr_t const *attr_packet_type;
 
 extern fr_dict_attr_autoload_t proto_vmps_all_dict_attr[];
 fr_dict_attr_autoload_t proto_vmps_all_dict_attr[] = {
-	{ .out = &attr_vmps_packet_type, .name = "VMPS-Packet-Type", .type = FR_TYPE_UINT32, .dict = &dict_vmps },
+	{ .out = &attr_packet_type, .name = "Packet-Type", .type = FR_TYPE_UINT32, .dict = &dict_vmps },
 	{ NULL }
 };
 
-static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, UNUSED fr_io_action_t action)
+static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request)
 {
 	rlm_rcode_t		rcode;
 	CONF_SECTION		*unlang;
@@ -63,7 +63,7 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 
 		request->component = "vmps";
 
-		dv = fr_dict_enum_by_value(attr_vmps_packet_type, fr_box_uint32(request->packet->code));
+		dv = fr_dict_enum_by_value(attr_packet_type, fr_box_uint32(request->packet->code));
 		if (!dv) {
 			REDEBUG("Failed to find value for &request:VMPS-Packet-Type");
 			return FR_IO_FAIL;
@@ -72,18 +72,18 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 		unlang = cf_section_find(request->server_cs, "recv", dv->alias);
 		if (!unlang) {
 			RWDEBUG("Failed to find 'recv %s' section", dv->alias);
-			request->reply->code = FR_VMPS_PACKET_TYPE_VALUE_DO_NOT_RESPOND;
+			request->reply->code = FR_PACKET_TYPE_VALUE_DO_NOT_RESPOND;
 			goto send_reply;
 		}
 
 		RDEBUG("Running 'recv %s' from file %s", cf_section_name2(unlang), cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_RECV;
 		/* FALL-THROUGH */
 
 	case REQUEST_RECV:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
 
@@ -95,14 +95,14 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 		case RLM_MODULE_NOOP:
 		case RLM_MODULE_OK:
 		case RLM_MODULE_UPDATED:
-			if (request->packet->code == FR_VMPS_PACKET_TYPE_VALUE_VMPS_JOIN_REQUEST) {
-				request->reply->code = FR_VMPS_PACKET_TYPE_VALUE_VMPS_JOIN_RESPONSE;
+			if (request->packet->code == FR_PACKET_TYPE_VALUE_JOIN_REQUEST) {
+				request->reply->code = FR_PACKET_TYPE_VALUE_JOIN_RESPONSE;
 
-			} else if (request->packet->code == FR_VMPS_PACKET_TYPE_VALUE_VMPS_RECONFIRM_REQUEST) {
-				request->reply->code = FR_VMPS_PACKET_TYPE_VALUE_VMPS_RECONFIRM_RESPONSE;
+			} else if (request->packet->code == FR_PACKET_TYPE_VALUE_RECONFIRM_REQUEST) {
+				request->reply->code = FR_PACKET_TYPE_VALUE_RECONFIRM_RESPONSE;
 
 			} else {
-				request->reply->code = FR_VMPS_PACKET_TYPE_VALUE_DO_NOT_RESPOND;
+				request->reply->code = FR_PACKET_TYPE_VALUE_DO_NOT_RESPOND;
 			}
 			break;
 
@@ -110,11 +110,11 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 		case RLM_MODULE_REJECT:
 		case RLM_MODULE_FAIL:
 		case RLM_MODULE_HANDLED:
-			request->reply->code = FR_VMPS_PACKET_TYPE_VALUE_DO_NOT_RESPOND;
+			request->reply->code = FR_PACKET_TYPE_VALUE_DO_NOT_RESPOND;
 			break;
 		}
 
-		dv = fr_dict_enum_by_value(attr_vmps_packet_type, fr_box_uint32(request->reply->code));
+		dv = fr_dict_enum_by_value(attr_packet_type, fr_box_uint32(request->reply->code));
 		unlang = NULL;
 		if (dv) unlang = cf_section_find(request->server_cs, "send", dv->alias);
 
@@ -122,13 +122,13 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 
 	rerun_nak:
 		RDEBUG("Running 'send %s' from file %s", cf_section_name2(unlang), cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_SEND;
 		/* FALL-THROUGH */
 
 	case REQUEST_SEND:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
 
@@ -149,14 +149,14 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 			 *	If we over-ride an ACK with a NAK, run
 			 *	the NAK section.
 			 */
-			if (request->reply->code != FR_VMPS_PACKET_TYPE_VALUE_DO_NOT_RESPOND) {
-				dv = fr_dict_enum_by_value(attr_vmps_packet_type,
+			if (request->reply->code != FR_PACKET_TYPE_VALUE_DO_NOT_RESPOND) {
+				dv = fr_dict_enum_by_value(attr_packet_type,
 							   fr_box_uint32(request->reply->code));
 				RWDEBUG("Failed running 'send %s', trying 'send Do-Not-Respond'.", dv->alias);
 
-				request->reply->code = FR_VMPS_PACKET_TYPE_VALUE_DO_NOT_RESPOND;
+				request->reply->code = FR_PACKET_TYPE_VALUE_DO_NOT_RESPOND;
 
-				dv = fr_dict_enum_by_value(attr_vmps_packet_type,
+				dv = fr_dict_enum_by_value(attr_packet_type,
 							   fr_box_uint32(request->reply->code));
 				unlang = NULL;
 				if (!dv) goto send_reply;
@@ -173,7 +173,7 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 		/*
 		 *	Check for "do not respond".
 		 */
-		if (request->reply->code == FR_VMPS_PACKET_TYPE_VALUE_DO_NOT_RESPOND) {
+		if (request->reply->code == FR_PACKET_TYPE_VALUE_DO_NOT_RESPOND) {
 			RDEBUG("Not sending reply to client.");
 			return FR_IO_DONE;
 		}
@@ -203,9 +203,41 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 }
 
 
+static virtual_server_compile_t compile_list[] = {
+	{
+		.name = "recv",
+		.name2 = "Join-Request",
+		.component = MOD_AUTHORIZE,
+	},
+	{
+		.name = "send",
+		.name2 = "Join-Response",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "recv",
+		.name2 = "Reconfirm-Request",
+		.component = MOD_AUTHORIZE,
+	},
+	{
+		.name = "send",
+		.name2 = "Reconfirm-Response",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "send",
+		.name2 = "Do-Not-Respond",
+		.component = MOD_POST_AUTH,
+	},
+
+	COMPILE_TERMINATOR
+};
+
+
 extern fr_app_worker_t proto_vmps_all;
 fr_app_worker_t proto_vmps_all = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "vmps_all",
 	.entry_point	= mod_process,
+	.compile_list	= compile_list,
 };

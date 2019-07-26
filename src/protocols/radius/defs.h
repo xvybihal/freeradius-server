@@ -21,7 +21,7 @@
  * @file protocols/radius/defs.h
  * @brief Constants for the RADIUS protocol.
  *
- * @copyright 2015  The FreeRADIUS server project
+ * @copyright 2015 The FreeRADIUS server project
  */
 RCSIDH(radius_h, "$Id$")
 
@@ -50,8 +50,13 @@ typedef enum {
 	FR_CODE_COA_ACK			= 44,	//!< RFC3575/RFC5176 - CoA-Ack (positive)
 	FR_CODE_COA_NAK			= 45,	//!< RFC3575/RFC5176 - CoA-Nak (not willing to perform)
 	FR_CODE_PROTOCOL_ERROR		= 52,	//!< RFC7930 - Protocol-Error (generic NAK)
-	FR_CODE_MAX			= 255,	//!< Maximum possible code
+	FR_CODE_RADIUS_MAX     		= 255,	//!< Maximum possible code
 } FR_CODE;
+
+/*
+ *	Maximum code that we accept
+ */
+#define	FR_RADIUS_MAX_PACKET_CODE	(53)
 
 #define FR_CODE_DO_NOT_RESPOND		(256)
 
@@ -59,7 +64,7 @@ typedef enum {
 #define FR_AUTH_UDP_PORT_ALT		1645
 #define FR_ACCT_UDP_PORT		1813
 #define FR_ACCT_UDP_PORT_ALT		1646
-#define FR_POD_UDP_PORT			1700
+#define FR_POD_UDP_PORT			3799
 #define FR_RADIUS_TLS_PORT	       	2083
 #define FR_COA_UDP_PORT			3799
 

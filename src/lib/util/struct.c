@@ -19,7 +19,7 @@
  * @file src/lib/util/struct.c
  *
  * @copyright 2018 The FreeRADIUS server project
- * @copyright 2018 Alan DeKok <aland@freeradius.org>
+ * @copyright 2018 Alan DeKok (aland@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -172,7 +172,7 @@ ssize_t fr_struct_to_network(uint8_t *out, size_t outlen,
 
 	if (parent->type != FR_TYPE_STRUCT) {
 		fr_strerror_printf("%s: Expected type \"struct\" got \"%s\"", __FUNCTION__,
-				   fr_int2str(fr_value_box_type_names, parent->type, "?Unknown?"));
+				   fr_int2str(fr_value_box_type_table, parent->type, "?Unknown?"));
 		return -1;
 	}
 

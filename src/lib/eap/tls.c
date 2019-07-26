@@ -62,10 +62,10 @@
  * The TLS Message Length field is four octets and indicates the
  * complete reassembled length of the TLS record fragment.
  *
- * @copyright 2001  hereUare Communications, Inc. <raghud@hereuare.com>
- * @copyright 2003  Alan DeKok <aland@freeradius.org>
- * @copyright 2006,2015  The FreeRADIUS server project
- * @copyright 2015  Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2001 hereUare Communications, Inc. (raghud@hereuare.com)
+ * @copyright 2003 Alan DeKok (aland@freeradius.org)
+ * @copyright 2006,2015 The FreeRADIUS server project
+ * @copyright 2015 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 
 RCSID("$Id$")
@@ -314,7 +314,7 @@ int eap_tls_success(eap_session_t *eap_session,
 					      sessid_prf_label, sessid_prf_label_len) < 0) return -1;
 
 		MEM(pair_add_reply(&vp, attr_eap_session_id) >= 0);
-		fr_pair_value_memsteal(vp, session_id);
+		fr_pair_value_memsteal(vp, session_id, true);
 
 		RINDENT();
 		RDEBUG2("&reply:%pP", vp);
@@ -503,7 +503,7 @@ static eap_tls_status_t eap_tls_session_status(eap_session_t *eap_session)
 		return EAP_TLS_INVALID;
 	}
 	if (!tls_session->info.initialized) {
-		RDEBUG("No SSL info available.  Waiting for more SSL data");
+		RDEBUG2("No SSL info available.  Waiting for more SSL data");
 		return EAP_TLS_RECORD_SEND;
 	}
 
@@ -593,7 +593,7 @@ static eap_tls_status_t eap_tls_verify(eap_session_t *eap_session)
 	 */
 	eap_tls_data = (eap_tls_data_t *)this_round->response->type.data;
 	if (!eap_tls_data) {
-		RDEBUG("Invalid EAP-TLS packet; no data");
+		REDEBUG("Invalid EAP-TLS packet; no data");
 		return EAP_TLS_INVALID;
 	}
 

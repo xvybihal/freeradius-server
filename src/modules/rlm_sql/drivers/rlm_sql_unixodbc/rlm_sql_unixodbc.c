@@ -15,8 +15,8 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2000,2006  The FreeRADIUS server project
- * @copyright 2000  Dmitri Ageev <d_ageev@ortcc.ru>
+ * @copyright 2000,2006 The FreeRADIUS server project
+ * @copyright 2000 Dmitri Ageev (d_ageev@ortcc.ru)
  */
 RCSID("$Id$")
 USES_APPLE_DEPRECATED_API
@@ -64,11 +64,11 @@ static int _sql_socket_destructor(rlm_sql_unixodbc_conn_t *conn)
 }
 
 static sql_rcode_t sql_socket_init(rlm_sql_handle_t *handle, rlm_sql_config_t *config,
-				   struct timeval const *timeout)
+				   fr_time_delta_t timeout)
 {
 	rlm_sql_unixodbc_conn_t *conn;
 	long err_handle;
-	uint32_t timeout_ms = FR_TIMEVAL_TO_MS(timeout);
+	uint32_t timeout_ms = fr_time_delta_to_msec(timeout);
 
 	MEM(conn = handle->conn = talloc_zero(handle, rlm_sql_unixodbc_conn_t));
 	talloc_set_destructor(conn, _sql_socket_destructor);

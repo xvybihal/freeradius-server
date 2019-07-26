@@ -21,14 +21,14 @@
  * @brief Function prototypes and datatypes used in the module.
  * @file mod.h
  *
- * @author Aaron Hurt <ahurt@anbcs.com>
+ * @author Aaron Hurt (ahurt@anbcs.com)
  * @copyright 2013-2014 The FreeRADIUS Server Project.
  */
 RCSIDH(mod_h, "$Id$")
 
 #include <freeradius-devel/server/base.h>
 #include <freeradius-devel/server/pool.h>
-#include <libcouchbase/couchbase.h>
+
 #include <freeradius-devel/json/base.h>
 
 /* maximum size of a stored value */
@@ -49,6 +49,7 @@ typedef struct {
 	char const		*server_raw;     	//!< Raw server string before parsing.
 	char const		*server;         	//!< Couchbase server list.
 	char const		*bucket;         	//!< Couchbase bucket.
+	char const		*username;       	//!< Couchbase bucket username.
 	char const		*password;       	//!< Couchbase bucket password.
 
 	vp_tmpl_t		*user_key;       	//!< User document key.
@@ -57,7 +58,9 @@ typedef struct {
 	const char		*client_view;    	//!< Couchbase view that returns client documents.
 
 	json_object		*map;           	//!< Json object to hold user defined attribute map.
-	fr_pool_t	*pool;			//!< Connection pool.
+	fr_pool_t		*pool;			//!< Connection pool.
+	char const		*name;			//!< Module instance name.
+	void			*api_opts;		//!< Couchbase API internal options.
 } rlm_couchbase_t;
 
 /** Couchbase instance specific information
@@ -71,7 +74,7 @@ typedef struct {
 } rlm_couchbase_handle_t;
 
 /* define functions */
-void *mod_conn_create(TALLOC_CTX *ctx, void *instance, struct timeval const *timeout);
+void *mod_conn_create(TALLOC_CTX *ctx, void *instance, fr_time_delta_t timeout);
 
 int mod_conn_alive(UNUSED void *instance, void *handle);
 
@@ -88,3 +91,8 @@ int mod_ensure_start_timestamp(json_object *json, VALUE_PAIR *vps);
 int mod_client_map_section(CONF_SECTION *client, CONF_SECTION const *map, json_object *json, char const *docid);
 
 int mod_load_client_documents(rlm_couchbase_t *inst, CONF_SECTION *tmpl, CONF_SECTION *map);
+
+int mod_build_api_opts(CONF_SECTION *conf, void *instance);
+
+int mod_free_api_opts(void *instance);
+

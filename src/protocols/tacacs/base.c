@@ -21,7 +21,7 @@
  * @brief Low-Level TACACS+ encode functions
  *
  * @copyright 2017 The FreeRADIUS server project
- * @copyright 2017 Network RADIUS SARL <info@networkradius.com>
+ * @copyright 2017 Network RADIUS SARL (info@networkradius.com)
  */
 #include <freeradius-devel/util/base.h>
 #include <freeradius-devel/util/net.h>
@@ -447,7 +447,7 @@ int fr_tacacs_packet_recv(RADIUS_PACKET * const packet, char const * const secre
 
 	}
 
-	gettimeofday(&packet->timestamp, NULL);
+	packet->timestamp = fr_time();
 
 	return 1;	/* done reading the packet */
 }

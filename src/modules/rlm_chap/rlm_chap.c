@@ -19,8 +19,8 @@
  * @file rlm_chap.c
  * @brief Process chap authentication requests.
  *
- * @copyright 2001,2006  The FreeRADIUS server project
- * @copyright 2001  Kostas Kalevras <kkalev@noc.ntua.gr>
+ * @copyright 2001,2006 The FreeRADIUS server project
+ * @copyright 2001 Kostas Kalevras (kkalev@noc.ntua.gr)
  */
 RCSID("$Id$")
 
@@ -76,10 +76,10 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(void *instance, UNUSED void *t
 
 	vp = fr_pair_find_by_da(request->packet->vps, attr_chap_challenge, TAG_ANY);
 	if (!vp) {
-		RDEBUG("creating CHAP-Challenge from the request authenticator");
+		RDEBUG2("Creating CHAP-Challenge from the request authenticator");
 
 		MEM(vp = fr_pair_afrom_da(request->packet, attr_chap_challenge));
-		fr_pair_value_memcpy(vp, request->packet->vector, sizeof(request->packet->vector));
+		fr_pair_value_memcpy(vp, request->packet->vector, sizeof(request->packet->vector), true);
 		fr_pair_add(&request->packet->vps, vp);
 	}
 
@@ -173,7 +173,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(UNUSED void *instance, UNUS
 		return RLM_MODULE_REJECT;
 	}
 
-	RDEBUG("CHAP user \"%pV\" authenticated successfully", &request->username->data);
+	RDEBUG2("CHAP user \"%pV\" authenticated successfully", &request->username->data);
 
 	return RLM_MODULE_OK;
 }
@@ -204,12 +204,13 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_chap;
-rad_module_t rlm_chap = {
+extern module_t rlm_chap;
+module_t rlm_chap = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "chap",
 	.inst_size	= sizeof(rlm_chap_t),
 	.bootstrap	= mod_bootstrap,
+	.dict		= &dict_radius,
 	.methods = {
 		[MOD_AUTHENTICATE]	= mod_authenticate,
 		[MOD_AUTHORIZE]		= mod_authorize,

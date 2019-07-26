@@ -21,7 +21,7 @@
  * @file radclient.h
  * @brief Structures for the radclient utility.
  *
- * @copyright 2014  The FreeRADIUS server project
+ * @copyright 2014 The FreeRADIUS server project
  */
 RCSIDH(radclient_h, "$Id$")
 
@@ -75,7 +75,7 @@ struct rc_request {
 	rc_file_pair_t	*files;		//!< Request and response file names.
 
 	VALUE_PAIR	*password;	//!< Cleartext-Password
-	time_t		timestamp;
+	fr_time_delta_t	timestamp;
 
 	RADIUS_PACKET	*packet;	//!< The outgoing request.
 	RADIUS_PACKET	*reply;		//!< The incoming response.

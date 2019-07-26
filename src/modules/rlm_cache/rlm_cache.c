@@ -29,12 +29,12 @@ RCSID("$Id$")
 #include <freeradius-devel/server/base.h>
 #include <freeradius-devel/server/module.h>
 #include <freeradius-devel/server/modpriv.h>
-#include <freeradius-devel/server/dl.h>
+#include <freeradius-devel/server/dl_module.h>
 #include <freeradius-devel/server/rad_assert.h>
 
 #include "rlm_cache.h"
 
-extern rad_module_t rlm_cache;
+extern module_t rlm_cache;
 
 static const CONF_PARSER module_config[] = {
 	{ FR_CONF_OFFSET("driver", FR_TYPE_STRING, rlm_cache_config_t, driver_name), .dflt = "rlm_cache_rbtree" },
@@ -84,7 +84,7 @@ static int cache_acquire(rlm_cache_handle_t **out, rlm_cache_t const *inst, REQU
 		return 0;
 	}
 
-	return inst->driver->acquire(out, &inst->config, inst->driver_inst->data, request);
+	return inst->driver->acquire(out, &inst->config, inst->driver_inst->dl_inst->data, request);
 }
 
 /** Release a handle we previously acquired
@@ -95,7 +95,7 @@ static void cache_release(rlm_cache_t const *inst, REQUEST *request, rlm_cache_h
 	if (!inst->driver->release) return;
 	if (!handle || !*handle) return;
 
-	inst->driver->release(&inst->config, inst->driver_inst->data, request, *handle);
+	inst->driver->release(&inst->config, inst->driver_inst->dl_inst->data, request, *handle);
 	*handle = NULL;
 }
 
@@ -106,7 +106,7 @@ static int cache_reconnect(rlm_cache_handle_t **handle, rlm_cache_t const *inst,
 {
 	rad_assert(inst->driver->reconnect);
 
-	return inst->driver->reconnect(handle, &inst->config, inst->driver_inst->data, request);
+	return inst->driver->reconnect(handle, &inst->config, inst->driver_inst->dl_inst->data, request);
 }
 
 /** Allocate a cache entry
@@ -119,7 +119,7 @@ static int cache_reconnect(rlm_cache_handle_t **handle, rlm_cache_t const *inst,
  */
 static rlm_cache_entry_t *cache_alloc(rlm_cache_t const *inst, REQUEST *request)
 {
-	if (inst->driver->alloc) return inst->driver->alloc(&inst->config, inst->driver_inst->data, request);
+	if (inst->driver->alloc) return inst->driver->alloc(&inst->config, inst->driver_inst->dl_inst->data, request);
 
 	return talloc_zero(NULL, rlm_cache_entry_t);
 }
@@ -173,7 +173,7 @@ static rlm_rcode_t cache_merge(rlm_cache_t const *inst, REQUEST *request, rlm_ca
 
 			map_snprint(buffer, sizeof(buffer), map);
 			REXDENT();
-			RDEBUG("Skipping %s", buffer);
+			RDEBUG2("Skipping %s", buffer);
 			RINDENT();
 			continue;
 		}
@@ -209,10 +209,10 @@ static rlm_rcode_t cache_find(rlm_cache_entry_t **out, rlm_cache_t const *inst, 
 	*out = NULL;
 
 	for (;;) {
-		ret = inst->driver->find(&c, &inst->config, inst->driver_inst->data, request, *handle, key, key_len);
+		ret = inst->driver->find(&c, &inst->config, inst->driver_inst->dl_inst->data, request, *handle, key, key_len);
 		switch (ret) {
 		case CACHE_RECONNECT:
-			RDEBUG("Reconnecting...");
+			RDEBUG2("Reconnecting...");
 			if (cache_reconnect(handle, inst, request) == 0) continue;
 			return RLM_MODULE_FAIL;
 
@@ -236,12 +236,12 @@ static rlm_rcode_t cache_find(rlm_cache_entry_t **out, rlm_cache_t const *inst, 
 	 *	Yes, but it expired, OR the "forget all" epoch has
 	 *	passed.  Delete it, and pretend it doesn't exist.
 	 */
-	if ((c->expires < request->packet->timestamp.tv_sec) || (c->created < inst->config.epoch)) {
-		RDEBUG2("Found entry for \"%pV\", but it expired %li seconds ago.  Removing it",
+	if ((c->expires < fr_time_to_sec(request->packet->timestamp)) || (c->created < inst->config.epoch)) {
+		RDEBUG2("Found entry for \"%pV\", but it expired %"PRIu64" seconds ago.  Removing it",
 			fr_box_strvalue_len((char const *)key, key_len),
-			request->packet->timestamp.tv_sec - c->expires);
+			fr_time_to_sec(request->packet->timestamp) - c->expires);
 
-		inst->driver->expire(&inst->config, inst->driver_inst->data, request, handle, c->key, c->key_len);
+		inst->driver->expire(&inst->config, inst->driver_inst->dl_inst->data, request, handle, c->key, c->key_len);
 		cache_free(inst, &c);
 		return RLM_MODULE_NOTFOUND;	/* Couldn't find a non-expired entry */
 	}
@@ -264,8 +264,8 @@ static rlm_rcode_t cache_find(rlm_cache_entry_t **out, rlm_cache_t const *inst, 
 static rlm_rcode_t cache_expire(rlm_cache_t const *inst, REQUEST *request,
 				rlm_cache_handle_t **handle, uint8_t const *key, size_t key_len)
 {
-	RDEBUG("Expiring cache entry");
-	for (;;) switch (inst->driver->expire(&inst->config, inst->driver_inst->data, request,
+	RDEBUG2("Expiring cache entry");
+	for (;;) switch (inst->driver->expire(&inst->config, inst->driver_inst->dl_inst->data, request,
 					      *handle, key, key_len)) {
 	case CACHE_RECONNECT:
 		if (cache_reconnect(handle, inst, request) == 0) continue;
@@ -303,7 +303,7 @@ static rlm_rcode_t cache_insert(rlm_cache_t const *inst, REQUEST *request, rlm_c
 	TALLOC_CTX		*pool;
 
 	if ((inst->config.max_entries > 0) && inst->driver->count &&
-	    (inst->driver->count(&inst->config, inst->driver_inst->data, request, handle) > inst->config.max_entries)) {
+	    (inst->driver->count(&inst->config, inst->driver_inst->dl_inst->data, request, handle) > inst->config.max_entries)) {
 		RWDEBUG("Cache is full: %d entries", inst->config.max_entries);
 		return RLM_MODULE_FAIL;
 	}
@@ -313,12 +313,12 @@ static rlm_rcode_t cache_insert(rlm_cache_t const *inst, REQUEST *request, rlm_c
 
 	c->key = talloc_memdup(c, key, key_len);
 	c->key_len = key_len;
-	c->created = c->expires = request->packet->timestamp.tv_sec;
+	c->created = c->expires = fr_time_to_sec(request->packet->timestamp);
 	c->expires += ttl;
 
 	last = &c->maps;
 
-	RDEBUG("Creating new cache entry");
+	RDEBUG2("Creating new cache entry");
 
 	/*
 	 *	Alloc a pool so we don't have excessive allocs when
@@ -336,7 +336,7 @@ static rlm_rcode_t cache_insert(rlm_cache_t const *inst, REQUEST *request, rlm_c
 		 *	as if this were an update section.
 		 */
 		if (map_to_vp(pool, &to_cache, request, map, NULL) < 0) {
-			RDEBUG("Skipping %s", map->rhs->name);
+			RDEBUG2("Skipping %s", map->rhs->name);
 			continue;
 		}
 
@@ -347,7 +347,7 @@ static rlm_rcode_t cache_insert(rlm_cache_t const *inst, REQUEST *request, rlm_c
 			 *	Prevent people from accidentally caching
 			 *	cache control attributes.
 			 */
-			if (map->rhs->type == TMPL_TYPE_LIST) switch (vp->da->attr) {
+			if (tmpl_is_list(map->rhs)) switch (vp->da->attr) {
 			case FR_CACHE_TTL:
 			case FR_CACHE_STATUS_ONLY:
 			case FR_CACHE_MERGE_NEW:
@@ -450,14 +450,14 @@ static rlm_rcode_t cache_insert(rlm_cache_t const *inst, REQUEST *request, rlm_c
 	for (;;) {
 		cache_status_t ret;
 
-		ret = inst->driver->insert(&inst->config, inst->driver_inst->data, request, *handle, c);
+		ret = inst->driver->insert(&inst->config, inst->driver_inst->dl_inst->data, request, *handle, c);
 		switch (ret) {
 		case CACHE_RECONNECT:
 			if (cache_reconnect(handle, inst, request) == 0) continue;
 			return RLM_MODULE_FAIL;
 
 		case CACHE_OK:
-			RDEBUG("Committed entry, TTL %d seconds", ttl);
+			RDEBUG2("Committed entry, TTL %d seconds", ttl);
 			cache_free(inst, &c);
 			return merge ? RLM_MODULE_UPDATED :
 				       RLM_MODULE_OK;
@@ -484,14 +484,14 @@ static rlm_rcode_t cache_set_ttl(rlm_cache_t const *inst, REQUEST *request,
 	if (!inst->driver->set_ttl) for (;;) {
 		cache_status_t ret;
 
-		ret = inst->driver->insert(&inst->config, inst->driver_inst->data, request, *handle, c);
+		ret = inst->driver->insert(&inst->config, inst->driver_inst->dl_inst->data, request, *handle, c);
 		switch (ret) {
 		case CACHE_RECONNECT:
 			if (cache_reconnect(handle, inst, request) == 0) continue;
 			return RLM_MODULE_FAIL;
 
 		case CACHE_OK:
-			RDEBUG("Updated entry TTL");
+			RDEBUG2("Updated entry TTL");
 			return RLM_MODULE_OK;
 
 		default:
@@ -506,14 +506,14 @@ static rlm_rcode_t cache_set_ttl(rlm_cache_t const *inst, REQUEST *request,
 	for (;;) {
 		cache_status_t ret;
 
-		ret = inst->driver->set_ttl(&inst->config, inst->driver_inst->data, request, *handle, c);
+		ret = inst->driver->set_ttl(&inst->config, inst->driver_inst->dl_inst->data, request, *handle, c);
 		switch (ret) {
 		case CACHE_RECONNECT:
 			if (cache_reconnect(handle, inst, request) == 0) continue;
 			return RLM_MODULE_FAIL;
 
 		case CACHE_OK:
-			RDEBUG("Updated entry TTL");
+			RDEBUG2("Updated entry TTL");
 			return RLM_MODULE_OK;
 
 		default:
@@ -529,8 +529,8 @@ static int cache_verify(vp_map_t *map, void *ctx)
 {
 	if (unlang_fixup_update(map, ctx) < 0) return -1;
 
-	if ((map->lhs->type != TMPL_TYPE_ATTR) &&
-	    (map->lhs->type != TMPL_TYPE_LIST)) {
+	if (!tmpl_is_attr(map->lhs) &&
+	    !tmpl_is_list(map->lhs)) {
 		cf_log_err(map->ci, "Destination must be an attribute ref or a list");
 		return -1;
 	}
@@ -719,7 +719,7 @@ static rlm_rcode_t mod_cache_it(void *instance, UNUSED void *thread, REQUEST *re
 	if (set_ttl && (exists == 1)) {
 		rad_assert(c);
 
-		c->expires = request->packet->timestamp.tv_sec + ttl;
+		c->expires = fr_time_to_sec(request->packet->timestamp) + ttl;
 
 		switch (cache_set_ttl(inst, request, &handle, c)) {
 		case RLM_MODULE_FAIL:
@@ -823,7 +823,7 @@ static ssize_t cache_xlat(TALLOC_CTX *ctx, char **out, UNUSED size_t freespace,
 			      request, inst->config.key, NULL, NULL);
 	if (key_len < 0) return -1;
 
-	slen = tmpl_afrom_attr_substr(ctx, &target, fmt,
+	slen = tmpl_afrom_attr_substr(ctx, NULL, &target, fmt,
 				      &(vp_tmpl_rules_t){
 				      		.dict_def = request->dict,
 				      		.prefix = VP_ATTR_REF_PREFIX_AUTO
@@ -898,42 +898,14 @@ static int mod_detach(void *instance)
  */
 static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 {
-	rlm_cache_t *inst = instance;
-
-	inst->cs = conf;
-
-	inst->config.name = cf_section_name2(conf);
-	if (!inst->config.name) inst->config.name = cf_section_name1(conf);
-
-	/*
-	 *	Register the cache xlat function
-	 */
-	xlat_register(inst, inst->config.name, cache_xlat, NULL, NULL, 0, 0, true);
-
-	return 0;
-}
-
-/** Create a new rlm_cache_instance
- *
- */
-static int mod_instantiate(void *instance, CONF_SECTION *conf)
-{
-	rlm_cache_t	*inst = instance;
-	CONF_SECTION	*update;
+	rlm_cache_t 	*inst = instance;
 	CONF_SECTION	*driver_cs;
 	char const 	*name;
 
 	inst->cs = conf;
 
-	rad_assert(inst->config.key);
-
-	/*
-	 *	Sanity check for crazy people.
-	 */
-	if (strncmp(inst->config.driver_name, "rlm_cache_", 8) != 0) {
-		cf_log_err(conf, "\"%s\" is NOT an Cache driver!", inst->config.driver_name);
-		return -1;
-	}
+	inst->config.name = cf_section_name2(conf);
+	if (!inst->config.name) inst->config.name = cf_section_name1(conf);
 
 	name = strrchr(inst->config.driver_name, '_');
 	if (!name) {
@@ -951,11 +923,20 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
 	/*
 	 *	Load the appropriate driver for our backend
 	 */
-	if (dl_instance(inst, &inst->driver_inst, driver_cs, dl_instance_find(inst), name, DL_TYPE_SUBMODULE) < 0) {
+	inst->driver_inst = module_bootstrap(module_by_data(inst), driver_cs);
+	if (!inst->driver_inst) {
 		cf_log_err(driver_cs, "Failed loading driver");
 		return -1;
 	}
-	inst->driver = (cache_driver_t const *)inst->driver_inst->module->common;
+	inst->driver = (cache_driver_t const *)inst->driver_inst->dl_inst->module->common;
+
+	/*
+	 *	Sanity check for crazy people.
+	 */
+	if (strncmp(inst->config.driver_name, "rlm_cache_", 8) != 0) {
+		cf_log_err(conf, "\"%s\" is NOT an Cache driver!", inst->config.driver_name);
+		return -1;
+	}
 
 	/*
 	 *	Non optional fields and callbacks
@@ -965,12 +946,25 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
 	rad_assert(inst->driver->insert);
 	rad_assert(inst->driver->expire);
 
-	if (inst->driver->instantiate &&
-	    (inst->driver->instantiate(&inst->config, inst->driver_inst->data, driver_cs) < 0)) return -1;
+	/*
+	 *	Register the cache xlat function
+	 */
+	xlat_register(inst, inst->config.name, cache_xlat, NULL, NULL, 0, 0, true);
 
-#ifndef NDEBUG
-	module_instance_read_only(inst->driver_inst->data, inst->driver->name);
-#endif
+	return 0;
+}
+
+/** Create a new rlm_cache_instance
+ *
+ */
+static int mod_instantiate(void *instance, CONF_SECTION *conf)
+{
+	rlm_cache_t	*inst = instance;
+	CONF_SECTION	*update;
+
+	inst->cs = conf;
+
+	rad_assert(inst->config.key);
 
 	if (inst->config.ttl == 0) {
 		cf_log_err(conf, "Must set 'ttl' to non-zero");
@@ -1020,7 +1014,7 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-rad_module_t rlm_cache = {
+module_t rlm_cache = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "cache",
 	.inst_size	= sizeof(rlm_cache_t),

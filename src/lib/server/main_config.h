@@ -58,7 +58,7 @@ struct main_config_s {
 	bool		spawn_workers;			//!< Should the server spawn threads.
 	char const      *pid_file;			//!< Path to write out PID file.
 
-	uint32_t	max_request_time;		//!< How long a request can be processed for before
+	fr_time_delta_t	max_request_time;		//!< How long a request can be processed for before
 							//!< timing out.
 
 	uint32_t	num_networks;			//!< number of network threads
@@ -88,6 +88,7 @@ struct main_config_s {
 
 	char const	*log_file;
 	bool		do_colourise;
+	bool		log_line_number;		//!< Log src file/line the message was generated on.
 
 	bool		log_dates_utc;
 	bool		*log_timestamp;
@@ -96,8 +97,6 @@ struct main_config_s {
 	int32_t		syslog_facility;
 
 	char const	*dict_dir;			//!< Where to load dictionaries from.
-
-	struct timeval	init_delay;			//!< Initial request processing delay.
 
 	size_t		talloc_pool_size;		//!< Size of pool to allocate to hold each #REQUEST.
 

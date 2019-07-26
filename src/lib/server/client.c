@@ -19,10 +19,10 @@
  * @file src/lib/server/client.c
  * @brief Manage clients allowed to communicate with the server.
  *
- * @copyright 2015 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2015 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  * @copyright 2000,2006 The FreeRADIUS server project
- * @copyright 2000 Alan DeKok <aland@freeradius.org>
- * @copyright 2000 Miquel van Smoorenburg <miquels@cistron.nl>
+ * @copyright 2000 Alan DeKok (aland@freeradius.org)
+ * @copyright 2000 Miquel van Smoorenburg (miquels@cistron.nl)
  */
 RCSID("$Id$")
 
@@ -220,7 +220,12 @@ bool client_add(RADCLIENT_LIST *clients, RADCLIENT *client)
 			CONF_SECTION *cs;
 			CONF_SECTION *subcs;
 
-			cs = virtual_server_find(client->server);
+			if (!client->cs) {
+				ERROR("Failed to find configuration section in client.  Ignoring 'virtual_server' directive");
+				return false;
+			}
+
+			cs = cf_section_find(cf_root(client->cs), "server", client->server);
 			if (!cs) {
 				ERROR("Failed to find virtual server %s", client->server);
 				return false;
@@ -281,7 +286,7 @@ bool client_add(RADCLIENT_LIST *clients, RADCLIENT *client)
 		clients->tree[client->ipaddr.prefix] = rbtree_talloc_create(clients, client_cmp, RADCLIENT,
 									    NULL, RBTREE_FLAG_NONE);
 		if (!clients->tree[client->ipaddr.prefix]) {
-			return NULL;
+			return false;
 		}
 	}
 
@@ -302,6 +307,7 @@ bool client_add(RADCLIENT_LIST *clients, RADCLIENT *client)
 		}
 
 		ERROR("Failed to add duplicate client %s", client->shortname);
+		client_free(client);
 		return false;
 	}
 #undef namecmp
@@ -311,10 +317,14 @@ bool client_add(RADCLIENT_LIST *clients, RADCLIENT *client)
 	 *	Other error adding client: likely is fatal.
 	 */
 	if (fr_trie_insert(trie, &client->ipaddr.addr, client->ipaddr.prefix, client) < 0) {
+		client_free(client);
 		return false;
 	}
 #else
-	if (!rbtree_insert(clients->tree[client->ipaddr.prefix], client)) return false;
+	if (!rbtree_insert(clients->tree[client->ipaddr.prefix], client)) {
+		client_free(client);
+		return false;
+	}
 #endif
 
 	/*
@@ -435,7 +445,7 @@ static const CONF_PARSER client_config[] = {
 	{ FR_CONF_OFFSET("nas_type", FR_TYPE_STRING, RADCLIENT, nas_type) },
 
 	{ FR_CONF_OFFSET("virtual_server", FR_TYPE_STRING, RADCLIENT, server) },
-	{ FR_CONF_OFFSET("response_window", FR_TYPE_TIMEVAL, RADCLIENT, response_window) },
+	{ FR_CONF_OFFSET("response_window", FR_TYPE_TIME_DELTA, RADCLIENT, response_window) },
 
 	{ FR_CONF_OFFSET("track_connections", FR_TYPE_BOOL, RADCLIENT, use_connected) },
 
@@ -450,10 +460,12 @@ static const CONF_PARSER client_config[] = {
  * Iterates over all client definitions in the specified section, adding them to a client list.
  */
 #ifdef WITH_TLS
-RADCLIENT_LIST *client_list_parse_section(CONF_SECTION *section, bool tls_required)
+#define TLS_UNUSED
 #else
-RADCLIENT_LIST *client_list_parse_section(CONF_SECTION *section, UNUSED bool tls_required)
+#define TLS_UNUSED UNUSED
 #endif
+
+RADCLIENT_LIST *client_list_parse_section(CONF_SECTION *section, int proto, TLS_UNUSED bool tls_required)
 {
 	bool		global = false;
 	CONF_SECTION	*cs = NULL;
@@ -488,6 +500,51 @@ RADCLIENT_LIST *client_list_parse_section(CONF_SECTION *section, UNUSED bool tls
 	 *	them to the client list.
 	 */
 	while ((cs = cf_section_find_next(section, cs, "client", CF_IDENT_ANY))) {
+		/*
+		 *	Check this before parsing the client.
+		 */
+		if (proto) {
+			CONF_PAIR *cp;
+			int client_proto = IPPROTO_UDP;
+
+			cp = cf_pair_find(cs, "proto");
+			if (cp) {
+				char const *value = cf_pair_value(cp);
+
+				if (!value) {
+					cf_log_err(cs, "'proto' field must have a value");
+					talloc_free(clients);
+					return NULL;
+				}
+
+				if (strcmp(value, "udp") == 0) {
+					/* do nothing */
+
+				} else if (strcmp(value, "tcp") == 0) {
+					client_proto = IPPROTO_TCP;
+#ifdef WITH_TLS
+				} else if (strcmp(value, "tls") == 0) {
+					client_proto = IPPROTO_TCP;
+#endif
+				} else if (strcmp(value, "*") == 0) {
+					client_proto = IPPROTO_IP; /* fake for dual */
+				} else {
+					cf_log_err(cs, "Unknown proto \"%s\".", value);
+					talloc_free(clients);
+					return NULL;
+				}
+			}
+
+			/*
+			 *	We don't have "proto = *", so the
+			 *	protocol MUST match what the caller
+			 *	asked for.  Otherwise, we ignore the
+			 *	client.
+			 */
+			if ((client_proto != IPPROTO_IP) && (proto != client_proto)) continue;
+		}
+
+
 		c = client_afrom_cs(cs, cs, server_cs);
 		if (!c) {
 		error:
@@ -803,11 +860,10 @@ RADCLIENT *client_afrom_cs(TALLOC_CTX *ctx, CONF_SECTION *cs, CONF_SECTION *serv
 	 *	A response_window of zero is OK, and means that it's
 	 *	ignored by the rest of the server timers.
 	 */
-	if (fr_timeval_isset(&c->response_window)) {
-		FR_TIMEVAL_BOUND_CHECK("response_window", &c->response_window, >=, 0, 1000);
-		FR_TIMEVAL_BOUND_CHECK("response_window", &c->response_window, <=, 60, 0);
-		FR_TIMEVAL_BOUND_CHECK("response_window", &c->response_window, <=,
-				       main_config->max_request_time, 0);
+	if (c->response_window) {
+		FR_TIME_DELTA_BOUND_CHECK("response_window", c->response_window, >=, fr_time_delta_from_usec(1000));
+		FR_TIME_DELTA_BOUND_CHECK("response_window", c->response_window, <=, fr_time_delta_from_sec(60));
+		FR_TIME_DELTA_BOUND_CHECK("response_window", c->response_window, <=, main_config->max_request_time);
 	}
 
 #ifdef WITH_TLS

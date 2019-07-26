@@ -56,6 +56,9 @@ organizationName	= Example Inc
 emailAddress		= user.example@example.org
 commonName		= Example user
 
+# Should be the user's NAI as per RFC 5216 (EAP-TLS)
+subjectAltName		= user@example.org
+
 [ v3_client ]
 basicConstraints	= CA:FALSE
 keyUsage		= nonRepudiation, digitalSignature, keyEncipherment

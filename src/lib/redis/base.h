@@ -21,9 +21,9 @@
  *
  * @author Arran Cudbard-Bell
  *
- * @copyright 2015 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
- * @copyright 2000,2006,2015  The FreeRADIUS server project
- * @copyright 2011 TekSavvy Solutions <gabe@teksavvy.com>
+ * @copyright 2015 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
+ * @copyright 2000,2006,2015 The FreeRADIUS server project
+ * @copyright 2011 TekSavvy Solutions (gabe@teksavvy.com)
  */
 
 #ifndef LIBFREERADIUS_REDIS_H
@@ -56,10 +56,20 @@ RCSIDH(redis_h, "$Id$")
  * and attempt to determine code paths that may result in it being
  * called on a NULL pointer, we use this to always check.
  */
-#define fr_redis_reply_free(_p) if (_p) freeReplyObject(_p)
+static inline void fr_redis_reply_free(redisReply **reply)
+{
+	if (*reply) freeReplyObject(*reply);
+	*reply = NULL;
+}
 
-extern const FR_NAME_NUMBER redis_reply_types[];
-extern const FR_NAME_NUMBER redis_rcodes[];
+static inline void fr_redis_pipeline_free(redisReply *reply[], size_t num)
+{
+	size_t i;
+	for (i = 0; i < num; i++) fr_redis_reply_free(&(reply[i]));
+}
+
+extern FR_NAME_NUMBER const redis_reply_types[];
+extern FR_NAME_NUMBER const redis_rcodes[];
 
 /** Codes are ordered inversely by priority
  *
@@ -100,7 +110,7 @@ typedef struct {
 	uint32_t		max_retries;	//!< Maximum number of times we attempt a command
 						//!< when receiving successive -TRYAGAIN messages.
 	uint32_t		max_alt;	//!< Maximum alternative nodes to try.
-	struct timeval		retry_delay;	//!< How long to wait when we received a -TRYAGAIN
+	fr_time_delta_t		retry_delay;	//!< How long to wait when we received a -TRYAGAIN
 						//!< message.
 } fr_redis_conf_t;
 
@@ -140,13 +150,4 @@ uint32_t		fr_redis_version_num(char const *version);
 fr_redis_rcode_t	fr_redis_pipeline_result(unsigned int *pipelined, fr_redis_rcode_t *rcode,
 						 redisReply *out[], size_t out_len,
 						 fr_redis_conn_t *conn) CC_HINT(nonnull);
-
-#define fr_redis_pipeline_free(_r, _n) \
-do {\
-	size_t _i; \
-	for (_i = 0; _i < _n; _i++) {\
-		fr_redis_reply_free(_r[_i]); \
-		_r[_i] = NULL; \
-	} \
-} while (0)
 #endif /* LIBFREERADIUS_REDIS_H */

@@ -19,8 +19,8 @@
  * @file krb5.h
  * @brief types and function signatures for rlm_krb5.
  *
- * @copyright 2013  The FreeRADIUS server project
- * @copyright 2013  Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2013 The FreeRADIUS server project
+ * @copyright 2013 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 RCSIDH(krb5_h, "$Id$")
 
@@ -90,4 +90,4 @@ typedef struct {
 char const *rlm_krb5_error(rlm_krb5_t const *inst, krb5_context context, krb5_error_code code);
 #endif
 
-void *mod_conn_create(TALLOC_CTX *ctx, void *instance, struct timeval const *timeout);
+void *mod_conn_create(TALLOC_CTX *ctx, void *instance, fr_time_delta_t timeout);

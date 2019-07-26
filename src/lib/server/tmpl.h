@@ -126,6 +126,21 @@ typedef enum tmpl_type_e {
 	TMPL_TYPE_NULL			//!< Has no value.
 } tmpl_type_t;
 
+/** Helpers to verify the type of #vp_tmpl_t
+ */
+#define tmpl_is_unknown(vpt) 		(vpt->type == TMPL_TYPE_UNKNOWN)
+#define tmpl_is_unparsed(vpt) 		(vpt->type == TMPL_TYPE_UNPARSED)
+#define tmpl_is_xlat(vpt) 		(vpt->type == TMPL_TYPE_XLAT)
+#define tmpl_is_attr(vpt) 		(vpt->type == TMPL_TYPE_ATTR)
+#define tmpl_is_attr_undefined(vpt) 	(vpt->type == TMPL_TYPE_ATTR_UNDEFINED)
+#define tmpl_is_list(vpt) 		(vpt->type == TMPL_TYPE_LIST)
+#define tmpl_is_regex(vpt) 		(vpt->type == TMPL_TYPE_REGEX)
+#define tmpl_is_exec(vpt) 		(vpt->type == TMPL_TYPE_EXEC)
+#define tmpl_is_data(vpt) 		(vpt->type == TMPL_TYPE_DATA)
+#define tmpl_is_xlat_struct(vpt) 	(vpt->type == TMPL_TYPE_XLAT_STRUCT)
+#define tmpl_is_regex_struct(vpt) 	(vpt->type == TMPL_TYPE_REGEX_STRUCT)
+#define tmpl_is_null(vpt) 		(vpt->type == TMPL_TYPE_NULL)
+
 extern const FR_NAME_NUMBER tmpl_type_table[];
 
 typedef struct vp_tmpl_s vp_tmpl_t;
@@ -167,11 +182,6 @@ struct vp_tmpl_s {
 	size_t		len;		//!< Length of the raw string used to create the template.
 	FR_TOKEN	quote;		//!< What type of quoting was around the raw string.
 
-#ifdef HAVE_REGEX
-	bool		iflag;		//!< regex - case insensitive (if operand is used in regex comparison)
-	bool		mflag;		//!< regex - multiline flags (controls $ matching)
-#endif
-
 	union {
 		struct {
 			request_ref_t		request;		//!< Request to search or insert in.
@@ -192,10 +202,13 @@ struct vp_tmpl_s {
 		 */
 		fr_value_box_t	literal;			 //!< Value data.
 
-		xlat_exp_t	*xlat;	 //!< pre-parsed xlat_exp_t
+		xlat_exp_t	*xlat;	 			//!< pre-parsed xlat_exp_t
 
 #ifdef HAVE_REGEX
-		regex_t		*preg;	//!< pre-parsed regex_t
+		struct {
+			regex_t			*preg;		//!< pre-parsed regex_t
+			fr_regex_flags_t	regex_flags;	//!< Flags for regular expressions.
+		};
 #endif
 	} data;
 };
@@ -235,8 +248,7 @@ struct vp_tmpl_s {
  */
 #ifdef HAVE_REGEX
 #  define tmpl_preg			data.preg	//!< #TMPL_TYPE_REGEX_STRUCT only.
-#  define tmpl_iflag			iflag
-#  define tmpl_mflag			mflag
+#  define tmpl_regex_flags			data.regex_flags
 #endif
 /* @} **/
 
@@ -352,9 +364,32 @@ struct vp_tmpl_rules_s {
 
 	bool			disallow_internal;	//!< Allow/fallback to internal attributes.
 
+	bool			disallow_qualifiers;	//!< disallow request / list qualifiers
+
 	vp_attr_ref_prefix_t	prefix;			//!< Whether the attribute reference requires
 							///< a prefix.
 };
+
+typedef enum {
+	ATTR_REF_ERROR_NONE = 0,			//!< No error.
+	ATTR_REF_ERROR_EMPTY,				//!< Attribute ref contains no data.
+	ATTR_REF_ERROR_BAD_PREFIX,			//!< Missing '&' or has '&' when it shouldn't.
+	ATTR_REF_ERROR_INVALID_LIST_QUALIFIER,		//!< List qualifier is invalid.
+	ATTR_REF_ERROR_UNKNOWN_ATTRIBUTE_NOT_ALLOWED,	//!< Attribute specified as OID, could not be
+							///< found in the dictionaries, and is disallowed
+							///< because 'disallow_internal' in vp_tmpl_rules_t
+							///< is trie.
+	ATTR_REF_ERROR_UNDEFINED_ATTRIBUTE_NOT_ALLOWED,	//!< Attribute couldn't be found in the dictionaries.
+	ATTR_REF_ERROR_INVALID_ATTRIBUTE_NAME,		//!< Attribute ref length is zero, or longer than
+							///< the maximum.
+	ATTR_REF_ERROR_INTERNAL_ATTRIBUTE_NOT_ALLOWED,	//!< Attribute resolved to an internal attribute
+							///< which is disallowed.
+	ATTR_REF_ERROR_FOREIGN_ATTRIBUTES_NOT_ALLOWED,	//!< Attribute resolved in a dictionary different
+							///< to the one specified.
+	ATTR_REF_ERROR_TAGGED_ATTRIBUTE_NOT_ALLOWED,	//!< Tagged attributes not allowed here.
+	ATTR_REF_ERROR_INVALID_TAG,			//!< Invalid tag value.
+	ATTR_REF_ERROR_INVALID_ARRAY_INDEX		//!< Invalid array index.
+} attr_ref_error_t;
 
 /** Map ptr type to a boxed type
  *
@@ -369,7 +404,6 @@ struct vp_tmpl_rules_s {
 		 uint16_t *: FR_TYPE_UINT16, \
 		 uint32_t *: FR_TYPE_UINT32, \
 		 uint64_t *: FR_TYPE_UINT64, \
-		 struct timeval *: FR_TYPE_TIMEVAL, \
 		 fr_value_box_t **: FR_TYPE_VALUE_BOX, \
 		 fr_value_box_t const **: FR_TYPE_VALUE_BOX)
 
@@ -392,6 +426,14 @@ struct vp_tmpl_rules_s {
 #define	tmpl_aexpand(_ctx, _out, _request, _vpt, _escape, _escape_ctx) \
 	_tmpl_to_atype(_ctx, (void *)(_out), _request, _vpt, _escape, _escape_ctx, FR_TYPE_FROM_PTR(_out))
 
+/** Expand a tmpl to a C type, allocing a new buffer to hold the string
+ *
+ * Takes an explicit type which must match the ctype pointed to by out.
+ *
+ * @see _tmpl_to_atype
+ */
+#define tmpl_aexpand_type(_ctx, _out, _type, _request, _vpt, _escape, _escape_ctx) \
+			  _tmpl_to_atype(_ctx, (void *)(_out), _request, _vpt, _escape, _escape_ctx, _type)
 
 VALUE_PAIR		**radius_list(REQUEST *request, pair_list_t list);
 
@@ -416,11 +458,13 @@ void			tmpl_from_da(vp_tmpl_t *vpt, fr_dict_attr_t const *da, int8_t tag, int nu
 
 int			tmpl_afrom_value_box(TALLOC_CTX *ctx, vp_tmpl_t **out, fr_value_box_t *data, bool steal);
 
-ssize_t			tmpl_afrom_attr_substr(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *name,
+ssize_t			tmpl_afrom_attr_substr(TALLOC_CTX *ctx, attr_ref_error_t *err,
+					       vp_tmpl_t **out, char const *name,
 					       vp_tmpl_rules_t const *rules);
 
-ssize_t			tmpl_afrom_attr_str(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *name,
-					    vp_tmpl_rules_t const *rules) CC_HINT(nonnull (2, 3));
+ssize_t			tmpl_afrom_attr_str(TALLOC_CTX *ctx, attr_ref_error_t *err,
+					    vp_tmpl_t **out, char const *name,
+					    vp_tmpl_rules_t const *rules) CC_HINT(nonnull (3, 4));
 
 ssize_t			tmpl_afrom_str(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *name, size_t inlen,
 				       FR_TOKEN type, vp_tmpl_rules_t const *rules, bool do_escape);

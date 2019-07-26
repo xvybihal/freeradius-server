@@ -588,6 +588,8 @@ static vp_tmpl_rules_t const default_rules = {
 /** Parse a string into a TMPL_TYPE_ATTR_* or #TMPL_TYPE_LIST type #vp_tmpl_t
  *
  * @param[in,out] ctx		to allocate #vp_tmpl_t in.
+ * @param[out] err		May be NULL.  Provides the exact error that the parser hit
+ *				when processing the attribute ref.
  * @param[out] out		Where to write pointer to new #vp_tmpl_t.
  * @param[in] name		of attribute including #request_ref_t and #pair_list_t qualifiers.
  *				If only #request_ref_t #pair_list_t qualifiers are found,
@@ -626,19 +628,23 @@ static vp_tmpl_rules_t const default_rules = {
  *	- <= 0 on error (offset as negative integer)
  *	- > 0 on success (number of bytes parsed).
  */
-ssize_t tmpl_afrom_attr_substr(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *name, vp_tmpl_rules_t const *rules)
+ssize_t tmpl_afrom_attr_substr(TALLOC_CTX *ctx, attr_ref_error_t *err,
+			       vp_tmpl_t **out, char const *name, vp_tmpl_rules_t const *rules)
 {
-	char const	*p;
+	char const	*p, *q;
 	long		num;
 	ssize_t		slen;
 	vp_tmpl_t	*vpt;
 
 	if (!rules) rules = &default_rules;	/* Use the defaults */
 
+	if (err) *err = ATTR_REF_ERROR_NONE;
+
 	p = name;
 
 	if (!*p) {
 		fr_strerror_printf("Empty attribute reference");
+		if (err) *err = ATTR_REF_ERROR_EMPTY;
 		return 0;
 	}
 
@@ -649,6 +655,7 @@ ssize_t tmpl_afrom_attr_substr(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *nam
 	case VP_ATTR_REF_PREFIX_YES:
 		if (*p != '&') {
 			fr_strerror_printf("Invalid attribute reference, missing '&' prefix");
+			if (err) *err = ATTR_REF_ERROR_BAD_PREFIX;
 			return 0;
 		}
 		p++;
@@ -657,6 +664,7 @@ ssize_t tmpl_afrom_attr_substr(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *nam
 	case VP_ATTR_REF_PREFIX_NO:
 		if (*p == '&') {
 			fr_strerror_printf("Attribute references used here must not have a '&' prefix");
+			if (err) *err = ATTR_REF_ERROR_BAD_PREFIX;
 			return 0;
 		}
 		break;
@@ -677,7 +685,14 @@ ssize_t tmpl_afrom_attr_substr(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *nam
 	 *
 	 *	The next check for a list qualifier
 	 */
+	q = p;
 	p += radius_request_name(&vpt->tmpl_request, p, rules->request_def);
+
+	if (rules->disallow_qualifiers && (p != q)) {
+		fr_strerror_printf("It is not permitted to specify a request list here.");
+		goto invalid_list;
+	}
+
 	if (vpt->tmpl_request == REQUEST_UNKNOWN) vpt->tmpl_request = rules->request_def;
 
 	/*
@@ -689,9 +704,20 @@ ssize_t tmpl_afrom_attr_substr(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *nam
 	 *	returns PAIR_LIST_UNKOWN that
 	 *	the input string is invalid.
 	 */
+	q = p;
 	p += radius_list_name(&vpt->tmpl_list, p, rules->list_def);
+
+	if (rules->disallow_qualifiers && (p != q)) {
+		fr_strerror_printf("It is not permitted to specify a pair list here.");
+	invalid_list:
+		if (err) *err = ATTR_REF_ERROR_INVALID_LIST_QUALIFIER;
+		slen = -(q - name);
+		goto error;
+	}
+
 	if (vpt->tmpl_list == PAIR_LIST_UNKNOWN) {
 		fr_strerror_printf("Invalid list qualifier");
+		if (err) *err = ATTR_REF_ERROR_INVALID_LIST_QUALIFIER;
 		slen = -(p - name);
 	error:
 		talloc_free(vpt);
@@ -726,8 +752,6 @@ ssize_t tmpl_afrom_attr_substr(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *nam
 	slen = fr_dict_attr_by_qualified_name_substr(NULL, &vpt->tmpl_da,
 						     rules->dict_def, p, !rules->disallow_internal);
 	if (slen <= 0) {
-		char const *q;
-
 		fr_strerror();	/* Clear out any existing errors */
 
 		/*
@@ -742,6 +766,7 @@ ssize_t tmpl_afrom_attr_substr(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *nam
 		if (slen > 0) {
 			if (!rules->allow_unknown) {
 				fr_strerror_printf("Unknown attribute");
+				if (err) *err = ATTR_REF_ERROR_UNKNOWN_ATTRIBUTE_NOT_ALLOWED;
 				slen = -(p - name);
 				goto error;
 			}
@@ -766,7 +791,8 @@ ssize_t tmpl_afrom_attr_substr(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *nam
 		 *	error from fr_dict_unknown_from_suboid.
 		 */
 		if (!rules->allow_undefined) {
-			fr_strerror_printf("Undefined attributes not allowed here");
+			fr_strerror_printf_push("Undefined attributes not allowed here");
+			if (err) *err = ATTR_REF_ERROR_UNDEFINED_ATTRIBUTE_NOT_ALLOWED;
 			slen = -(p - name);
 			goto error;
 		}
@@ -778,12 +804,14 @@ ssize_t tmpl_afrom_attr_substr(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *nam
 		for (q = p; fr_dict_attr_allowed_chars[(uint8_t) *q]; q++);
 		if (q == p) {
 			fr_strerror_printf("Invalid attribute name");
+			if (err) *err = ATTR_REF_ERROR_INVALID_ATTRIBUTE_NAME;
 			slen = -(p - name);
 			goto error;
 		}
 
 		if ((q - p) > FR_DICT_ATTR_MAX_NAME_LEN) {
 			fr_strerror_printf("Attribute name is too long");
+			if (err) *err = ATTR_REF_ERROR_INVALID_ATTRIBUTE_NAME;
 			slen = -(p - name);
 			goto error;
 		}
@@ -806,6 +834,7 @@ ssize_t tmpl_afrom_attr_substr(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *nam
 		if (found_in == fr_dict_internal) {
 			if (rules->disallow_internal) {
 				fr_strerror_printf("Internal attributes not allowed here");
+				if (err) *err = ATTR_REF_ERROR_INTERNAL_ATTRIBUTE_NOT_ALLOWED;
 				slen = -(p - name);
 				goto error;
 			}
@@ -830,6 +859,7 @@ ssize_t tmpl_afrom_attr_substr(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *nam
 			if (!rules->allow_foreign) {
 				fr_strerror_printf("Only attributes from the %s protocol are allowed here",
 						   fr_dict_root(rules->dict_def)->name);
+				if (err) *err = ATTR_REF_ERROR_FOREIGN_ATTRIBUTES_NOT_ALLOWED;
 				slen = -(p - name);
 				goto error;
 			}
@@ -850,10 +880,11 @@ ssize_t tmpl_afrom_attr_substr(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *nam
 	 *	messages.
 	 */
 	if (*p == ':') {
-		char *q;
+		char *end;
 
 		if (!vpt->tmpl_da->flags.has_tag) { /* Lists don't have a da */
 			fr_strerror_printf("Attribute '%s' cannot have a tag", vpt->tmpl_da->name);
+			if (err) *err = ATTR_REF_ERROR_TAGGED_ATTRIBUTE_NOT_ALLOWED;
 			slen = -(p - name);
 			goto error;
 		}
@@ -866,15 +897,16 @@ ssize_t tmpl_afrom_attr_substr(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *nam
 			p += 2;
 
 		} else {
-			num = strtol(p + 1, &q, 10);
+			num = strtol(p + 1, &end, 10);
 			if (!TAG_VALID_ZERO(num)) {
 				fr_strerror_printf("Invalid tag value '%li' (should be between 0-31)", num);
+				if (err) *err = ATTR_REF_ERROR_INVALID_TAG;
 				slen = -((p + 1) - name);
 				goto error;
 			}
 
 			vpt->tmpl_tag = num;
-			p = q;
+			p = end;
 		}
 
 	/*
@@ -911,28 +943,31 @@ do_num:
 
 		default:
 		{
-			char *q;
+			char *end;
 
-			num = strtol(p, &q, 10);
-			if (p == q) {
+			num = strtol(p, &end, 10);
+			if (p == end) {
 				fr_strerror_printf("Array index is not an integer");
+				if (err) *err = ATTR_REF_ERROR_INVALID_ARRAY_INDEX;
 				slen = -(p - name);
 				goto error;
 			}
 
 			if ((num > 1000) || (num < 0)) {
 				fr_strerror_printf("Invalid array reference '%li' (should be between 0-1000)", num);
+				if (err) *err = ATTR_REF_ERROR_INVALID_ARRAY_INDEX;
 				slen = -(p - name);
 				goto error;
 			}
 			vpt->tmpl_num = num;
-			p = q;
+			p = end;
 		}
 			break;
 		}
 
 		if (*p != ']') {
 			fr_strerror_printf("No closing ']' for array index");
+			if (err) *err = ATTR_REF_ERROR_INVALID_ARRAY_INDEX;
 			slen = -(p - name);
 			goto error;
 		}
@@ -948,7 +983,7 @@ finish:
 	 *	Copy over the attribute definition, now we're
 	 *	sure what we were passed is valid.
 	 */
-	if ((vpt->type == TMPL_TYPE_ATTR) && vpt->tmpl_da->flags.is_unknown) vpt->tmpl_da = vpt->tmpl_unknown;
+	if (tmpl_is_attr(vpt) && vpt->tmpl_da->flags.is_unknown) vpt->tmpl_da = vpt->tmpl_unknown;
 
 	TMPL_VERIFY(vpt);	/* Because we want to ensure we produced something sane */
 
@@ -964,13 +999,14 @@ finish:
  *
  * @copydetails tmpl_afrom_attr_substr
  */
-ssize_t tmpl_afrom_attr_str(TALLOC_CTX *ctx, vp_tmpl_t **out, char const *name, vp_tmpl_rules_t const *rules)
+ssize_t tmpl_afrom_attr_str(TALLOC_CTX *ctx, attr_ref_error_t *err,
+			    vp_tmpl_t **out, char const *name, vp_tmpl_rules_t const *rules)
 {
 	ssize_t slen;
 
 	if (!rules) rules = &default_rules;	/* Use the defaults */
 
-	slen = tmpl_afrom_attr_substr(ctx, out, name, rules);
+	slen = tmpl_afrom_attr_substr(ctx, err, out, name, rules);
 	if (slen <= 0) return slen;
 
 	if (!fr_cond_assert(*out)) return -1;
@@ -1088,7 +1124,7 @@ ssize_t tmpl_afrom_str(TALLOC_CTX *ctx, vp_tmpl_t **out,
 
 		mrules.allow_undefined = (in[0] == '&');
 
-		slen = tmpl_afrom_attr_str(ctx, &vpt, in, &mrules);
+		slen = tmpl_afrom_attr_str(ctx, NULL, &vpt, in, &mrules);
 		if (mrules.allow_undefined && (slen <= 0)) return slen;
 		if (slen > 0) break;
 	}
@@ -1233,7 +1269,7 @@ int tmpl_cast_in_place(vp_tmpl_t *vpt, fr_type_t type, fr_dict_attr_t const *enu
 	TMPL_VERIFY(vpt);
 
 	rad_assert(vpt != NULL);
-	rad_assert((vpt->type == TMPL_TYPE_UNPARSED) || (vpt->type == TMPL_TYPE_DATA));
+	rad_assert(tmpl_is_unparsed(vpt) || tmpl_is_data(vpt));
 
 	switch (vpt->type) {
 	case TMPL_TYPE_UNPARSED:
@@ -1290,7 +1326,7 @@ int tmpl_cast_in_place(vp_tmpl_t *vpt, fr_type_t type, fr_dict_attr_t const *enu
 void tmpl_cast_in_place_str(vp_tmpl_t *vpt)
 {
 	rad_assert(vpt != NULL);
-	rad_assert(vpt->type == TMPL_TYPE_UNPARSED);
+	rad_assert(tmpl_is_unparsed(vpt));
 
 	vpt->tmpl_value.vb_strvalue = talloc_typed_strdup(vpt, vpt->name);
 	rad_assert(vpt->tmpl_value.vb_strvalue != NULL);
@@ -1323,7 +1359,6 @@ int tmpl_cast_to_vp(VALUE_PAIR **out, REQUEST *request,
 {
 	int		rcode;
 	VALUE_PAIR	*vp;
-	fr_value_box_t	data;
 	char		*p;
 
 	TMPL_VERIFY(vpt);
@@ -1333,7 +1368,7 @@ int tmpl_cast_to_vp(VALUE_PAIR **out, REQUEST *request,
 	vp = fr_pair_afrom_da(request, cast);
 	if (!vp) return -1;
 
-	if (vpt->type == TMPL_TYPE_DATA) {
+	if (tmpl_is_data(vpt)) {
 		VP_VERIFY(vp);
 		rad_assert(vp->vp_type == vpt->tmpl_value_type);
 
@@ -1347,15 +1382,14 @@ int tmpl_cast_to_vp(VALUE_PAIR **out, REQUEST *request,
 		fr_pair_list_free(&vp);
 		return rcode;
 	}
-	data.vb_strvalue = p;
 
 	/*
 	 *	New escapes: strings are in binary form.
 	 */
 	if (vp->vp_type == FR_TYPE_STRING) {
-		fr_pair_value_strcpy(vp, data.datum.ptr);
-	} else if (fr_pair_value_from_str(vp, data.vb_strvalue, rcode, '\0', false) < 0) {
-		fr_value_box_clear(&data);
+		fr_pair_value_strcpy(vp, p);
+	} else if (fr_pair_value_from_str(vp, p, rcode, '\0', false) < 0) {
+		talloc_free(p);
 		fr_pair_list_free(&vp);
 		return -1;
 	}
@@ -1381,7 +1415,7 @@ int tmpl_define_unknown_attr(vp_tmpl_t *vpt)
 
 	TMPL_VERIFY(vpt);
 
-	if (vpt->type != TMPL_TYPE_ATTR) return 1;
+	if (!tmpl_is_attr(vpt)) return 1;
 
 	if (!vpt->tmpl_da->flags.is_unknown) return 1;
 
@@ -1422,7 +1456,7 @@ int tmpl_define_undefined_attr(fr_dict_t *dict_def, vp_tmpl_t *vpt,
 
 	TMPL_VERIFY(vpt);
 
-	if (vpt->type != TMPL_TYPE_ATTR_UNDEFINED) return 1;
+	if (!tmpl_is_attr_undefined(vpt)) return 1;
 
 	if (fr_dict_attr_add(dict_def, fr_dict_root(fr_dict_internal), vpt->tmpl_unknown_name, -1, type, flags) < 0) {
 		return -1;
@@ -1432,8 +1466,8 @@ int tmpl_define_undefined_attr(fr_dict_t *dict_def, vp_tmpl_t *vpt,
 
 	if (type != da->type) {
 		fr_strerror_printf("Attribute %s of type %s already defined with type %s",
-				   da->name, fr_int2str(fr_value_box_type_names, type, "<UNKNOWN>"),
-				   fr_int2str(fr_value_box_type_names, da->type, "<UNKNOWN>"));
+				   da->name, fr_int2str(fr_value_box_type_table, type, "<UNKNOWN>"),
+				   fr_int2str(fr_value_box_type_table, da->type, "<UNKNOWN>"));
 		return -1;
 	}
 
@@ -1521,7 +1555,7 @@ ssize_t _tmpl_to_type(void *out,
 
 	TMPL_VERIFY(vpt);
 
-	rad_assert(vpt->type != TMPL_TYPE_LIST);
+	rad_assert(!tmpl_is_list(vpt));
 	rad_assert(!buff || (bufflen >= 2));
 
 	memset(&value_to_cast, 0, sizeof(value_to_cast));
@@ -1543,7 +1577,7 @@ ssize_t _tmpl_to_type(void *out,
 		}
 
 		if (radius_exec_program(request, (char *)buff, bufflen, NULL, request, vpt->name, NULL,
-					true, false, EXEC_TIMEOUT) != 0) return -1;
+					true, false, fr_time_delta_from_sec(EXEC_TIMEOUT)) != 0) return -1;
 		value_to_cast.vb_strvalue = (char *)buff;
 		value_to_cast.datum.length = strlen((char *)buff);
 	}
@@ -1565,7 +1599,7 @@ ssize_t _tmpl_to_type(void *out,
 		 *
 		 *	@fixme We need a way of signalling xlat not to escape things.
 		 */
-		value_to_cast.datum.length = value_str_unescape(buff, (char *)buff, slen, '"');
+		value_to_cast.datum.length = fr_value_str_unescape(buff, (char *)buff, slen, '"');
 		value_to_cast.vb_strvalue = (char *)buff;
 		break;
 
@@ -1588,7 +1622,7 @@ ssize_t _tmpl_to_type(void *out,
 		 *
 		 *	@fixme We need a way of signalling xlat not to escape things.
 		 */
-		value_to_cast.datum.length = value_str_unescape(buff, (char *)buff, slen, '"');
+		value_to_cast.datum.length = fr_value_str_unescape(buff, (char *)buff, slen, '"');
 		value_to_cast.vb_strvalue = (char *)buff;
 
 		break;
@@ -1704,7 +1738,7 @@ ssize_t _tmpl_to_type(void *out,
 		 *	Data type conversion...
 		 */
 		ret = fr_value_box_cast(ctx, &value_from_cast, dst_type, NULL, to_cast);
-		if (ret < 0) return -1;
+		if (ret < 0) goto error;
 
 
 		/*
@@ -1834,7 +1868,7 @@ ssize_t _tmpl_to_atype(TALLOC_CTX *ctx, void *out,
 
 		MEM(value.vb_strvalue = talloc_array(tmp_ctx, char, 1024));
 		if (radius_exec_program(request, (char *)value.datum.ptr, 1024, NULL, request, vpt->name, NULL,
-					true, false, EXEC_TIMEOUT) != 0) {
+					true, false, fr_time_delta_from_sec(EXEC_TIMEOUT)) != 0) {
 		error:
 			talloc_free(tmp_ctx);
 			return slen;
@@ -1885,7 +1919,7 @@ ssize_t _tmpl_to_atype(TALLOC_CTX *ctx, void *out,
 
 		/* Error in expansion, this is distinct from zero length expansion */
 		slen = xlat_aeval_compiled(tmp_ctx, (char **)&value.datum.ptr, request, vpt->tmpl_xlat, escape, escape_ctx);
-		if (slen < 0) return slen;
+		if (slen < 0) goto error;
 
 		value.datum.length = slen;
 
@@ -1912,7 +1946,10 @@ ssize_t _tmpl_to_atype(TALLOC_CTX *ctx, void *out,
 		RDEBUG4("EXPAND TMPL ATTR");
 
 		ret = tmpl_find_vp(&vp, request, vpt);
-		if (ret < 0) return -2;
+		if (ret < 0) {
+			talloc_free(tmp_ctx);
+			return -2;
+		}
 
 		rad_assert(vp);
 
@@ -1970,11 +2007,11 @@ ssize_t _tmpl_to_atype(TALLOC_CTX *ctx, void *out,
 		MEM(*vb_out = fr_value_box_alloc_null(ctx));
 
 		ret = needs_dup ? fr_value_box_copy(ctx, *vb_out, to_cast) : fr_value_box_steal(ctx, *vb_out, to_cast);
+		talloc_free(tmp_ctx);
 		if (ret < 0) {
 			RPEDEBUG("Failed copying data to output box");
 			return -1;
 		}
-		talloc_free(tmp_ctx);
 		return 0;
 	}
 
@@ -2131,9 +2168,9 @@ size_t tmpl_snprint_attr_str(char *out, size_t outlen, vp_tmpl_t const *vpt)
 
 /** Print a #vp_tmpl_t to a string
  *
- * @param[out] out Where to write the presentation format #vp_tmpl_t string.
- * @param[in] outlen Size of output buffer.
- * @param[in] vpt to print.
+ * @param[out] out	Where to write the presentation format #vp_tmpl_t string.
+ * @param[in] outlen	Size of output buffer.
+ * @param[in] vpt	to print.
  * @return
  *	- The number of bytes written to the out buffer.
  *	- A number >= outlen if truncation has occurred.
@@ -2145,14 +2182,16 @@ size_t tmpl_snprint(char *out, size_t outlen, vp_tmpl_t const *vpt)
 	char		c;
 	char		*out_p = out, *end = out_p + outlen;
 
-	if (!vpt || (outlen < 3)) {
-	empty:
+	if (outlen == 0) return 1;
+
+	if (!vpt) {
+empty:
 		*out = '\0';
 		return 0;
 	}
 	TMPL_VERIFY(vpt);
 
-	out[outlen - 1] = '\0';	/* Always terminate for safety */
+	*(end - 1) = '\0';	/* Always terminate for safety */
 
 	switch (vpt->type) {
 	case TMPL_TYPE_LIST:
@@ -2166,11 +2205,23 @@ size_t tmpl_snprint(char *out, size_t outlen, vp_tmpl_t const *vpt)
 	 */
 	case TMPL_TYPE_REGEX:
 	case TMPL_TYPE_REGEX_STRUCT:
-		if (outlen < 4) goto empty;	/* / + <c> + / + \0 */
+		if ((end - out_p) <= 3) {	/* / + <c> + / + \0 */
+		no_space:
+			if (out_p > end) out_p = end;	/* Safety */
+			*out_p = '\0';
+			return outlen + 1;
+		}
+
 		*out_p++ = '/';
-		len = fr_snprint(out_p, (end - out_p) - 1, vpt->name, vpt->len, '\0');
-		RETURN_IF_TRUNCATED(out_p, len, (end - out_p) - 1);
+		len = fr_snprint(out_p, end - out_p, vpt->name, vpt->len, '\0');
+		RETURN_IF_TRUNCATED(out_p, len, end - out_p);
+
+		if ((end - out_p) <= 1) goto no_space;
 		*out_p++ = '/';
+
+		len = regex_flags_snprint(out_p, end - out_p, &vpt->tmpl_regex_flags);
+		RETURN_IF_TRUNCATED(out_p, len, end - out_p);
+
 		goto finish;
 
 	case TMPL_TYPE_XLAT:
@@ -2193,20 +2244,23 @@ size_t tmpl_snprint(char *out, size_t outlen, vp_tmpl_t const *vpt)
 		for (p = vpt->name; *p != '\0'; p++) {
 			if (*p == ' ') break;
 			if (*p == '\'') break;
+			if (*p == '.') continue;
 			if (!fr_dict_attr_allowed_chars[(uint8_t) *p]) break;
 		}
 		c = *p ? '"' : '\0';
 
 do_literal:
-		if (outlen < 4) goto empty;	/* / + <c> + / + \0 */
+		if ((end - out_p) <= 3) goto no_space;	/* / + <c> + / + \0 */
 		if (c != '\0') *out_p++ = c;
 		len = fr_snprint(out_p, (end - out_p) - ((c == '\0') ? 0 : 1), vpt->name, vpt->len, c);
 		RETURN_IF_TRUNCATED(out_p, len, (end - out_p) - ((c == '\0') ? 0 : 1));
+
+		if ((end - out_p) <= 1) goto no_space;
 		if (c != '\0') *out_p++ = c;
 		break;
 
 	case TMPL_TYPE_DATA:
-		return fr_value_box_snprint(out, outlen, &vpt->tmpl_value, fr_token_quote[vpt->quote]);
+		return fr_value_box_snprint(out, end - out_p, &vpt->tmpl_value, fr_token_quote[vpt->quote]);
 
 	default:
 		goto empty;
@@ -2345,7 +2399,7 @@ VALUE_PAIR *tmpl_cursor_init(int *err, fr_cursor_t *cursor, REQUEST *request, vp
 
 	TMPL_VERIFY(vpt);
 
-	rad_assert((vpt->type == TMPL_TYPE_ATTR) || (vpt->type == TMPL_TYPE_LIST));
+	rad_assert(tmpl_is_attr(vpt) || tmpl_is_list(vpt));
 
 	if (err) *err = 0;
 
@@ -2371,7 +2425,7 @@ VALUE_PAIR *tmpl_cursor_init(int *err, fr_cursor_t *cursor, REQUEST *request, vp
 	if (!vp) {
 		if (err) {
 			*err = -1;
-			if (vpt->type == TMPL_TYPE_LIST) {
+			if (tmpl_is_list(vpt)) {
 				fr_strerror_printf("List \"%s\" is empty", vpt->name);
 			} else {
 				fr_strerror_printf("No matching \"%s\" pairs found", vpt->tmpl_da->name);
@@ -2407,7 +2461,7 @@ int tmpl_copy_vps(TALLOC_CTX *ctx, VALUE_PAIR **out, REQUEST *request, vp_tmpl_t
 
 	int err;
 
-	rad_assert((vpt->type == TMPL_TYPE_ATTR) || (vpt->type == TMPL_TYPE_LIST));
+	rad_assert(tmpl_is_attr(vpt) || tmpl_is_list(vpt));
 
 	*out = NULL;
 
@@ -2476,7 +2530,7 @@ int tmpl_find_or_add_vp(VALUE_PAIR **out, REQUEST *request, vp_tmpl_t const *vpt
 	int		err;
 
 	TMPL_VERIFY(vpt);
-	rad_assert(vpt->type == TMPL_TYPE_ATTR);
+	rad_assert(tmpl_is_attr(vpt));
 
 	*out = NULL;
 
@@ -2527,7 +2581,8 @@ static uint8_t const *not_zeroed(uint8_t const *ptr, size_t len)
 
 	return NULL;
 }
-#define CHECK_ZEROED(_x) not_zeroed((uint8_t const *)&_x + sizeof(_x), sizeof(vpt->data) - sizeof(_x))
+
+#define CHECK_ZEROED(_vpt, _field) not_zeroed(((uint8_t const *)&(_vpt)->data) + sizeof((_vpt)->data._field), sizeof((_vpt)->data) - sizeof((_vpt)->data._field))
 
 /** Verify fields of a vp_tmpl_t make sense
  *
@@ -2541,7 +2596,7 @@ void tmpl_verify(char const *file, int line, vp_tmpl_t const *vpt)
 {
 	rad_assert(vpt);
 
-	if (vpt->type == TMPL_TYPE_UNKNOWN) {
+	if (tmpl_is_unknown(vpt)) {
 		FR_FAULT_LOG("CONSISTENCY CHECK FAILED %s[%u]: vp_tmpl_t type was "
 			     "TMPL_TYPE_UNKNOWN (uninitialised)", file, line);
 		if (!fr_cond_assert(0)) fr_exit_now(1);
@@ -2606,7 +2661,7 @@ void tmpl_verify(char const *file, int line, vp_tmpl_t const *vpt)
 		break;
 
 	case TMPL_TYPE_XLAT_STRUCT:
-		if (CHECK_ZEROED(vpt->data.xlat)) {
+		if (CHECK_ZEROED(vpt, xlat)) {
 			FR_FAULT_LOG("CONSISTENCY CHECK FAILED %s[%u]: TMPL_TYPE_XLAT_STRUCT "
 				     "has non-zero bytes after the data.xlat pointer in the union", file, line);
 			if (!fr_cond_assert(0)) fr_exit_now(1);
@@ -2627,7 +2682,7 @@ void tmpl_verify(char const *file, int line, vp_tmpl_t const *vpt)
 		break;
 
 	case TMPL_TYPE_ATTR:
-		if (CHECK_ZEROED(vpt->data.attribute)) {
+		if (CHECK_ZEROED(vpt, attribute)) {
 			FR_FAULT_LOG("CONSISTENCY CHECK FAILED %s[%u]: TMPL_TYPE_ATTR "
 				     "has non-zero bytes after the data.attribute struct in the union",
 				     file, line);
@@ -2674,7 +2729,7 @@ void tmpl_verify(char const *file, int line, vp_tmpl_t const *vpt)
 				FR_FAULT_LOG("CONSISTENCY CHECK FAILED %s[%u]: TMPL_TYPE_ATTR "
 					     "attribute \"%s\" (%s) not rooted in a dictionary",
 					     file, line, vpt->tmpl_da->name,
-					     fr_int2str(fr_value_box_type_names, vpt->tmpl_da->type, "<INVALID>"));
+					     fr_int2str(fr_value_box_type_table, vpt->tmpl_da->type, "<INVALID>"));
 				if (!fr_cond_assert(0)) fr_exit_now(1);
 			}
 
@@ -2684,7 +2739,7 @@ void tmpl_verify(char const *file, int line, vp_tmpl_t const *vpt)
 					FR_FAULT_LOG("CONSISTENCY CHECK FAILED %s[%u]: TMPL_TYPE_ATTR "
 						     "attribute \"%s\" (%s) not found in dictionary (%s)",
 						     file, line, vpt->tmpl_da->name,
-						     fr_int2str(fr_value_box_type_names,
+						     fr_int2str(fr_value_box_type_table,
 						     		vpt->tmpl_da->type, "<INVALID>"),
 						     fr_dict_root(dict)->name);
 					if (!fr_cond_assert(0)) fr_exit_now(1);
@@ -2698,7 +2753,7 @@ void tmpl_verify(char const *file, int line, vp_tmpl_t const *vpt)
 					FR_FAULT_LOG("CONSISTENCY CHECK FAILED %s[%u]: TMPL_TYPE_ATTR "
 						     "attribute \"%s\" variant (%s) not found in dictionary (%s)",
 						     file, line, vpt->tmpl_da->name,
-						     fr_int2str(fr_value_box_type_names, vpt->tmpl_da->type,
+						     fr_int2str(fr_value_box_type_table, vpt->tmpl_da->type,
 						     		"<INVALID>"),
 						     fr_dict_root(dict)->name);
 					if (!fr_cond_assert(0)) fr_exit_now(1);
@@ -2711,16 +2766,16 @@ void tmpl_verify(char const *file, int line, vp_tmpl_t const *vpt)
 					     "and global dictionary pointer %p \"%s\" (%s) differ",
 					     file, line,
 					     vpt->tmpl_da, vpt->tmpl_da->name,
-					     fr_int2str(fr_value_box_type_names, vpt->tmpl_da->type, "<INVALID>"),
+					     fr_int2str(fr_value_box_type_table, vpt->tmpl_da->type, "<INVALID>"),
 					     da, da->name,
-					     fr_int2str(fr_value_box_type_names, da->type, "<INVALID>"));
+					     fr_int2str(fr_value_box_type_table, da->type, "<INVALID>"));
 				if (!fr_cond_assert(0)) fr_exit_now(1);
 			}
 		}
 		break;
 
 	case TMPL_TYPE_LIST:
-		if (CHECK_ZEROED(vpt->data.attribute)) {
+		if (CHECK_ZEROED(vpt, attribute)) {
 			FR_FAULT_LOG("CONSISTENCY CHECK FAILED %s[%u]: TMPL_TYPE_LIST"
 				     "has non-zero bytes after the data.attribute struct in the union", file, line);
 			if (!fr_cond_assert(0)) fr_exit_now(1);
@@ -2734,7 +2789,7 @@ void tmpl_verify(char const *file, int line, vp_tmpl_t const *vpt)
 		break;
 
 	case TMPL_TYPE_DATA:
-		if (CHECK_ZEROED(vpt->data.literal)) {
+		if (CHECK_ZEROED(vpt, literal)) {
 			FR_FAULT_LOG("CONSISTENCY CHECK FAILED %s[%u]: TMPL_TYPE_DATA "
 				     "has non-zero bytes after the data.literal struct in the union",
 				     file, line);
@@ -2778,30 +2833,9 @@ void tmpl_verify(char const *file, int line, vp_tmpl_t const *vpt)
 
 	case TMPL_TYPE_REGEX:
 #ifdef HAVE_REGEX
-		/*
-		 *	iflag field is used for non compiled regexes too.
-		 */
-		if (CHECK_ZEROED(vpt->data.preg)) {
-			FR_FAULT_LOG("CONSISTENCY CHECK FAILED %s[%u]: TMPL_TYPE_REGEX "
-				     "has non-zero bytes after the data.preg struct in the union", file, line);
-			if (!fr_cond_assert(0)) fr_exit_now(1);
-		}
-
 		if (vpt->tmpl_preg != NULL) {
 			FR_FAULT_LOG("CONSISTENCY CHECK FAILED %s[%u]: TMPL_TYPE_REGEX "
 				     "preg field was not NULL", file, line);
-			if (!fr_cond_assert(0)) fr_exit_now(1);
-		}
-
-		if ((vpt->tmpl_iflag != true) && (vpt->tmpl_iflag != false)) {
-			FR_FAULT_LOG("CONSISTENCY CHECK FAILED %s[%u]: TMPL_TYPE_REGEX "
-				     "iflag field was neither true or false", file, line);
-			if (!fr_cond_assert(0)) fr_exit_now(1);
-		}
-
-		if ((vpt->tmpl_mflag != true) && (vpt->tmpl_mflag != false)) {
-			FR_FAULT_LOG("CONSISTENCY CHECK FAILED %s[%u]: TMPL_TYPE_REGEX "
-				     "mflag field was neither true or false", file, line);
 			if (!fr_cond_assert(0)) fr_exit_now(1);
 		}
 #else
@@ -2811,29 +2845,12 @@ void tmpl_verify(char const *file, int line, vp_tmpl_t const *vpt)
 
 	case TMPL_TYPE_REGEX_STRUCT:
 #ifdef HAVE_REGEX
-		if (CHECK_ZEROED(vpt->data.preg)) {
-			FR_FAULT_LOG("CONSISTENCY CHECK FAILED %s[%u]: TMPL_TYPE_REGEX_STRUCT "
-				     "has non-zero bytes after the data.preg struct in the union", file, line);
-			if (!fr_cond_assert(0)) fr_exit_now(1);
-		}
-
 		if (vpt->tmpl_preg == NULL) {
 			FR_FAULT_LOG("CONSISTENCY CHECK FAILED %s[%u]: TMPL_TYPE_REGEX_STRUCT "
 				     "comp field was NULL", file, line);
 			if (!fr_cond_assert(0)) fr_exit_now(1);
 		}
 
-		if ((vpt->tmpl_iflag != true) && (vpt->tmpl_iflag != false)) {
-			FR_FAULT_LOG("CONSISTENCY CHECK FAILED %s[%u]: TMPL_TYPE_REGEX_STRUCT "
-				     "iflag field was neither true or false", file, line);
-			if (!fr_cond_assert(0)) fr_exit_now(1);
-		}
-
-		if ((vpt->tmpl_mflag != true) && (vpt->tmpl_mflag != false)) {
-			FR_FAULT_LOG("CONSISTENCY CHECK FAILED %s[%u]: TMPL_TYPE_REGEX "
-				     "mflag field was neither true or false", file, line);
-			if (!fr_cond_assert(0)) fr_exit_now(1);
-		}
 #else
 		if (!fr_cond_assert(0)) fr_exit_now(1);
 #endif

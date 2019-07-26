@@ -45,11 +45,12 @@ typedef struct rad_client RADCLIENT;
 
 #include <freeradius-devel/server/log.h>
 #include <freeradius-devel/server/main_config.h>
-#include <freeradius-devel/server/process.h>
 #include <freeradius-devel/server/rcode.h>
+#include <freeradius-devel/server/signal.h>
 #include <freeradius-devel/util/event.h>
 #include <freeradius-devel/util/heap.h>
 #include <freeradius-devel/util/packet.h>
+#include <freeradius-devel/util/dlist.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -77,6 +78,7 @@ typedef enum fr_request_state_t {
 	REQUEST_OTHER_4,
 } fr_request_state_t;
 
+typedef	void (*fr_request_process_t)(REQUEST *, fr_state_signal_t);	//!< Function handler for requests.
 typedef	rlm_rcode_t (*RAD_REQUEST_FUNP)(REQUEST *);
 
 struct rad_request {
@@ -132,7 +134,6 @@ struct rad_request {
 
 	REQUEST			*parent;
 
-	struct timeval		response_delay;	//!< How long to wait before sending Access-Rejects.
 	fr_event_timer_t const	*ev;		//!< Event in event loop tied to this request.
 
 	int32_t			runnable_id;	//!< entry in the queue / heap of runnable packets
@@ -178,13 +179,11 @@ struct rad_request {
 
 REQUEST		*request_alloc(TALLOC_CTX *ctx);
 
-REQUEST		*request_alloc_fake(REQUEST *oldreq);
+REQUEST		*request_alloc_fake(REQUEST *parent, fr_dict_t const *namespace);
 
-REQUEST		*request_alloc_proxy(REQUEST *request);
+REQUEST		*request_alloc_detachable(REQUEST *request, fr_dict_t const *namespace);
 
-REQUEST		*request_alloc_detachable(REQUEST *request);
-
-int		request_detach(REQUEST *fake);
+int		request_detach(REQUEST *fake, bool will_free);
 
 void		request_data_list_init(fr_dlist_head_t *data);
 
@@ -205,7 +204,19 @@ void		*request_data_reference(REQUEST *request, void const *unique_ptr, int uniq
 
 int		request_data_by_persistance(fr_dlist_head_t *out, REQUEST *request, bool persist);
 
+int		request_data_by_persistance_count(REQUEST *request, bool persist);
+
 void		request_data_restore(REQUEST *request, fr_dlist_head_t *in);
+
+void		request_data_ctx_change(TALLOC_CTX *state_ctx, REQUEST *request);
+
+void		request_data_persistable_free(REQUEST *request);
+
+void		request_data_dump(REQUEST *request);
+
+void		request_data_store_in_parent(REQUEST *request, void *unique_ptr, int unique_int);
+
+void		request_data_restore_to_child(REQUEST *request, void *unique_ptr, int unique_int);
 
 #ifdef WITH_VERIFY_PTR
 void		request_verify(char const *file, int line, REQUEST const *request);	/* only for special debug builds */

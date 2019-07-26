@@ -106,7 +106,7 @@ REQUEST *request_alloc(TALLOC_CTX *ctx)
 	request->module = NULL;
 	request->component = "<core>";
 
-	MEM(request->stack = unlang_stack_alloc(request));
+	MEM(request->stack = unlang_interpret_stack_alloc(request));
 
 	request->runnable_id = -1;
 	request->time_order_id = -1;
@@ -207,14 +207,18 @@ static REQUEST *request_init_fake(REQUEST *request, REQUEST *fake)
  *	This function allows modules to inject fake requests
  *	into the server, for tunneled protocols like TTLS & PEAP.
  */
-REQUEST *request_alloc_fake(REQUEST *request)
+REQUEST *request_alloc_fake(REQUEST *request, fr_dict_t const *namespace)
 {
 	REQUEST *fake;
 
 	fake = request_alloc(request);
 	if (!fake) return NULL;
 
-	return request_init_fake(request, fake);
+	if (!request_init_fake(request, fake)) return NULL;
+
+	if (namespace) fake->dict = namespace;
+
+	return fake;
 }
 
 /** Allocate a fake request which is detachable from the parent.
@@ -222,7 +226,7 @@ REQUEST *request_alloc_fake(REQUEST *request)
  * run.
  *
  */
-REQUEST *request_alloc_detachable(REQUEST *request)
+REQUEST *request_alloc_detachable(REQUEST *request, fr_dict_t const *namespace)
 {
 	REQUEST *fake;
 
@@ -230,6 +234,8 @@ REQUEST *request_alloc_detachable(REQUEST *request)
 	if (!fake) return NULL;
 
 	if (!request_init_fake(request, fake)) return NULL;
+
+	if (namespace) fake->dict = namespace;
 
 	/*
 	 *	Ensure that we use our own version of the logging
@@ -252,24 +258,35 @@ REQUEST *request_alloc_detachable(REQUEST *request)
 	return fake;
 }
 
-
-/** Detach a detachable request.
+/** Unlink a subrequest from its parent
  *
- *  @note the caller still has to set fake->async->detached
+ * @note This should be used for requests in preparation for freeing them.
+ *
+ * @param[in] fake		request to unlink.
+ * @param[in] will_free		Caller super pinky swears to free
+ *				the request ASAP, and that it wont
+ *				touch persistable request data,
+ *				request->state_ctx or request->state.
+ * @return
+ *	 - 0 on success.
+ *	 - -1 on failure.
  */
-int request_detach(REQUEST *fake)
+int request_detach(REQUEST *fake, bool will_free)
 {
-	REQUEST *request = fake->parent;
+	REQUEST		*request = fake->parent;
 
 	rad_assert(request != NULL);
-	rad_assert(talloc_parent(fake) != request);
 
 	/*
 	 *	Unlink the child from the parent.
 	 */
-	if (!request_data_get(request, fake, 0)) {
-		return -1;
-	}
+	request_data_get(request, fake, 0);
+
+	/*
+	 *	Fixup any sate or persistent
+	 *	request data.
+	 */
+	fr_state_detach(fake, will_free);
 
 	fake->parent = NULL;
 
@@ -281,20 +298,6 @@ int request_detach(REQUEST *fake)
 	fake->backlog = request->backlog;
 
 	return 0;
-}
-
-REQUEST *request_alloc_proxy(REQUEST *request)
-{
-	request->proxy = request_alloc(request);
-	if (!request->proxy) return NULL;
-
-	request->proxy->log = request->log;
-	request->proxy->parent = request;
-	request->proxy->number = request->number;
-	request->proxy->seq_start = request->seq_start;
-	request->proxy->config = request->config;
-
-	return request->proxy;
 }
 
 /* Initialise a dlist for storing request data
@@ -547,6 +550,26 @@ int request_data_by_persistance(fr_dlist_head_t *out, REQUEST *request, bool per
 	return count;
 }
 
+/** Return how many request data entries exist of a given persistence
+ *
+ * @param[in] request	to check in.
+ * @param[in] persist	Whether to count persistable or non-persistable data.
+ * @return number of request_data_t that exist in persistable or non-persistable form
+ */
+int request_data_by_persistance_count(REQUEST *request, bool persist)
+{
+	int 		count = 0;
+	request_data_t	*rd = NULL;
+
+	while ((rd = fr_dlist_next(&request->data, rd))) {
+		if (rd->persist != persist) continue;
+
+		count++;
+	}
+
+	return count;
+}
+
 /** Add request data back to a request
  *
  * @note May add multiple entries (if they're linked).
@@ -558,6 +581,150 @@ int request_data_by_persistance(fr_dlist_head_t *out, REQUEST *request, bool per
 void request_data_restore(REQUEST *request, fr_dlist_head_t *in)
 {
 	fr_dlist_move(&request->data, in);
+}
+
+/** Realloc any request_data_t structs in a new ctx
+ *
+ */
+void request_data_ctx_change(TALLOC_CTX *state_ctx, REQUEST *request)
+{
+	fr_dlist_head_t		head;
+	request_data_t		*rd = NULL, *prev;
+
+	fr_dlist_talloc_init(&head, request_data_t, list);
+
+	while ((rd = fr_dlist_next(&request->data, rd))) {
+		request_data_t	*new;
+
+		if (!rd->persist) continue;	/* Parented by the request */
+
+		prev = fr_dlist_remove(&request->data, rd);	/* Unlink from the list */
+		new = talloc(state_ctx, request_data_t);
+		memcpy(new, rd, sizeof(*new));
+		rd->free_on_parent = false;
+		talloc_free(rd);
+		rd = prev;
+
+		fr_dlist_insert_tail(&head, new);
+	}
+
+	fr_dlist_move(&request->data, &head);
+}
+
+/** Used for removing data from subrequests that are about to be freed
+ *
+ * @param[in] request	to remove persistable data from.
+ */
+void request_data_persistable_free(REQUEST *request)
+{
+	fr_dlist_head_t	head;
+
+	fr_dlist_talloc_init(&head, request_data_t, list);
+
+	request_data_by_persistance(&head, request, true);
+
+	fr_dlist_talloc_free(&head);
+}
+
+void request_data_dump(REQUEST *request)
+{
+	request_data_t	*rd = NULL;
+	int count = 0;
+
+	if (fr_dlist_empty(&request->data)) {
+		RDEBUG("No request data");
+		return;
+	}
+
+	RDEBUG("Current request data:");
+	RINDENT();
+	while ((rd = fr_dlist_next(&request->data, rd))) {
+		RDEBUG("[%i] %s%p %s at %p:%i",
+		       count,
+		       rd->type ? rd->type : "",
+		       rd->opaque,
+		       rd->persist ? "[persist]" : "",
+		       rd->unique_ptr,
+		       rd->unique_int);
+
+		count++;
+	}
+	REXDENT();
+}
+
+/** Free any subrequest request data if the dlist head is freed
+ *
+ */
+static int _free_subrequest_data(fr_dlist_head_t *head)
+{
+	request_data_t *rd = NULL, *prev;
+
+	while ((rd = fr_dlist_next(head, rd))) {
+		prev = fr_dlist_remove(head, rd);
+		talloc_free(rd);
+		rd = prev;
+	}
+
+	return 0;
+}
+
+/** Store persistable data from a subrequest in its parent
+ *
+ * @param[in] request		The child request to retrieve state from.
+ * @param[in] unique_ptr	A parent may have multiple subrequests spawned
+ *				by different modules.  This identifies the module
+ *      			or other facility that spawned the subrequest.
+ * @param[in] unique_int	Further identification.
+ */
+void request_data_store_in_parent(REQUEST *request, void *unique_ptr, int unique_int)
+{
+	fr_dlist_head_t	*head;
+
+	if (request_data_by_persistance_count(request, true) == 0) return;
+
+	MEM(head = talloc_zero(request->parent->state_ctx, fr_dlist_head_t));
+	fr_dlist_talloc_init(head, request_data_t, list);
+	talloc_set_destructor(head, _free_subrequest_data);
+
+	/*
+	 *	Pull everything out of the child,
+	 *	add it to our temporary list head...
+	 */
+	request_data_by_persistance(head, request, true);
+
+	/*
+	 *	...add that to the parent request under
+	 *	the specified unique identifiers.
+	 */
+	request_data_add(request->parent, unique_ptr, unique_int, head, true, false, true);
+}
+
+/** Restore subrequest data from a parent request
+ *
+ * @param[in] request		The child request to restore state to.
+ * @param[in] unique_ptr	A parent may have multiple subrequests spawned
+ *				by different modules.  This identifies the module
+ *      			or other facility that spawned the subrequest.
+ * @param[in] unique_int	Further identification.
+ */
+void request_data_restore_to_child(REQUEST *request, void *unique_ptr, int unique_int)
+{
+	fr_dlist_head_t *head;
+
+	/*
+	 *	All requests are alloced with a state_ctx.
+	 *	In this case, nothing should be parented
+	 *	off it already, so we can just free it.
+	 */
+	rad_assert(talloc_get_size(request->state_ctx) == 0);
+	TALLOC_FREE(request->state_ctx);
+	request->state_ctx = request->parent->state_ctx;	/* Use top level state ctx */
+
+	head = request_data_get(request->parent, unique_ptr, unique_int);
+	if (!head) return;
+
+	request_data_restore(request, head);
+	talloc_free(head);
 }
 
 #ifdef WITH_VERIFY_PTR

@@ -1,5 +1,7 @@
 # -*- text -*-
-# Copyright (C) 2016 The FreeRADIUS Server project and contributors
+# Copyright (C) 2019 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id$
 #
 #	Attributes needed by FreeRADIUS internally
 #
@@ -7,16 +9,16 @@
 #
 #  Internal (Non-Protocol) attributes
 #
-FLAGS		internal
+FLAGS	internal
 ATTRIBUTE	EAP-AKA-Subtype				256	integer
 
-VALUE	EAP-AKA-Subtype			AKA-Challenge			1
-VALUE	EAP-AKA-Subtype			AKA-Authentication-Reject	2
-VALUE	EAP-AKA-Subtype			AKA-Synchronization-Failure	4
-VALUE	EAP-AKA-Subtype			AKA-Identity			5
-VALUE	EAP-AKA-Subtype			AKA-Notification		12
-VALUE	EAP-AKA-Subtype			AKA-Reauthentication		13
-VALUE	EAP-AKA-Subtype			AKA-Client-Error		14
+VALUE	EAP-AKA-Subtype			AKA-Challenge		1
+VALUE	EAP-AKA-Subtype			AKA-Authentication-Reject 2
+VALUE	EAP-AKA-Subtype			AKA-Synchronization-Failure 4
+VALUE	EAP-AKA-Subtype			AKA-Identity		5
+VALUE	EAP-AKA-Subtype			AKA-Notification	12
+VALUE	EAP-AKA-Subtype			AKA-Reauthentication	13
+VALUE	EAP-AKA-Subtype			AKA-Client-Error	14
 
 ATTRIBUTE	EAP-AKA-HMAC				257	string
 ATTRIBUTE	EAP-AKA-Key				258	octets
@@ -30,5 +32,5 @@ ATTRIBUTE	EAP-AKA-AUTHN				263	octets
 #
 #  Keys to store for fast-reauthentication
 #
-ATTRIBUTE	EAP-SIM-MK				264	octets		# Master key
+ATTRIBUTE	EAP-AKA-MK				264	octets		# Master key
 ATTRIBUTE	EAP-AKA-AK				265	octets

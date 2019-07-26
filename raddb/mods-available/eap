@@ -1,6 +1,5 @@
 #  -*- text -*-
 #
-#  :toc:
 #
 #  $Id$
 
@@ -21,7 +20,7 @@
 #
 
 #
-#  # Default instance
+#  ## Default instance
 #
 eap {
 	#
@@ -162,7 +161,7 @@ eap {
 	#
 	#  ## Common TLS configuration for TLS-based EAP types
 	#
-	#  See `raddb/certs/README` for additional comments on certificates.
+	#  See `raddb/certs/README.md` for additional comments on certificates.
 	#
 	#  If OpenSSL was not found at the time the server was built, the `tls`,
 	#  `ttls`, and `peap` sections will be ignored.
@@ -263,9 +262,10 @@ eap {
 			#  chain compilation.  Multiple "ca_file" config items may be used
 			#  to load multiple certificates.
 			#
-			#  When multiple `ca_file`s are used, the server will still present only one
-			#  `certificate_file` to the clients.  The main use of multiple `ca_file` is
-			#  to permit the use of EAP-TLS with client certificates from multiple Root CAs.
+			#  When multiple `ca_file` entries are used, the server will still present
+			#  only one `certificate_file` to the clients.  The main use for multiple
+			#  `ca_file` entries is to permit the use of EAP-TLS with client certificates
+			#  from multiple Root CAs.
 			#
 			ca_file = ${certdir}/rsa/ca.pem
 
@@ -445,11 +445,11 @@ eap {
 		#
 		#  Will check CRLs for all certificates in the certificate chain.
 		#
-		#  <1> Copy CA certificates and CRLs to same directory.
-		#  <2> Execute `c_rehash <CA certs&CRLs Directory>`. `c_rehash` is
+		#  1. Copy CA certificates and CRLs to same directory.
+		#  2. Execute `c_rehash <CA certs&CRLs Directory>`. `c_rehash` is
 		#     OpenSSL's command.
-		#  <3> uncomment the lines below.
-		#  <4> Restart radiusd.
+		#  3. uncomment the lines below.
+		#  4. Restart radiusd.
 		#
 #		check_crl = yes
 
@@ -521,15 +521,18 @@ eap {
 		#
 		#  [NOTE]
 		#  ====
-		#  * Work-arounds for OpenSSL nonsense OpenSSL 1.0.1f and 1.0.1g do
+		#  * Work-arounds for OpenSSL nonsense.  OpenSSL 1.0.1f and 1.0.1g do
 		#  not calculate the `EAP` keys correctly.  The fix is to upgrade
-		#  OpenSSL, or disable TLS 1.2 here.
+		#  OpenSSL, or to disable TLS 1.2 here.
 		#
 		#  * SSLv2 and SSLv3 are permanently disabled due to security
 		#  issues.
+		#
+		#  * We STRONGLY RECOMMEND that TLS 1.0 and TLS 1.2 be disabled.
+		#  They are insecure and SHOULD NOT BE USED.
 		#  ====
 		#
-#		tls_max_version = 1.1
+#		tls_max_version = 1.2
 
 		#
 		#  tls_min_version::
@@ -545,7 +548,7 @@ eap {
 		#  issues.
 		#  ====
 		#
-#		tls_min_version = 1.0
+#		tls_min_version = 1.2
 
 		#
 		#  ecdh_curve:: Elliptical cryptography configuration.

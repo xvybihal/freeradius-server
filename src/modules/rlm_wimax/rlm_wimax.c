@@ -19,7 +19,7 @@
  * @file rlm_wimax.c
  * @brief Supports various WiMax functionality.
  *
- * @copyright 2008 Alan DeKok <aland@networkradius.com>
+ * @copyright 2008 Alan DeKok (aland@networkradius.com)
  */
 RCSID("$Id$")
 USES_APPLE_DEPRECATED_API	/* OpenSSL API has been deprecated by Apple */
@@ -94,7 +94,7 @@ fr_dict_attr_autoload_t rlm_wimax_dict_attr[] = {
 	{ .out = &attr_wimax_mn_hha_mip4_key, .name = "WiMAX-MN-hHA-MIP4-Key", .type = FR_TYPE_OCTETS, .dict = &dict_radius },
 	{ .out = &attr_wimax_mn_hha_mip4_spi, .name = "WiMAX-MN-hHA-MIP4-SPI", .type = FR_TYPE_UINT32, .dict = &dict_radius },
 	{ .out = &attr_wimax_hha_ip_mip4, .name = "WiMAX-hHA-IP-MIP4", .type = FR_TYPE_IPV4_ADDR, .dict = &dict_radius },
-	{ .out = &attr_wimax_hha_ip_mip6, .name = "WiMAX-hHA-IP-MIP6", .type = FR_TYPE_IPV4_ADDR, .dict = &dict_radius },
+	{ .out = &attr_wimax_hha_ip_mip6, .name = "WiMAX-hHA-IP-MIP6", .type = FR_TYPE_IPV6_ADDR, .dict = &dict_radius },
 	{ .out = &attr_wimax_mn_hha_mip6_key, .name = "WiMAX-MN-hHA-MIP6-Key", .type = FR_TYPE_OCTETS, .dict = &dict_radius },
 	{ .out = &attr_wimax_mn_hha_mip6_spi, .name = "WiMAX-MN-hHA-MIP6-SPI", .type = FR_TYPE_UINT32, .dict = &dict_radius },
 	{ .out = &attr_wimax_fa_rk_key, .name = "WiMAX-FA-RK-Key", .type = FR_TYPE_OCTETS, .dict = &dict_radius },
@@ -177,7 +177,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 	msk = fr_pair_find_by_da(request->reply->vps, attr_eap_msk, TAG_ANY);
 	emsk = fr_pair_find_by_da(request->reply->vps, attr_eap_emsk, TAG_ANY);
 	if (!msk || !emsk) {
-		RDEBUG("No EAP-MSK or EAP-EMSK.  Cannot create WiMAX keys");
+		REDEBUG2("No EAP-MSK or EAP-EMSK.  Cannot create WiMAX keys");
 		return RLM_MODULE_NOOP;
 	}
 
@@ -190,7 +190,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 		pair_delete_reply(attr_ms_mppe_recv_key);
 
 		MEM(pair_update_reply(&vp, attr_wimax_msk) >= 0);
-		fr_pair_value_memcpy(vp, msk->vp_octets, msk->vp_length);
+		fr_pair_value_memcpy(vp, msk->vp_octets, msk->vp_length, false);
 	}
 
 	/*
@@ -239,8 +239,8 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 		   (mip_rk_1[2] << 8) | mip_rk_1[3]);
 	if (mip_spi < 256) mip_spi += 256;
 
-	RDEBUG("MIP-RK = 0x%pH", fr_box_octets(mip_rk, rk_len));
-	RDEBUG("MIP-SPI = %08x", ntohl(mip_spi));
+	REDEBUG2("MIP-RK = 0x%pH", fr_box_octets(mip_rk, rk_len));
+	REDEBUG2("MIP-SPI = %08x", ntohl(mip_spi));
 
 	/*
 	 *	FIXME: Perform SPI collision prevention
@@ -292,7 +292,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 		 *	Put MN-HA-PMIP4 into WiMAX-MN-hHA-MIP4-Key
 		 */
 		MEM(pair_update_reply(&vp, attr_wimax_mn_hha_mip4_key) >= 0);
-		fr_pair_value_memcpy(vp, &mip_rk_1[0], rk1_len);
+		fr_pair_value_memcpy(vp, &mip_rk_1[0], rk1_len, false);
 
 		/*
 		 *	Put MN-HA-PMIP4-SPI into WiMAX-MN-hHA-MIP4-SPI
@@ -326,7 +326,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 		 *	Put MN-HA-CMIP4 into WiMAX-MN-hHA-MIP4-Key
 		 */
 		MEM(pair_update_reply(&vp, attr_wimax_mn_hha_mip4_key) >= 0);
-		fr_pair_value_memcpy(vp, &mip_rk_1[0], rk1_len);
+		fr_pair_value_memcpy(vp, &mip_rk_1[0], rk1_len, false);
 
 		/*
 		 *	Put MN-HA-CMIP4-SPI into WiMAX-MN-hHA-MIP4-SPI
@@ -360,7 +360,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 		 *	Put MN-HA-CMIP6 into WiMAX-MN-hHA-MIP6-Key
 		 */
 		MEM(pair_update_reply(&vp, attr_wimax_mn_hha_mip6_key) >= 0);
-		fr_pair_value_memcpy(vp, &mip_rk_1[0], rk1_len);
+		fr_pair_value_memcpy(vp, &mip_rk_1[0], rk1_len, false);
 
 		/*
 		 *	Put MN-HA-CMIP6-SPI into WiMAX-MN-hHA-MIP6-SPI
@@ -386,7 +386,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 
 		HMAC_Final(hmac, &mip_rk_1[0], &rk1_len);
 
-		fr_pair_value_memcpy(fa_rk, &mip_rk_1[0], rk1_len);
+		fr_pair_value_memcpy(fa_rk, &mip_rk_1[0], rk1_len, false);
 	}
 
 	/*
@@ -405,7 +405,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 	 */
 	vp = fr_pair_find_by_da(request->packet->vps, attr_wimax_rrq_mn_ha_spi, TAG_ANY);
 	if (vp) {
-		RDEBUG("Client requested MN-HA key: Should use SPI to look up key from storage");
+		REDEBUG2("Client requested MN-HA key: Should use SPI to look up key from storage");
 		if (!mn_nai) {
 			RWDEBUG("MN-NAI was not found!");
 		}
@@ -422,7 +422,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 		 */
 		vp = fr_pair_find_by_da(request->packet->vps, attr_wimax_ha_rk_key_requested, TAG_ANY);
 		if (vp && (vp->vp_uint32 == 1)) {
-			RDEBUG("Client requested HA-RK: Should use IP to look it up from storage");
+			REDEBUG2("Client requested HA-RK: Should use IP to look it up from storage");
 		}
 	}
 
@@ -443,13 +443,14 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_wimax;
-rad_module_t rlm_wimax = {
+extern module_t rlm_wimax;
+module_t rlm_wimax = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "wimax",
 	.type		= RLM_TYPE_THREAD_SAFE,
 	.inst_size	= sizeof(rlm_wimax_t),
 	.config		= module_config,
+	.dict		= &dict_radius,
 	.methods = {
 		[MOD_AUTHORIZE]		= mod_authorize,
 		[MOD_PREACCT]		= mod_preacct,

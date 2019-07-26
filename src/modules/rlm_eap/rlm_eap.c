@@ -19,9 +19,9 @@
  * @file rlm_eap.c
  * @brief Implements the EAP framework.
  *
- * @copyright 2000-2003,2006  The FreeRADIUS server project
- * @copyright 2001  hereUare Communications, Inc. <raghud@hereuare.com>
- * @copyright 2003  Alan DeKok <aland@freeradius.org>
+ * @copyright 2000-2003,2006 The FreeRADIUS server project
+ * @copyright 2001 hereUare Communications, Inc. (raghud@hereuare.com)
+ * @copyright 2003 Alan DeKok (aland@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -30,12 +30,14 @@ RCSID("$Id$")
 
 #include <freeradius-devel/server/base.h>
 #include <freeradius-devel/server/module.h>
-#include <freeradius-devel/server/dl.h>
-#include <freeradius-devel/server/dl.h>
+#include <freeradius-devel/server/dl_module.h>
+#include <freeradius-devel/server/dl_module.h>
 #include <freeradius-devel/protocol/freeradius/freeradius.internal.h>
+#include <freeradius-devel/unlang/interpret.h>
+#include <freeradius-devel/unlang/module.h>
 #include "rlm_eap.h"
 
-extern rad_module_t rlm_eap;
+extern module_t rlm_eap;
 
 /** Resume context for calling a submodule
  *
@@ -56,7 +58,7 @@ static const CONF_PARSER module_config[] = {
 	{ FR_CONF_OFFSET("default_eap_type", FR_TYPE_VOID, rlm_eap_t, default_method),
 			 .dflt = "md5", .func = eap_type_parse },
 
-	{ FR_CONF_OFFSET("type", FR_TYPE_VOID | FR_TYPE_MULTI | FR_TYPE_NOT_EMPTY, rlm_eap_t, submodule_instances),
+	{ FR_CONF_OFFSET("type", FR_TYPE_VOID | FR_TYPE_MULTI | FR_TYPE_NOT_EMPTY, rlm_eap_t, submodule_cs),
 			 .func = submodule_parse },
 
 	{ FR_CONF_DEPRECATED("timer_expire", FR_TYPE_UINT32, rlm_eap_t, timer_limit), .dflt = "60" },
@@ -78,13 +80,13 @@ fr_dict_autoload_t rlm_eap_dict[] = {
 };
 
 static fr_dict_attr_t const *attr_auth_type;
-fr_dict_attr_t const *attr_eap_type;
+static fr_dict_attr_t const *attr_eap_type;
 
 static fr_dict_attr_t const *attr_cisco_avpair;
-fr_dict_attr_t const *attr_eap_message;
-fr_dict_attr_t const *attr_message_authenticator;
-fr_dict_attr_t const *attr_state;
-fr_dict_attr_t const *attr_user_name;
+static fr_dict_attr_t const *attr_eap_message;
+static fr_dict_attr_t const *attr_message_authenticator;
+static fr_dict_attr_t const *attr_state;
+static fr_dict_attr_t const *attr_user_name;
 
 extern fr_dict_attr_autoload_t rlm_eap_dict_attr[];
 fr_dict_attr_autoload_t rlm_eap_dict_attr[] = {
@@ -100,14 +102,13 @@ fr_dict_attr_autoload_t rlm_eap_dict_attr[] = {
 	{ NULL }
 };
 
-static rlm_rcode_t mod_post_proxy(void *instance, UNUSED void *thread, REQUEST *request) CC_HINT(nonnull);
 static rlm_rcode_t mod_authenticate(void *instance, UNUSED void *thread, REQUEST *request) CC_HINT(nonnull);
 static rlm_rcode_t mod_authorize(void *instance, UNUSED void *thread, REQUEST *request) CC_HINT(nonnull);
 
 /** Wrapper around dl_instance which loads submodules based on type = foo pairs
  *
  * @param[in] ctx	to allocate data in (instance of rlm_eap_t).
- * @param[out] out	Where to write a dl_instance_t containing the module handle and instance.
+ * @param[out] out	Where to write child conf section to.
  * @param[in] parent	Base structure address.
  * @param[in] ci	#CONF_PAIR specifying the name of the type module.
  * @param[in] rule	unused.
@@ -115,32 +116,18 @@ static rlm_rcode_t mod_authorize(void *instance, UNUSED void *thread, REQUEST *r
  *	- 0 on success.
  *	- -1 on failure.
  */
-static int submodule_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
+static int submodule_parse(UNUSED TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 			   CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
-{
-	char const			*name = cf_pair_value(cf_item_to_pair(ci));
-	CONF_SECTION			*eap_cs = cf_item_to_section(cf_parent(ci));
-	CONF_SECTION			*submodule_cs;
-	eap_type_t			method;
-	dl_instance_t			*parent_inst;
-	dl_instance_t			*dl_inst;
-	rlm_eap_submodule_t const	*submodule;
-	rlm_eap_t			*inst;
-	int				ret;
-	uint8_t				i;
+{	char const	*name = cf_pair_value(cf_item_to_pair(ci));
+	CONF_SECTION	*eap_cs = cf_item_to_section(cf_parent(ci));
+	CONF_SECTION	*submodule_cs;
+	eap_type_t	method;
 
 	method = eap_name2type(name);
-	if (method == FR_EAP_INVALID) {
+	if (method == FR_EAP_METHOD_INVALID) {
 		cf_log_err(ci, "Unknown EAP type %s", name);
 		return -1;
 	}
-
-	/*
-	 *	Helpfully stored for us by dl_instance()
-	 */
-	parent_inst = cf_data_value(cf_data_find(eap_cs, dl_instance_t, "rlm_eap"));
-	rad_assert(parent_inst);
-	inst = talloc_get_type_abort(parent_inst->data, rlm_eap_t);
 
 #if !defined(HAVE_OPENSSL_SSL_H) || !defined(HAVE_LIBSSL)
 	/*
@@ -156,13 +143,19 @@ static int submodule_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 	 *	have EAP without the TLS types.
 	 */
 	switch (method) {
-	case FR_EAP_TLS:
-	case FR_EAP_TTLS:
-	case FR_EAP_PEAP:
-	case FR_EAP_PWD:
-	case FR_EAP_AKA:
-	case FR_EAP_SIM:
+	case FR_EAP_METHOD_TLS:
+	case FR_EAP_METHOD_TTLS:
+	case FR_EAP_METHOD_PEAP:
+	case FR_EAP_METHOD_PWD:
+	case FR_EAP_METHOD_AKA:
+	case FR_EAP_METHOD_SIM:
+	{
+		rlm_eap_t *inst = ((dl_module_inst_t *)cf_data_value(cf_data_find(eap_cs,
+									       dl_module_inst_t, "rlm_eap")))->data;
+
 		WARN("Ignoring EAP method %s because we don't have OpenSSL support", name);
+
+	}
 		return 0;
 
 	default:
@@ -181,38 +174,7 @@ static int submodule_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 		cf_lineno_set(submodule_cs, cf_lineno(ci));
 	}
 
-	ret = dl_instance(ctx, &dl_inst, submodule_cs, parent_inst, name, DL_TYPE_SUBMODULE);
-	if (ret < 0) return -1;
-
-
-	submodule = (rlm_eap_submodule_t const *)dl_inst->module->common;
-
-	/*
-	 *	Add the methods the submodule provides
-	 */
-	for (i = 0; i < MAX_PROVIDED_METHODS; i++) {
-		if (!submodule->provides[i]) break;
-
-		method = submodule->provides[i];
-		/*
-		 *	Check for duplicates
-		 */
-		if (inst->methods[method].submodule) {
-			CONF_SECTION *conf = inst->methods[method].submodule_inst->conf;
-
-			cf_log_err(ci, "Duplicate EAP-Type %s.  Conflicting entry %s[%u]", name,
-				   cf_filename(conf), cf_lineno(conf));
-			talloc_free(dl_inst);
-			return -1;
-		}
-
-		inst->methods[method].submodule_inst = dl_inst;
-		inst->methods[method].submodule = submodule;
-	}
-
-	rad_assert(i > 0);	/* Yes this is a fatal error */
-
-	*(void **)out = dl_inst;
+	*(void **)out = submodule_cs;
 
 	return 0;
 }
@@ -238,7 +200,7 @@ static int eap_type_parse(UNUSED TALLOC_CTX *ctx, void *out, UNUSED void *parent
 	 *	Ensure that the default EAP type is loaded.
 	 */
 	method = eap_name2type(default_method_name);
-	if (method == FR_EAP_INVALID) {
+	if (method == FR_EAP_METHOD_INVALID) {
 		cf_log_err(ci, "Unknown EAP type %s", default_method_name);
 		return -1;
 	}
@@ -257,7 +219,7 @@ static eap_type_t eap_process_nak(rlm_eap_t *inst, REQUEST *request,
 {
 	unsigned int i;
 	VALUE_PAIR *vp;
-	eap_type_t method = FR_EAP_INVALID;
+	eap_type_t method = FR_EAP_METHOD_INVALID;
 
 	/*
 	 *	The NAK data is the preferred EAP type(s) of
@@ -270,7 +232,7 @@ static eap_type_t eap_process_nak(rlm_eap_t *inst, REQUEST *request,
 	if (!nak->data) {
 		REDEBUG("Peer sent empty (invalid) NAK. Can't select method to continue with");
 
-		return FR_EAP_INVALID;
+		return FR_EAP_METHOD_INVALID;
 	}
 
 	/*
@@ -284,22 +246,22 @@ static eap_type_t eap_process_nak(rlm_eap_t *inst, REQUEST *request,
 		 *	common choices.
 		 */
 		if (nak->data[i] == 0) {
-			RDEBUG("Peer NAK'd indicating it is not willing to continue ");
+			REDEBUG("Peer NAK'd indicating it is not willing to continue ");
 
-			return FR_EAP_INVALID;
+			return FR_EAP_METHOD_INVALID;
 		}
 
 		/*
 		 *	It is invalid to request identity,
 		 *	notification & nak in nak.
 		 */
-		if (nak->data[i] < FR_EAP_MD5) {
+		if (nak->data[i] < FR_EAP_METHOD_MD5) {
 			REDEBUG("Peer NAK'd asking for bad type %s (%d)", eap_type2name(nak->data[i]), nak->data[i]);
 
-			return FR_EAP_INVALID;
+			return FR_EAP_METHOD_INVALID;
 		}
 
-		if ((nak->data[i] >= FR_EAP_MAX_TYPES) ||
+		if ((nak->data[i] >= FR_EAP_METHOD_MAX) ||
 		    !inst->methods[nak->data[i]].submodule) {
 			RDEBUG2("Peer NAK'd asking for unsupported EAP type %s (%d), skipping...",
 				eap_type2name(nak->data[i]),
@@ -339,14 +301,14 @@ static eap_type_t eap_process_nak(rlm_eap_t *inst, REQUEST *request,
 			continue;
 		}
 
-		RDEBUG("Found mutually acceptable type %s (%d)", eap_type2name(nak->data[i]), nak->data[i]);
+		RDEBUG2("Found mutually acceptable type %s (%d)", eap_type2name(nak->data[i]), nak->data[i]);
 
 		method = nak->data[i];
 
 		break;
 	}
 
-	if (method == FR_EAP_INVALID) REDEBUG("No mutually acceptable types found");
+	if (method == FR_EAP_METHOD_INVALID) REDEBUG("No mutually acceptable types found");
 
 	return method;
 }
@@ -364,24 +326,41 @@ static eap_type_t eap_process_nak(rlm_eap_t *inst, REQUEST *request,
  *	- RLM_MODULE_HANDLED	if we're done with this round.
  *	- RLM_MODULE_REJECT	if the user should be rejected.
  */
-static rlm_rcode_t mod_authenticate_result(REQUEST *request, void *instance, UNUSED void *thread,
+static rlm_rcode_t mod_authenticate_result(REQUEST *request, UNUSED void *instance, UNUSED void *thread,
 					   eap_session_t *eap_session, rlm_rcode_t result)
 {
-	rlm_eap_t		*inst = talloc_get_type_abort(instance, rlm_eap_t);
-	rlm_eap_method_t	*method = &inst->methods[eap_session->type];
 	rlm_rcode_t		rcode;
-
-	RDEBUG2("Submodule %s returned", method->submodule->name);
 
 	/*
 	 *	The submodule failed.  Die.
 	 */
-	if (result == RLM_MODULE_INVALID) {
+	switch (result) {
+	case RLM_MODULE_FAIL:
+	case RLM_MODULE_INVALID:
 		eap_fail(eap_session);
 		eap_session_destroy(&eap_session);
 
 		rcode = RLM_MODULE_INVALID;
 		goto finish;
+
+	/*
+	 *	Inconsistent result from submodule...
+	 */
+	case RLM_MODULE_REJECT:
+	case RLM_MODULE_USERLOCK:
+		rad_assert(eap_session->this_round->request->code == FR_EAP_CODE_FAILURE);
+		eap_session->this_round->request->code = FR_EAP_CODE_FAILURE;
+		break;
+
+	/*
+	 *	Definitely shouldn't get this.
+	 */
+	case RLM_MODULE_YIELD:
+		rad_assert(0);
+		break;
+
+	default:
+		break;
 	}
 
 	/*
@@ -395,7 +374,7 @@ static rlm_rcode_t mod_authenticate_result(REQUEST *request, void *instance, UNU
 	 *	it's LEAP, and a response.
 	 */
 	if (((eap_session->this_round->request->code == FR_EAP_CODE_REQUEST) &&
-	    (eap_session->this_round->request->type.num >= FR_EAP_MD5)) ||
+	    (eap_session->this_round->request->type.num >= FR_EAP_METHOD_MD5)) ||
 
 		/*
 		 *	LEAP is a little different.  At Stage 4,
@@ -407,7 +386,7 @@ static rlm_rcode_t mod_authenticate_result(REQUEST *request, void *instance, UNU
 		 *	isn't put into the list.
 		 */
 	    ((eap_session->this_round->response->code == FR_EAP_CODE_RESPONSE) &&
-	     (eap_session->this_round->response->type.num == FR_EAP_LEAP) &&
+	     (eap_session->this_round->response->type.num == FR_EAP_METHOD_LEAP) &&
 	     (eap_session->this_round->request->code == FR_EAP_CODE_SUCCESS) &&
 	     (eap_session->this_round->request->type.num == 0))) {
 		talloc_free(eap_session->prev_round);
@@ -433,15 +412,41 @@ finish:
  * @param[in] request	The current request.
  * @param[in] instance	of rlm_eap.
  * @param[in] thread	UNUSED.
- * @param[in] uctx	the eap_session_t.
+ * @param[in] rctx	the eap_session_t.
  * @return The result of this round of authentication.
  */
-static rlm_rcode_t mod_authenticate_result_async(REQUEST *request, void *instance, void *thread, void *uctx)
+static rlm_rcode_t mod_authenticate_result_async(void *instance, void *thread, REQUEST *request, void *rctx)
 {
-	eap_session_t	*eap_session = talloc_get_type_abort(uctx, eap_session_t);
-	rlm_rcode_t	result = unlang_stack_result(request);
+	eap_session_t	*eap_session = talloc_get_type_abort(rctx, eap_session_t);
 
-	return mod_authenticate_result(request, instance, thread, eap_session, result);
+	return mod_authenticate_result(request, instance, thread, eap_session, eap_session->submodule_rcode);
+}
+
+/** Cancel a call to a submodule
+ *
+ * @param[in] request	The current request.
+ * @param[in] instance	UNUSED.
+ * @param[in] thread	UNUSED.
+ * @param[in] rctx	the eap_session_t
+ * @param[in] action	to perform.
+ */
+static void mod_authenticate_cancel(UNUSED void *instance, UNUSED void *thread, REQUEST *request, void *rctx,
+				    fr_state_signal_t action)
+{
+	eap_session_t	*eap_session;
+
+	if (action != FR_SIGNAL_CANCEL) return;
+
+	RDEBUG2("Request cancelled - Destroying EAP-Session");
+
+	eap_session = talloc_get_type_abort(rctx, eap_session_t);
+
+	/*
+	 *	This is the only safe thing to do.
+	 *	We have no idea what state the submodule
+	 *	left its opaque data in.
+	 */
+	eap_session_destroy(&eap_session);
 }
 
 /** Select the correct callback based on a response
@@ -459,7 +464,7 @@ static rlm_rcode_t mod_authenticate_result_async(REQUEST *request, void *instanc
  *	- RLM_MODULE_YIELD	Yield control back to the interpreter so it can
  *				call the submodule.
  */
-static rlm_rcode_t eap_method_select(rlm_eap_t *inst, void *thread, eap_session_t *eap_session)
+static rlm_rcode_t eap_method_select(rlm_eap_t *inst, UNUSED void *thread, eap_session_t *eap_session)
 {
 	eap_type_data_t			*type = &eap_session->this_round->response->type;
 	REQUEST				*request = eap_session->request;
@@ -469,8 +474,6 @@ static rlm_rcode_t eap_method_select(rlm_eap_t *inst, void *thread, eap_session_
 	eap_type_t			next = inst->default_method;
 	VALUE_PAIR			*vp;
 
-	rlm_rcode_t			rcode;
-
 	/*
 	 *	Session must have been thawed...
 	 */
@@ -479,7 +482,7 @@ static rlm_rcode_t eap_method_select(rlm_eap_t *inst, void *thread, eap_session_
 	/*
 	 *	Don't trust anyone.
 	 */
-	if ((type->num == 0) || (type->num >= FR_EAP_MAX_TYPES)) {
+	if ((type->num == 0) || (type->num >= FR_EAP_METHOD_MAX)) {
 		REDEBUG("Peer sent EAP type number %d, which is outside known range", type->num);
 
 		return RLM_MODULE_INVALID;
@@ -508,7 +511,7 @@ static rlm_rcode_t eap_method_select(rlm_eap_t *inst, void *thread, eap_session_
 	 *	Figure out what to do.
 	 */
 	switch (type->num) {
-	case FR_EAP_IDENTITY:
+	case FR_EAP_METHOD_IDENTITY:
 		/*
 		 *	Allow per-user configuration of EAP types.
 		 */
@@ -521,7 +524,7 @@ static rlm_rcode_t eap_method_select(rlm_eap_t *inst, void *thread, eap_session_
 		/*
 		 *	Ensure it's valid.
 		 */
-		if ((next < FR_EAP_MD5) || (next >= FR_EAP_MAX_TYPES) || (!inst->methods[next].submodule)) {
+		if ((next < FR_EAP_METHOD_MD5) || (next >= FR_EAP_METHOD_MAX) || (!inst->methods[next].submodule)) {
 			REDEBUG2("Tried to start unsupported EAP type %s (%d)",
 				 eap_type2name(next), next);
 			return RLM_MODULE_INVALID;
@@ -531,15 +534,15 @@ static rlm_rcode_t eap_method_select(rlm_eap_t *inst, void *thread, eap_session_
 		/*
 		 *	If any of these fail, we messed badly somewhere
 		 */
-		rad_assert(next >= FR_EAP_MD5);
-		rad_assert(next < FR_EAP_MAX_TYPES);
+		rad_assert(next >= FR_EAP_METHOD_MD5);
+		rad_assert(next < FR_EAP_METHOD_MAX);
 		rad_assert(inst->methods[next].submodule);
 
 		eap_session->process = inst->methods[next].submodule->session_init;
 		eap_session->type = next;
 		goto module_call;
 
-	case FR_EAP_NAK:
+	case FR_EAP_METHOD_NAK:
 		/*
 		 *	Delete old data, if necessary.  If we called a method
 		 *	before, and it initialized itself, we need to free
@@ -575,29 +578,19 @@ static rlm_rcode_t eap_method_select(rlm_eap_t *inst, void *thread, eap_session_
 module_call:
 	method = &inst->methods[eap_session->type];
 
-	unlang_module_yield(request, mod_authenticate_result_async, NULL, eap_session);
-
-	/*
-	 *	mod_authenticate_result will be called after
-	 *	eap_call_submodule finishes.
-	 */
 	RDEBUG2("Calling submodule %s", method->submodule->name);
-//	caller = request->module;
-//	request->module = method->submodule->name;
-	rcode = eap_session->process(method->submodule_inst->data, eap_session);
-//	request->module = caller;
+
+	unlang_module_yield(request, mod_authenticate_result_async, mod_authenticate_cancel, eap_session);
 
 	/*
-	 *	If the submodule yielded, then setup a resumption
-	 *	frame for when it finishes.
+	 *	If we really want to, we can do all this on the C stack later...
+	 *	We just need to push equivalent calls into unlang in case the
+	 *	submodule yields.
 	 */
-	if (rcode == RLM_MODULE_YIELD) return RLM_MODULE_YIELD;
+	unlang_module_push(&eap_session->submodule_rcode, request,
+			   method->submodule_inst, eap_session->process, false);
 
-	/*
-	 *	If the submodule didn't yield call the result
-	 *	function directly using the C stack.
-	 */
-	return mod_authenticate_result(request, inst, thread, eap_session, rcode);
+	return RLM_MODULE_YIELD;
 }
 
 static rlm_rcode_t mod_authenticate(void *instance, void *thread, REQUEST *request)
@@ -616,7 +609,7 @@ static rlm_rcode_t mod_authenticate(void *instance, void *thread, REQUEST *reque
 	 *	attribute.  The relevant decoder should have already
 	 *	concatenated the fragments into a single buffer.
 	 */
-	eap_packet = eap_vp2packet(request, request->packet->vps);
+	eap_packet = eap_packet_from_vp(request, request->packet->vps);
 	if (!eap_packet) {
 		RPERROR("Malformed EAP Message");
 		return RLM_MODULE_FAIL;
@@ -628,7 +621,7 @@ static rlm_rcode_t mod_authenticate(void *instance, void *thread, REQUEST *reque
 	 *	retrieve the existing eap_session from the request
 	 *	data.
 	 */
-	eap_session = eap_session_continue(&eap_packet, inst, request);
+	eap_session = eap_session_continue(instance, &eap_packet, request);
 	if (!eap_session) return RLM_MODULE_INVALID;	/* Don't emit error here, it will mask the real issue */
 
 	/*
@@ -668,7 +661,7 @@ static rlm_rcode_t mod_authorize(void *instance, UNUSED void *thread, REQUEST *r
 	 *
 	 *	We therefore send an EAP Identity request.
 	 */
-	status = eap_start(inst, request);
+	status = eap_start(request, inst->methods, inst->ignore_unknown_types);
 	switch (status) {
 	case RLM_MODULE_NOOP:
 	case RLM_MODULE_FAIL:
@@ -686,7 +679,7 @@ static rlm_rcode_t mod_authorize(void *instance, UNUSED void *thread, REQUEST *r
 	return RLM_MODULE_UPDATED;
 }
 
-#ifdef WITH_PROXY
+#if 0
 /*
  *	If we're proxying EAP, then there may be magic we need
  *	to do.
@@ -756,7 +749,7 @@ static rlm_rcode_t mod_post_proxy(void *instance, UNUSED void *thread, REQUEST *
 		 *	it's LEAP, and a response.
 		 */
 		if ((eap_session->this_round->request->code == FR_EAP_CODE_REQUEST) &&
-		    (eap_session->this_round->request->type.num >= FR_EAP_MD5)) {
+		    (eap_session->this_round->request->type.num >= FR_EAP_METHOD_MD5)) {
 			talloc_free(eap_session->prev_round);
 			eap_session->prev_round = eap_session->this_round;
 			eap_session->this_round = NULL;
@@ -924,7 +917,7 @@ static rlm_rcode_t mod_post_auth(void *instance, UNUSED void *thread, REQUEST *r
 	 *	Reconstruct the EAP packet from EAP-Message fragments
 	 *	in the request.
 	 */
-	eap_packet = eap_vp2packet(request, request->packet->vps);
+	eap_packet = eap_packet_from_vp(request, request->packet->vps);
 	if (!eap_packet) {
 		RPERROR("Malformed EAP Message");
 		return RLM_MODULE_FAIL;
@@ -935,7 +928,7 @@ static rlm_rcode_t mod_post_auth(void *instance, UNUSED void *thread, REQUEST *r
 	 *	data.  This will have been added to the request
 	 *	data by the state API.
 	 */
-	eap_session = eap_session_continue(&eap_packet, inst, request);
+	eap_session = eap_session_continue(instance, &eap_packet, request);
 	if (!eap_session) {
 		RDEBUG2("Failed to get eap_session, probably already removed, not inserting EAP-Failure");
 		return RLM_MODULE_NOOP;
@@ -950,7 +943,7 @@ static rlm_rcode_t mod_post_auth(void *instance, UNUSED void *thread, REQUEST *r
 	 *	RADIUS protocol code will calculate the correct value later...
 	 */
 	MEM(pair_update_reply(&vp, attr_message_authenticator) >= 0);
-	fr_pair_value_memsteal(vp, talloc_zero_array(vp, uint8_t, RADIUS_AUTH_VECTOR_LENGTH));
+	fr_pair_value_memsteal(vp, talloc_zero_array(vp, uint8_t, RADIUS_AUTH_VECTOR_LENGTH), false);
 
 	return RLM_MODULE_UPDATED;
 }
@@ -958,8 +951,7 @@ static rlm_rcode_t mod_post_auth(void *instance, UNUSED void *thread, REQUEST *r
 static int mod_instantiate(void *instance, UNUSED CONF_SECTION *cs)
 {
 	rlm_eap_t	*inst = talloc_get_type_abort(instance, rlm_eap_t);
-
-	size_t		i, loaded;
+	size_t		i;
 
 	/*
 	 *	Create our own random pool.
@@ -968,49 +960,16 @@ static int mod_instantiate(void *instance, UNUSED CONF_SECTION *cs)
 	fr_rand_init(&inst->rand_pool, 1);
 	inst->rand_pool.randcnt = 0;
 
-	loaded = talloc_array_length(inst->submodule_instances);
-	for (i = 0; i < loaded; i++) {
-		rlm_eap_submodule_t const	*method;
-		dl_instance_t			*dl_inst = inst->submodule_instances[i];
-
-		if (!dl_inst) continue;	/* Skipped as we don't have SSL support */
-
-		method = (rlm_eap_submodule_t const *)dl_inst->module->common;
-		if ((method->instantiate) &&
-		    ((method->instantiate)(dl_inst->data, dl_inst->conf) < 0)) {
-			return -1;
-		}
-
-#ifndef NDEBUG
-		if (dl_inst->data) module_instance_read_only(dl_inst->data, dl_inst->name);
-#endif
-	}
-
 	return 0;
 }
 
 static int mod_bootstrap(void *instance, CONF_SECTION *cs)
 {
 	rlm_eap_t	*inst = talloc_get_type_abort(instance, rlm_eap_t);
-	size_t		i, loaded, count = 0;
+	size_t		i, j, loaded, count = 0;
 
 	inst->name = cf_section_name2(cs);
 	if (!inst->name) inst->name = "eap";
-
-	loaded = talloc_array_length(inst->submodule_instances);
-
-	for (i = 0; i < loaded; i++) {
-		rlm_eap_submodule_t const	*method;
-		dl_instance_t			*dl_inst = inst->submodule_instances[i];
-
-		if (!dl_inst) continue;	/* Skipped as we don't have SSL support */
-
-		method = (rlm_eap_submodule_t const *)dl_inst->module->common;
-		if ((method->bootstrap) &&
-		    ((method->bootstrap)(dl_inst->data, dl_inst->conf) < 0)) return -1;
-
-		count++;
-	}
 
 	if (fr_dict_enum_add_alias_next(attr_auth_type, inst->name) < 0) {
 		PERROR("Failed adding %s alias", inst->name);
@@ -1018,6 +977,52 @@ static int mod_bootstrap(void *instance, CONF_SECTION *cs)
 	}
 	inst->auth_type = fr_dict_enum_by_alias(attr_auth_type, inst->name, -1);
 	rad_assert(inst->name);
+
+	/*
+	 *	Load and bootstrap the submodules now
+	 *	We have to do that here instead of in a parse function
+	 *	Because the submodule might want to look at its parent
+	 *	and we haven't completed our own bootstrap phase yet.
+	 */
+	loaded = talloc_array_length(inst->submodule_cs);
+	for (i = 0; i < loaded; i++) {
+		eap_type_t			method;
+		CONF_SECTION			*submodule_cs = inst->submodule_cs[i];
+		rlm_eap_submodule_t const	*submodule;
+		module_instance_t		*submodule_inst;
+
+		if (!submodule_cs) continue;	/* Skipped as we don't have SSL support */
+
+		submodule_inst = module_bootstrap(module_by_data(inst), submodule_cs);
+		if (!submodule_inst) return -1;
+		submodule = (rlm_eap_submodule_t const *)submodule_inst->dl_inst->module->common;
+
+		/*
+		 *	Add the methods the submodule provides
+		 */
+		for (j = 0; i < MAX_PROVIDED_METHODS; j++) {
+			if (!submodule->provides[j]) break;
+
+			method = submodule->provides[j];
+			/*
+			 *	Check for duplicates
+			 */
+			if (inst->methods[method].submodule) {
+				CONF_SECTION *conf = inst->methods[method].submodule_inst->dl_inst->conf;
+
+				cf_log_err(submodule_cs, "Duplicate EAP-Type %s.  Conflicting entry %s[%u]",
+					   eap_type2name(method),
+					   cf_filename(conf), cf_lineno(conf));
+
+				return -1;
+			}
+
+			inst->methods[method].submodule_inst = submodule_inst;
+			inst->methods[method].submodule = submodule;
+		}
+
+		count++;
+	}
 
 	if (count == 0) {
 		cf_log_err(cs, "No EAP method configured, module cannot do anything");
@@ -1048,7 +1053,7 @@ static void mod_unload(void)
  *	The module name should be the only globally exported symbol.
  *	That is, everything else should be 'static'.
  */
-rad_module_t rlm_eap = {
+module_t rlm_eap = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "eap",
 	.inst_size	= sizeof(rlm_eap_t),
@@ -1060,9 +1065,6 @@ rad_module_t rlm_eap = {
 	.methods = {
 		[MOD_AUTHENTICATE]	= mod_authenticate,
 		[MOD_AUTHORIZE]		= mod_authorize,
-#ifdef WITH_PROXY
-		[MOD_POST_PROXY]	= mod_post_proxy,
-#endif
 		[MOD_POST_AUTH]		= mod_post_auth
 	},
 };

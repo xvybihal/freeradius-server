@@ -19,7 +19,7 @@
  * @file rlm_radius_udp.c
  * @brief RADIUS UDP transport
  *
- * @copyright 2017  Network RADIUS SARL
+ * @copyright 2017 Network RADIUS SARL
  */
 RCSID("$Id$")
 
@@ -76,10 +76,10 @@ typedef struct {
 	fr_dlist_head_t		opening;      		//!< Opening connections.
 
 	uint32_t		max_connections;  //!< maximum number of open connections
-	struct timeval		connection_timeout;
-	struct timeval		reconnection_delay;
-	struct timeval		idle_timeout;
-	struct timeval		zombie_period;
+	fr_time_delta_t		connection_timeout;
+	fr_time_delta_t		reconnection_delay;
+	fr_time_delta_t		idle_timeout;
+	fr_time_delta_t		zombie_period;
 } fr_io_connection_thread_t;
 
 typedef enum fr_io_connection_state_t {
@@ -124,13 +124,12 @@ typedef struct {
 	int32_t			heap_id;		//!< For the active heap.
 
 	fr_event_timer_t const	*idle_ev;		//!< Idle timeout event.
-	struct timeval		idle_timeout;		//!< When the idle timeout will fire.
+	fr_time_t		idle_timeout;		//!< When the idle timeout will fire.
 
-	struct timeval		mrs_time;		//!< Most recent sent time which had a reply.
-	struct timeval		last_reply;		//!< When we last received a reply.
+	fr_time_t		mrs_time;		//!< Most recent sent time which had a reply.
+	fr_time_t		last_reply;		//!< When we last received a reply.
 
 	fr_event_timer_t const	*zombie_ev;		//!< Zombie timeout.
-	struct timeval		zombie_start;		//!< When the zombie period started.
 
 	fr_dlist_head_t		sent;			//!< List of sent packets.
 
@@ -239,6 +238,7 @@ static fr_dict_attr_t const *attr_original_packet_code;
 static fr_dict_attr_t const *attr_proxy_state;
 static fr_dict_attr_t const *attr_response_length;
 static fr_dict_attr_t const *attr_user_password;
+static fr_dict_attr_t const *attr_packet_type;
 
 extern fr_dict_attr_autoload_t rlm_radius_udp_dict_attr[];
 fr_dict_attr_autoload_t rlm_radius_udp_dict_attr[] = {
@@ -252,6 +252,7 @@ fr_dict_attr_autoload_t rlm_radius_udp_dict_attr[] = {
 	{ .out = &attr_proxy_state, .name = "Proxy-State", .type = FR_TYPE_OCTETS, .dict = &dict_radius},
 	{ .out = &attr_response_length, .name = "Response-Length", .type = FR_TYPE_UINT32, .dict = &dict_radius },
 	{ .out = &attr_user_password, .name = "User-Password", .type = FR_TYPE_STRING, .dict = &dict_radius},
+	{ .out = &attr_packet_type, .name = "Packet-Type", .type = FR_TYPE_UINT32, .dict = &dict_radius },
 	{ NULL }
 };
 
@@ -264,15 +265,15 @@ static void conn_writable(fr_event_list_t *el, int fd, int flags, void *uctx);
 static int conn_write(fr_io_connection_t *c, fr_io_request_t *u);
 static void conn_transition(fr_io_connection_t *c, fr_io_connection_state_t state);
 static void state_transition(fr_io_request_t *u, fr_io_request_state_t state, fr_io_connection_t *c);
-static void conn_zombie_timeout(UNUSED fr_event_list_t *el, UNUSED struct timeval *now, void *uctx);
+static void conn_zombie_timeout(UNUSED fr_event_list_t *el, UNUSED fr_time_t now, void *uctx);
 
 static int conn_cmp(void const *one, void const *two)
 {
 	fr_io_connection_t const *a = talloc_get_type_abort_const(one, fr_io_connection_t);
 	fr_io_connection_t const *b = talloc_get_type_abort_const(two, fr_io_connection_t);
 
-	if (timercmp(&a->mrs_time, &b->mrs_time, <)) return -1;
-	if (timercmp(&a->mrs_time, &b->mrs_time, >)) return +1;
+	if (a->mrs_time < b->mrs_time) return -1;
+	if (a->mrs_time > b->mrs_time) return -1;
 
 	if (a->slots_free < b->slots_free) return -1;
 	if (a->slots_free > b->slots_free) return +1;
@@ -301,7 +302,7 @@ static int queue_cmp(void const *one, void const *two)
 /** Close a socket due to idle timeout
  *
  */
-static void conn_idle_timeout(UNUSED fr_event_list_t *el, UNUSED struct timeval *now, void *uctx)
+static void conn_idle_timeout(UNUSED fr_event_list_t *el, UNUSED fr_time_t now, void *uctx)
 {
 	fr_io_connection_t *c = talloc_get_type_abort(uctx, fr_io_connection_t);
 
@@ -319,7 +320,7 @@ static void conn_idle_timeout(UNUSED fr_event_list_t *el, UNUSED struct timeval 
  */
 static void conn_check_idle(fr_io_connection_t *c)
 {
-	struct timeval when;
+	fr_time_t when;
 
 	/*
 	 *	We set idle (or not) depending on the conneciton
@@ -363,21 +364,18 @@ static void conn_check_idle(fr_io_connection_t *c)
 	 */
 	if (c->idle_ev) return;
 
-	gettimeofday(&when, NULL);
-	when.tv_usec += c->thread->idle_timeout.tv_usec;
-	when.tv_sec += when.tv_usec / USEC;
-	when.tv_usec %= USEC;
+	when = fr_time();
+	when += c->thread->idle_timeout;
 
-	when.tv_sec += c->thread->idle_timeout.tv_sec;
-	when.tv_sec += 1;
-
-	if (timercmp(&when, &c->idle_timeout, >)) {
-		when.tv_sec--;
+	if (when > c->idle_timeout) {
 		c->idle_timeout = when;
 
-		DEBUG("%s - Setting idle timeout to +%pV for connection %s",
-		      c->module_name, fr_box_timeval(c->thread->idle_timeout), c->name);
-		if (fr_event_timer_insert(c, c->thread->el, &c->idle_ev, &c->idle_timeout, conn_idle_timeout, c) < 0) {
+		DEBUG("%s - Setting idle timeout to +%u.%03u for connection %s",
+		      c->module_name,
+		      (uint32_t) (c->thread->idle_timeout / NSEC),
+		      (uint32_t) (c->thread->idle_timeout % NSEC) / 1000000,
+		      c->name);
+		if (fr_event_timer_at(c, c->thread->el, &c->idle_ev, c->idle_timeout, conn_idle_timeout, c) < 0) {
 			ERROR("%s - Failed inserting idle timeout for connection %s",
 			      c->module_name, c->name);
 		}
@@ -387,7 +385,7 @@ static void conn_check_idle(fr_io_connection_t *c)
 
 static int conn_check_zombie(fr_io_connection_t *c)
 {
-	struct timeval when, now;
+	fr_time_t when, now;
 
 	switch (c->state) {
 		/*
@@ -417,7 +415,7 @@ static int conn_check_zombie(fr_io_connection_t *c)
 	/*
 	 *	Check if we can mark the connection as "dead".
 	 */
-	gettimeofday(&now, NULL);
+	now = fr_time();
 	when = c->last_reply;
 
 	/*
@@ -426,8 +424,8 @@ static int conn_check_zombie(fr_io_connection_t *c)
 	 *	Note that we do this check on every packet, which is a
 	 *	bit annoying, but oh well.
 	 */
-	fr_timeval_add(&when, &when, &c->thread->zombie_period);
-	if (timercmp(&when, &now, > )) return 0;
+	when += c->thread->zombie_period;
+	if (when > now) return 0;
 
 	/*
 	 *	The home server hasn't responded in a long time.  Mark
@@ -708,7 +706,7 @@ static int conn_thread_instantiate(fr_io_connection_thread_t *t, fr_event_list_t
 	return 0;
 }
 
-static rlm_rcode_t conn_request_resume(UNUSED REQUEST *request, UNUSED void *instance, UNUSED void *thread, void *ctx)
+static rlm_rcode_t conn_request_resume(UNUSED void *instance, UNUSED void *thread, UNUSED REQUEST *request, void *ctx)
 {
 	fr_io_request_t *u = talloc_get_type_abort(ctx, fr_io_request_t);
 	rlm_rcode_t rcode;
@@ -722,8 +720,6 @@ static rlm_rcode_t conn_request_resume(UNUSED REQUEST *request, UNUSED void *ins
 
 static void conn_transition(fr_io_connection_t *c, fr_io_connection_state_t state)
 {
-	struct timeval when;
-
 	if (c->state == state) return;
 
 	/*
@@ -793,13 +789,9 @@ static void conn_transition(fr_io_connection_t *c, fr_io_connection_state_t stat
 
 		fr_dlist_insert_head(&c->thread->zombie, c);
 
-		gettimeofday(&when, NULL);
-		c->zombie_start = when;
-
-		fr_timeval_add(&when, &when, &c->thread->zombie_period);
 		WARN("%s - Entering Zombie state - connection %s", c->module_name, c->name);
 
-		if (fr_event_timer_insert(c, c->thread->el, &c->zombie_ev, &when, conn_zombie_timeout, c) < 0) {
+		if (fr_event_timer_in(c, c->thread->el, &c->zombie_ev, c ->thread->zombie_period, conn_zombie_timeout, c) < 0) {
 			ERROR("%s - Failed inserting zombie timeout for connection %s",
 			      c->module_name, c->name);
 		}
@@ -828,15 +820,13 @@ static void conn_finished_request(fr_io_connection_t *c, fr_io_request_t *u)
 
 static int conn_timeout_init(fr_event_list_t *el, fr_io_request_t *u, fr_event_cb_t callback)
 {
-	u->time_sent = fr_time();
-	fr_time_to_timeval(&u->timer.start, u->time_sent);
+	u->timer.start = u->time_sent = fr_time();
 
 	if (rr_track_start(&u->timer) < 0) {
 		return -1;
 	}
 
-	if (fr_event_timer_insert(u, el, &u->timer.ev, &u->timer.next,
-				  callback, u) < 0) {
+	if (fr_event_timer_at(u, el, &u->timer.ev, u->timer.next, callback, u) < 0) {
 		return -1;
 	}
 
@@ -846,10 +836,10 @@ static int conn_timeout_init(fr_event_list_t *el, fr_io_request_t *u, fr_event_c
 /** Deal with status check timeouts for transmissions, etc.
  *
  */
-static void status_check_timeout(fr_event_list_t *el, struct timeval *now, void *uctx)
+static void status_check_timeout(fr_event_list_t *el, fr_time_t now, void *uctx)
 {
 	int				rcode;
-	fr_io_request_t	*u = uctx;
+	fr_io_request_t			*u = uctx;
 	fr_io_connection_t		*c = u->c;
 	rlm_radius_udp_connection_t	*radius = c->ctx;
 	REQUEST				*request;
@@ -881,8 +871,8 @@ static void status_check_timeout(fr_event_list_t *el, struct timeval *now, void 
 	/*
 	 *	Insert the next retransmission timer.
 	 */
-	if (fr_event_timer_insert(u, el, &u->timer.ev, &u->timer.next, status_check_timeout, u) < 0) {
-		RDEBUG("Failed inserting retransmission timer for status check - closing connection %s", c->name);
+	if (fr_event_timer_at(u, el, &u->timer.ev, u->timer.next, status_check_timeout, u) < 0) {
+		REDEBUG("Failed inserting retransmission timer for status check - closing connection %s", c->name);
 		talloc_free(c);
 		return;
 	}
@@ -1007,7 +997,7 @@ static void status_check_timeout(fr_event_list_t *el, struct timeval *now, void 
 /** Mark a connection "zombie" due to zombie timeout.
  *
  */
-static void conn_zombie_timeout(UNUSED fr_event_list_t *el, UNUSED struct timeval *now, void *uctx)
+static void conn_zombie_timeout(UNUSED fr_event_list_t *el, UNUSED fr_time_t now, void *uctx)
 {
 	fr_io_connection_t *c = talloc_get_type_abort(uctx, fr_io_connection_t);
 	rlm_radius_udp_connection_t *radius = c->ctx;
@@ -1165,7 +1155,7 @@ static void state_transition(fr_io_request_t *u, fr_io_request_state_t state, fr
 		rad_assert(u->rr == NULL);
 		rad_assert(u->c == NULL);
 		if (u->timer.ev) (void) fr_event_timer_delete(u->thread->el, &u->timer.ev);
-		if (u->yielded) unlang_resumable(u->request);
+		if (u->yielded) unlang_interpret_resumable(u->request);
 		break;
 
 	case REQUEST_IO_STATE_DONE:
@@ -1180,10 +1170,12 @@ static void state_transition(fr_io_request_t *u, fr_io_request_state_t state, fr
 	}
 }
 
+/* ATD - all of this to "end" is 100% RADIUS only */
+
 /** Turn a reply code into a module rcode;
  *
  */
-static rlm_rcode_t code2rcode[FR_MAX_PACKET_CODE] = {
+static rlm_rcode_t code2rcode[FR_RADIUS_MAX_PACKET_CODE] = {
 	[FR_CODE_ACCESS_ACCEPT]		= RLM_MODULE_OK,
 	[FR_CODE_ACCESS_CHALLENGE]	= RLM_MODULE_UPDATED,
 	[FR_CODE_ACCESS_REJECT]		= RLM_MODULE_REJECT,
@@ -1203,7 +1195,7 @@ static rlm_rcode_t code2rcode[FR_MAX_PACKET_CODE] = {
 /** If we get a reply, the request must come from one of a small
  * number of packet types.
  */
-static FR_CODE allowed_replies[FR_MAX_PACKET_CODE] = {
+static FR_CODE allowed_replies[FR_RADIUS_MAX_PACKET_CODE] = {
 	[FR_CODE_ACCESS_ACCEPT]		= FR_CODE_ACCESS_REQUEST,
 	[FR_CODE_ACCESS_CHALLENGE]	= FR_CODE_ACCESS_REQUEST,
 	[FR_CODE_ACCESS_REJECT]		= FR_CODE_ACCESS_REQUEST,
@@ -1286,6 +1278,7 @@ static void status_server_reply(fr_io_connection_t *c, fr_io_request_t *u, REQUE
 
 }
 
+/* ATD END */
 
 /** Read reply packets.
  *
@@ -1329,6 +1322,8 @@ check_active:
 		return;
 	}
 
+ { /* RADIUS START - do various protocol-specific validations */
+
 	/*
 	 *	Replicating?  Drain the socket, but ignore all responses.
 	 *
@@ -1344,7 +1339,7 @@ check_active:
 
 	if (DEBUG_ENABLED3) {
 		DEBUG3("%s - Read packet", c->module_name);
-		fr_radius_print_hex(fr_log_fp, c->buffer, packet_len);
+		fr_log_hex(&default_log, L_DBG, __FILE__, __LINE__, c->buffer, packet_len, NULL);
 	}
 
 	rr = rr_track_find(radius->id, c->buffer[1], NULL);
@@ -1451,7 +1446,7 @@ check_active:
 		 */
 		goto decode_reply;
 
-	} else if (!code || (code >= FR_MAX_PACKET_CODE)) {
+	} else if (!code || (code >= FR_RADIUS_MAX_PACKET_CODE)) {
 		REDEBUG("Unknown reply code %d", code);
 		u->rcode = RLM_MODULE_INVALID;
 
@@ -1486,7 +1481,7 @@ check_active:
 		 *	OK for an ACK, or FAIL for a NAK.
 		 */
 	} else {
-		VALUE_PAIR *vp;
+		VALUE_PAIR *reply, *vp;
 
 check_reply:
 		u->rcode = code2rcode[code];
@@ -1497,7 +1492,7 @@ check_reply:
 		}
 
 	decode_reply:
-		vp = NULL;
+		reply = NULL;
 
 		/*
 		 *	Decode the attributes, in the context of the
@@ -1505,16 +1500,36 @@ check_reply:
 		 *	malformed, or if we run out of memory.
 		 */
 		if (fr_radius_decode(request->reply, c->buffer, packet_len, original,
-				     c->inst->secret, talloc_array_length(c->inst->secret) - 1, &vp) < 0) {
+				     c->inst->secret, talloc_array_length(c->inst->secret) - 1, &reply) < 0) {
 			REDEBUG("Failed decoding attributes for packet");
-			fr_pair_list_free(&vp);
+			fr_pair_list_free(&reply);
 			u->rcode = RLM_MODULE_INVALID;
 			goto done;
 		}
 
 		RDEBUG("Received %s ID %d length %ld reply packet on connection %s",
 		       fr_packet_codes[code], code, packet_len, c->name);
-		log_request_pair_list(L_DBG_LVL_2, request, vp, NULL);
+		log_request_pair_list(L_DBG_LVL_2, request, reply, NULL);
+
+		/*
+		 *	Delete Proxy-State attributes from the reply.
+		 */
+		fr_pair_delete_by_da(&reply, attr_proxy_state);
+
+		/*
+		 *	If the reply has Message-Authenticator, delete
+		 *	it from the proxy reply so that it isn't
+		 *	copied over to our reply.  But also create a
+		 *	reply:Message-Authenticator attribute, so that
+		 *	it ends up in our reply.
+		 */
+		if (fr_pair_find_by_da(reply, attr_message_authenticator, TAG_ANY)) {
+			fr_pair_delete_by_da(&reply, attr_message_authenticator);
+
+			MEM(vp = fr_pair_afrom_da(request->reply, attr_message_authenticator));
+			(void) fr_pair_value_memcpy(vp, (uint8_t const *) "", 1, false);
+			fr_pair_add(&request->reply->vps, vp);
+		}
 
 		/*
 		 *	@todo - make this programmatic?  i.e. run a
@@ -1526,19 +1541,43 @@ check_reply:
 		 */
 
 		request->reply->code = code;
-		fr_pair_add(&request->reply->vps, vp);
+		fr_pair_add(&request->reply->vps, reply);
 
 		/*
 		 *	Run hard-coded policies on Protocol-Error
 		 */
-		if (code == FR_CODE_PROTOCOL_ERROR) protocol_error_reply(c, request);
+		if (code == FR_CODE_PROTOCOL_ERROR) {
+			protocol_error_reply(c, request);
 
-		/*
-		 *	Run hard-coded policies on packets *we* sent
-		 *	as status checks.
-		 */
-		if (u == radius->status_u) status_server_reply(c, u, request);
+		} else if (u == radius->status_u) {
+			/*
+			 *	Run hard-coded policies on packets *we* sent
+			 *	as status checks.
+			 */
+			status_server_reply(c, u, request);
+
+		} else if ((code == FR_CODE_ACCESS_CHALLENGE) && (request->dict == dict_radius) &&
+			   (request->packet->code == FR_CODE_ACCESS_REQUEST)) {
+			/*
+			 *	Mark up the parent request as being an
+			 *	Access-Challenge.
+			 *
+			 *	We don't do this for other packet
+			 *	types, because the ok/fail nature of
+			 *	the module return code will
+			 *	automatically result in it the parent
+			 *	request returning an ok/fail packet
+			 *	code.
+			 */
+			vp = fr_pair_find_by_da(request->reply->vps, attr_packet_type, TAG_ANY);
+			if (!vp) {
+				MEM(vp = fr_pair_afrom_da(request->reply, attr_packet_type));
+				vp->vp_uint32 = FR_CODE_ACCESS_CHALLENGE;
+				fr_pair_add(&request->reply->vps, vp);
+			}
+		}
 	}
+} /* RADIUS END */
 
 done:
 	rad_assert(request != NULL);
@@ -1555,7 +1594,7 @@ done:
 	/*
 	 *	Remember when we last saw a reply.
 	 */
-	gettimeofday(&c->last_reply, NULL);
+	c->last_reply = fr_time();
 
 	/*
 	 *	Track the Most Recently Started with reply.  If we're
@@ -1568,7 +1607,7 @@ done:
 	case CONN_ACTIVE:
 		if (reinserted) break;
 
-		if (timercmp(&u->timer.start, &c->mrs_time, >)) {
+		if (u->timer.start > c->mrs_time) {
 			(void) fr_heap_extract(c->thread->active, c);
 			c->mrs_time = u->timer.start;
 			(void) fr_heap_insert(c->thread->active, c);
@@ -1577,7 +1616,7 @@ done:
 		break;
 
 	default:
-		if (timercmp(&u->timer.start, &c->mrs_time, >)) {
+		if (u->timer.start > c->mrs_time) {
 			c->mrs_time = u->timer.start;
 		}
 
@@ -1613,7 +1652,7 @@ done:
 	goto redo;
 }
 
-static int retransmit_packet(fr_io_request_t *u, struct timeval *now)
+static int retransmit_packet(fr_io_request_t *u, fr_time_t now)
 {
 	bool				resign = false;
 	int				rcode;
@@ -1669,10 +1708,10 @@ static int retransmit_packet(fr_io_request_t *u, struct timeval *now)
 
 		if (u->acct_delay_time) {
 			uint32_t delay;
-			struct timeval diff;
 
-			fr_timeval_subtract(&diff, now, &u->timer.start);
-			delay = u->initial_delay_time + diff.tv_sec;
+			now -= u->timer.start;
+			delay = now / NSEC;
+			delay += u->initial_delay_time;
 			delay = htonl(delay);
 			memcpy(u->acct_delay_time, &delay, 4);
 
@@ -1759,7 +1798,7 @@ static int retransmit_packet(fr_io_request_t *u, struct timeval *now)
 /** Deal with per-request timeouts for transmissions, etc.
  *
  */
-static void response_timeout(fr_event_list_t *el, struct timeval *now, void *uctx)
+static void response_timeout(fr_event_list_t *el, fr_time_t now, void *uctx)
 {
 	int				rcode;
 	fr_io_request_t			*u = uctx;
@@ -1796,7 +1835,7 @@ static void response_timeout(fr_event_list_t *el, struct timeval *now, void *uct
 	/*
 	 *	Insert the next retransmission timer.
 	 */
-	if (fr_event_timer_insert(u, el, &u->timer.ev, &u->timer.next, response_timeout, u) < 0) {
+	if (fr_event_timer_at(u, el, &u->timer.ev, u->timer.next, response_timeout, u) < 0) {
 		RDEBUG("Failed inserting retransmission timer");
 		conn_finished_request(c, u);
 		return;
@@ -1835,7 +1874,7 @@ get_new_connection:
 	 *	t->queued
 	 */
 	RDEBUG("Retransmitting ID %d on connection %s", u->rr->id, c->name);
-	rcode = retransmit_packet(u, now);
+	rcode = retransmit_packet(u, fr_time());
 	if (rcode < 0) {
 		RDEBUG("Failed retransmitting packet for connection %s", c->name);
 		state_transition(u, REQUEST_IO_STATE_QUEUED, NULL);
@@ -1992,7 +2031,7 @@ static int conn_write(fr_io_connection_t *c, fr_io_request_t *u)
 		memcpy(attr + 2, &c->inst->parent->proxy_state, 4);
 
 		vp = fr_pair_afrom_da(u, attr_proxy_state);
-		fr_pair_value_memcpy(vp, attr + 2, 4);
+		fr_pair_value_memcpy(vp, attr + 2, 4, true);
 		fr_pair_add(&u->extra, vp);
 
 		RINDENT();
@@ -2085,7 +2124,7 @@ static int conn_write(fr_io_connection_t *c, fr_io_request_t *u)
 		VALUE_PAIR *vp;
 
 		vp = fr_pair_afrom_da(u, attr_message_authenticator);
-		fr_pair_value_memcpy(vp, msg + 2, 16);
+		fr_pair_value_memcpy(vp, msg + 2, 16, true);
 		fr_pair_add(&u->extra, vp);
 
 		RINDENT();
@@ -2093,7 +2132,7 @@ static int conn_write(fr_io_connection_t *c, fr_io_request_t *u)
 		REXDENT();
 	}
 
-	RHEXDUMP(L_DBG_LVL_3, c->buffer, packet_len, "Encoded packet");
+	RHEXDUMP3(c->buffer, packet_len, "Encoded packet");
 
 	request->module = module_name;
 
@@ -2472,7 +2511,7 @@ static fr_connection_state_t _conn_failed(UNUSED int fd, fr_connection_state_t s
 static fr_connection_state_t _conn_open(UNUSED fr_event_list_t *el, int fd, void *uctx)
 {
 	fr_io_connection_t		*c = talloc_get_type_abort(uctx, fr_io_connection_t);
-	fr_io_connection_thread_t		*t = c->thread;
+	fr_io_connection_thread_t	*t = c->thread;
 	rlm_radius_udp_connection_t	*radius = c->ctx;
 
 	talloc_const_free(c->name);
@@ -2488,8 +2527,7 @@ static fr_connection_state_t _conn_open(UNUSED fr_event_list_t *el, int fd, void
 	 *
 	 *	@todo - connection negotiation via Status-Server
 	 */
-	gettimeofday(&c->mrs_time, NULL);
-	c->last_reply = c->mrs_time;
+	c->last_reply = c->mrs_time = fr_time();
 
 	/*
 	 *	If the connection is open, it must be writable.
@@ -2497,9 +2535,9 @@ static fr_connection_state_t _conn_open(UNUSED fr_event_list_t *el, int fd, void
 	rad_assert(c->state == CONN_OPENING);
 
 	rad_assert(c->zombie_ev == NULL);
-	memset(&c->zombie_start, 0, sizeof(c->zombie_start));
 	fr_dlist_init(&c->sent, fr_io_request_t, entry);
 
+{ /* RADIUS start */
 	/*
 	 *	Status-Server checks.  Manually build the packet, and
 	 *	all of it's associated glue.
@@ -2540,7 +2578,7 @@ static fr_connection_state_t _conn_open(UNUSED fr_event_list_t *el, int fd, void
 				/*
 				 *	Skip things which aren't attributes.
 				 */
-				if (map->lhs->type != TMPL_TYPE_ATTR) continue;
+				if (!tmpl_is_attr(map->lhs)) continue;
 
 				/*
 				 *	Disallow signalling attributes.
@@ -2613,6 +2651,7 @@ static fr_connection_state_t _conn_open(UNUSED fr_event_list_t *el, int fd, void
 		u->timer.retry = &c->inst->parent->retry[u->code];
 		radius->status_check_blocked = false;
 	}
+} /* RADIUS end */
 
 	/*
 	 *	Now that we're open, assume that the connection is
@@ -2684,7 +2723,7 @@ static void conn_alloc(rlm_radius_udp_t *inst, fr_io_connection_thread_t *t)
 	}
 	fr_dlist_init(&c->sent, fr_io_request_t, entry);
 
-	c->conn = fr_connection_alloc(c, t->el, &t->connection_timeout, &t->reconnection_delay,
+	c->conn = fr_connection_alloc(c, t->el, t->connection_timeout, t->reconnection_delay,
 				      _conn_init,
 				      _conn_open,
 				      _conn_close,
@@ -2732,7 +2771,7 @@ static rlm_rcode_t mod_push(void *instance, REQUEST *request, void *request_io_c
 	fr_io_connection_t		*c;
 
 	rad_assert(request->packet->code > 0);
-	rad_assert(request->packet->code < FR_MAX_PACKET_CODE);
+	rad_assert(request->packet->code < FR_RADIUS_MAX_PACKET_CODE);
 
 	/*
 	 *	If configured, and we don't have any active
@@ -2840,20 +2879,18 @@ static void mod_signal(REQUEST *request, void *instance, UNUSED void *thread, vo
 {
 	rlm_radius_udp_t *inst = talloc_get_type_abort(instance, rlm_radius_udp_t);
 	fr_io_request_t *u = talloc_get_type_abort(request_io_ctx, fr_io_request_t);
-	struct timeval now;
 
 	if (action != FR_SIGNAL_DUP) return;
 
 	/*
-	 *	ASychronous mode means that we do retransmission, and
+	 *	Asychronous mode means that we do retransmission, and
 	 *	we don't rely on the retransmission from the NAS.
 	 */
 	if (!inst->parent->synchronous) return;
 
 	RDEBUG("retransmitting proxied request");
 
-	gettimeofday(&now, NULL);
-	retransmit_packet(u, &now);
+	retransmit_packet(u, fr_time());
 }
 
 
@@ -2963,7 +3000,7 @@ static int mod_thread_instantiate(UNUSED CONF_SECTION const *cs, void *instance,
 	COPY(idle_timeout);
 	COPY(zombie_period);
 
-	rcode =conn_thread_instantiate(t, el);
+	rcode = conn_thread_instantiate(t, el);
 	if (rcode < 0) return rcode;
 
 	conn_alloc(inst, t);

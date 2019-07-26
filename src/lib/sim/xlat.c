@@ -23,7 +23,7 @@
 
 #include <freeradius-devel/server/base.h>
 #include "base.h"
-#include "sim_attrs.h"
+#include "attrs.h"
 
 static int sim_xlat_refs = 0;
 
@@ -46,9 +46,9 @@ static ssize_t sim_xlat_id_method(TALLOC_CTX *ctx, char **out, UNUSED size_t out
 	/*
 	 *  Trim whitespace
 	 */
-	while (isspace(*p) && p++);
+	fr_skip_spaces(p);
 
-	slen = tmpl_afrom_attr_substr(our_ctx, &vpt, p,
+	slen = tmpl_afrom_attr_substr(our_ctx, NULL, &vpt, p,
 				      &(vp_tmpl_rules_t){
 				      		.dict_def = request->dict,
 				      		.prefix = VP_ATTR_REF_PREFIX_AUTO
@@ -100,9 +100,9 @@ static ssize_t sim_xlat_id_type(TALLOC_CTX *ctx, char **out, UNUSED size_t outle
 	/*
 	 *  Trim whitespace
 	 */
-	while (isspace(*p) && p++);
+	fr_skip_spaces(p);
 
-	slen = tmpl_afrom_attr_substr(our_ctx, &vpt, p,
+	slen = tmpl_afrom_attr_substr(our_ctx, NULL, &vpt, p,
 				      &(vp_tmpl_rules_t){
 				      		.dict_def = request->dict,
 				      		.prefix = VP_ATTR_REF_PREFIX_AUTO
@@ -153,9 +153,9 @@ static ssize_t sim_xlat_3gpp_pseudonym_key_index(TALLOC_CTX *ctx, char **out, UN
 	/*
 	 *  Trim whitespace
 	 */
-	while (isspace(*p) && p++);
+	fr_skip_spaces(p);
 
-	slen = tmpl_afrom_attr_substr(our_ctx, &vpt, p,
+	slen = tmpl_afrom_attr_substr(our_ctx, NULL, &vpt, p,
 				      &(vp_tmpl_rules_t){
 				      		.dict_def = request->dict,
 				      		.prefix = VP_ATTR_REF_PREFIX_AUTO
@@ -201,9 +201,9 @@ static ssize_t sim_xlat_3gpp_pseudonym_decrypt(TALLOC_CTX *ctx, char **out, UNUS
 	/*
 	 *  Trim whitespace
 	 */
-	while (isspace(*p) && p++);
+	fr_skip_spaces(p);
 
-	slen = tmpl_afrom_attr_substr(our_ctx, &id_vpt, p,
+	slen = tmpl_afrom_attr_substr(our_ctx, NULL, &id_vpt, p,
 				      &(vp_tmpl_rules_t){
 				      		.dict_def = request->dict,
 				      		.prefix = VP_ATTR_REF_PREFIX_AUTO
@@ -222,7 +222,7 @@ static ssize_t sim_xlat_3gpp_pseudonym_decrypt(TALLOC_CTX *ctx, char **out, UNUS
 	}
 	p++;
 
-	slen = tmpl_afrom_attr_substr(our_ctx, &key_vpt, p,
+	slen = tmpl_afrom_attr_substr(our_ctx, NULL, &key_vpt, p,
 				      &(vp_tmpl_rules_t){
 				      		.dict_def = request->dict,
 				      		.prefix = VP_ATTR_REF_PREFIX_AUTO
@@ -290,7 +290,7 @@ static ssize_t sim_xlat_3gpp_pseudonym_decrypt(TALLOC_CTX *ctx, char **out, UNUS
 	return talloc_array_length(*out) - 1;
 }
 
-/** Decrypts a 3gpp pseudonym
+/** Encrypts a 3gpp pseudonym
  *
  *	%{sim_id_3gpp_pseudonym_encrypt:&id_attr &key_attr key_index}
  *
@@ -306,15 +306,16 @@ static ssize_t sim_xlat_3gpp_pseudonym_encrypt(TALLOC_CTX *ctx, char **out, UNUS
 	unsigned long		key_index;
 	char			encrypted[SIM_3GPP_PSEUDONYM_LEN + 1];
 	char const		*p = fmt, *id;
+	char const		*id_p, *id_end;
 	fr_sim_id_type_t	type_hint;
 	fr_sim_method_hint_t	method_hint;
 
 	/*
 	 *  Trim whitespace
 	 */
-	while (isspace(*p) && p++);
+	fr_skip_spaces(p);
 
-	slen = tmpl_afrom_attr_substr(our_ctx, &id_vpt, p,
+	slen = tmpl_afrom_attr_substr(our_ctx, NULL, &id_vpt, p,
 				      &(vp_tmpl_rules_t){
 				      		.dict_def = request->dict,
 				      		.prefix = VP_ATTR_REF_PREFIX_AUTO
@@ -333,7 +334,7 @@ static ssize_t sim_xlat_3gpp_pseudonym_encrypt(TALLOC_CTX *ctx, char **out, UNUS
 	}
 	p++;
 
-	slen = tmpl_afrom_attr_substr(our_ctx, &key_vpt, p,
+	slen = tmpl_afrom_attr_substr(our_ctx, NULL, &key_vpt, p,
 				      &(vp_tmpl_rules_t){
 				      		.dict_def = request->dict,
 				      		.prefix = VP_ATTR_REF_PREFIX_AUTO
@@ -382,42 +383,78 @@ static ssize_t sim_xlat_3gpp_pseudonym_encrypt(TALLOC_CTX *ctx, char **out, UNUS
 	}
 
 	/*
-	 *	Determine what type/method hints are in
-	 *	the current ID.
+	 *	Determine what type/method hints are in the current ID.
 	 */
 	id_len = talloc_array_length(id) - 1;
-	if (id_len != (SIM_IMSI_MAX_LEN + 1)) {	/* +1 for ID tag */
+	if (id_len == (SIM_IMSI_MAX_LEN + 1)) {	/* +1 for ID tag */
+		if (fr_sim_id_type(&type_hint, &method_hint, id, id_len) < 0) {
+			RPEDEBUG2("SIM ID \"%pV\" has unrecognised format", fr_box_strvalue_len(id, id_len));
+			goto error;
+		}
+
+		if (type_hint != SIM_ID_TYPE_PERMANENT) {
+			REDEBUG2("SIM ID \"%pV\" is not a permanent identity (IMSI)", fr_box_strvalue_len(id, id_len));
+			goto error;
+		}
+
+		switch (method_hint) {
+		case SIM_METHOD_HINT_SIM:
+			tag = SIM_ID_TAG_PSEUDONYM_SIM_B64;
+			break;
+
+		case SIM_METHOD_HINT_AKA:
+			tag = SIM_ID_TAG_PSEUDONYM_AKA_B64;
+			break;
+
+		case SIM_METHOD_HINT_AKA_PRIME:
+			tag = SIM_ID_TAG_PSEUDONYM_AKA_PRIME_B64;
+			break;
+
+		case SIM_METHOD_HINT_UNKNOWN:
+			REDEBUG2("SIM ID \"%pV\" does not contain a method hint", fr_box_strvalue_len(id, id_len));
+			goto error;
+		}
+
+		id_p = id + 1;
+		id_end = (id_p + id_len) - 1;
+	/*
+	 *	ID lacks a hint byte, figure it out from &control:EAP-Type
+	 */
+	} else if ((id_len >= SIM_IMSI_MIN_LEN) && (id_len <= SIM_IMSI_MAX_LEN)) {
+		VALUE_PAIR *eap_type;
+
+		eap_type = fr_pair_find_by_da(request->control, attr_eap_type, TAG_ANY);
+		if (!eap_type) {
+			REDEBUG("SIM ID does not contain method hint, and no &control:EAP-Type found.  "
+				"Don't know what tag to prepend to encrypted identity");
+			goto error;
+		}
+
+		switch (eap_type->vp_uint32) {
+		case FR_EAP_TYPE_VALUE_SIM:
+			tag = SIM_ID_TAG_PSEUDONYM_SIM_B64;
+			break;
+
+		case FR_EAP_TYPE_VALUE_AKA:
+			tag = SIM_ID_TAG_PSEUDONYM_AKA_B64;
+			break;
+
+		case FR_EAP_TYPE_VALUE_AKA_PRIME:
+			tag = SIM_ID_TAG_PSEUDONYM_AKA_PRIME_B64;
+			break;
+
+		default:
+			REDEBUG("&control:EAP-Type does not match a SIM based EAP-Type (SIM, AKA, AKA-Prime)");
+			break;
+		}
+
+		id_p = id;
+		id_end = id_p + id_len;
+	} else {
 		REDEBUG2("IMSI incorrect length, expected %i bytes, got %zu bytes", SIM_IMSI_MAX_LEN + 1,
 			 id_len);
 		goto error;
-	}
 
-	if (fr_sim_id_type(&type_hint, &method_hint, id, id_len) < 0) {
-		RPEDEBUG2("SIM ID \"%pV\" has unrecognised format", fr_box_strvalue_len(id, id_len));
-		goto error;
-	}
-
-	if (type_hint != SIM_ID_TYPE_PERMANENT) {
-		REDEBUG2("SIM ID \"%pV\" is not a permanent identity (IMSI)", fr_box_strvalue_len(id, id_len));
-		goto error;
-	}
-
-	switch (method_hint) {
-	case SIM_METHOD_HINT_SIM:
-		tag = SIM_ID_TAG_PSEUDONYM_SIM_B64;
-		break;
-
-	case SIM_METHOD_HINT_AKA:
-		tag = SIM_ID_TAG_PSEUDONYM_AKA_B64;
-		break;
-
-	case SIM_METHOD_HINT_AKA_PRIME:
-		tag = SIM_ID_TAG_PSEUDONYM_AKA_PRIME_B64;
-		break;
-
-	case SIM_METHOD_HINT_UNKNOWN:
-		REDEBUG2("SIM ID \"%pV\" does not contain a method hint", fr_box_strvalue_len(id, id_len));
-		goto error;
 	}
 
 	/*
@@ -425,7 +462,7 @@ static ssize_t sim_xlat_3gpp_pseudonym_encrypt(TALLOC_CTX *ctx, char **out, UNUS
 	 *
 	 *	Strip existing tag from the permanent id
 	 */
-	if (fr_sim_id_3gpp_pseudonym_encrypt(encrypted, id + 1, id_len - 1, tag, (uint8_t)key_index, key) < 0) {
+	if (fr_sim_id_3gpp_pseudonym_encrypt(encrypted, id_p, id_end - id_p, tag, (uint8_t)key_index, key) < 0) {
 		RPEDEBUG2("Failed encrypting SIM ID \"%pV\"", fr_box_strvalue_len(id, id_len));
 		return -1;
 	}

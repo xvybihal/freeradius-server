@@ -45,10 +45,6 @@ typedef struct {
 	bool 		threads;		//!< Whether to create new interpreters on a per-instance/per-thread
 						//!< basis, or use a single mutex protected interpreter.
 
-	pthread_key_t	key;			//!< Key to access the thread local and instance specific interpreter.
-	pthread_mutex_t	*mutex;			//!< Mutex used to protect interpreter, when running with a single
-						//!< interpreter (threads = no).
-
 	bool 		jit;			//!< Whether the linked interpreter is Lua 5.1 or LuaJIT.
 	const char	*xlat_name;		//!< Name of this instance.
 	const char 	*module;		//!< Full path to lua script to load and execute.
@@ -80,11 +76,21 @@ typedef struct {
 } rlm_lua_thread_t;
 
 /* lua.c */
-int rlm_lua_init(lua_State **out, rlm_lua_t const *instance);
-int do_lua(rlm_lua_t const *inst, rlm_lua_thread_t *thread, REQUEST *request, char const *funcname);
-bool rlm_lua_isjit(lua_State *L);
-char const *rlm_lua_version(lua_State *L);
+int		fr_lua_init(lua_State **out, rlm_lua_t const *instance);
+int		fr_lua_run(rlm_lua_t const *inst, rlm_lua_thread_t *thread, REQUEST *request, char const *funcname);
+bool		fr_lua_isjit(lua_State *L);
+char const	*fr_lua_version(lua_State *L);
 
-/* aux.c */
-int aux_jit_funcs_register(rlm_lua_t const *inst, lua_State *L);
-int aux_funcs_register(rlm_lua_t const *inst, lua_State *L);
+/* util.c */
+void		fr_lua_util_jit_log_debug(char const *msg);
+void		fr_lua_util_jit_log_info(char const *msg);
+void		fr_lua_util_jit_log_warn(char const *msg);
+void		fr_lua_util_jit_log_error(char const *msg);
+
+int		fr_lua_util_jit_log_register(rlm_lua_t const *inst, lua_State *L);
+int		fr_lua_util_log_register(rlm_lua_t const *inst, lua_State *L);
+void		fr_lua_util_set_inst(rlm_lua_t const *inst);
+rlm_lua_t const	*fr_lua_util_get_inst(void);
+void		fr_lua_util_set_request(REQUEST *request);
+REQUEST		*fr_lua_util_get_request(void);
+void		fr_lua_util_fr_register(lua_State *L);

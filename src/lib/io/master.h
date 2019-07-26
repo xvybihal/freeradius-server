@@ -21,7 +21,7 @@
  * @file io/master.h
  * @brief Master IO handler
  *
- * @copyright 2018 Alan DeKok <aland@freeradius.org>
+ * @copyright 2018 Alan DeKok (aland@freeradius.org)
  */
 RCSIDH(master_h, "$Id$")
 
@@ -72,25 +72,25 @@ typedef struct {
  *  creates the listener, and adds it to the scheduler.
  */
 typedef struct {
-	dl_instance_t const   		*dl_inst;			//!< our parent dl_inst
+	dl_module_inst_t const   		*dl_inst;			//!< our parent dl_inst
 
 	uint32_t			max_connections;		//!< maximum number of connections to allow
 	uint32_t			max_clients;			//!< maximum number of dynamic clients to allow
 	uint32_t			max_pending_packets;		//!< maximum number of pending packets
 
-	struct timeval			cleanup_delay;			//!< for Access-Request packets
-	struct timeval			idle_timeout;			//!< for dynamic clients
-	struct timeval			nak_lifetime;			//!< lifetime of NAKed clients
-	struct timeval			check_interval;			//!< polling for closed sockets
+	fr_time_delta_t			cleanup_delay;			//!< for Access-Request packets
+	fr_time_delta_t			idle_timeout;			//!< for dynamic clients
+	fr_time_delta_t			nak_lifetime;			//!< lifetime of NAKed clients
+	fr_time_delta_t			check_interval;			//!< polling for closed sockets
 
 	bool				dynamic_clients;		//!< do we have dynamic clients.
 
 	CONF_SECTION			*server_cs;			//!< server CS for this listener
 
-	dl_instance_t			*submodule;			//!< As provided by the transport_parse
+	dl_module_inst_t			*submodule;			//!< As provided by the transport_parse
 									///< callback.  Broken out into the
 									///< app_io_* fields below for convenience.
-	dl_instance_t			*dynamic_submodule;		//!< for dynamically defined clients
+	dl_module_inst_t			*dynamic_submodule;		//!< for dynamically defined clients
 
 	fr_app_t			*app;				//!< main protocol handler
 	void				*app_instance;			//!< instance data for main protocol handler
@@ -110,8 +110,6 @@ extern fr_app_io_t fr_master_app_io;
 fr_trie_t *fr_master_io_network(TALLOC_CTX *ctx, int af, fr_ipaddr_t *allow, fr_ipaddr_t *deny);
 int fr_master_io_listen(TALLOC_CTX *ctx, fr_io_instance_t *io, fr_schedule_t *sc,
 			size_t default_message_size, size_t num_messages) CC_HINT(nonnull);
-int fr_app_process_bootstrap(dl_instance_t **type_submodule, CONF_SECTION *conf, CONF_SECTION *server_cs);
-int fr_app_process_instantiate(dl_instance_t **type_submodule, dl_instance_t **type_submodule_by_code, int code_max, CONF_SECTION *conf);
 
 #ifdef __cplusplus
 }

@@ -19,9 +19,9 @@
  * @file src/lib/server/dependency.c
  * @brief Check version numbers of dependencies.
  *
- * @copyright 1999-2014  The FreeRADIUS server project
- * @copyright 2012  Alan DeKok <aland@freeradius.org>
- * @copyright 2000  Chris Parker <cparker@starnetusa.com>
+ * @copyright 1999-2014 The FreeRADIUS server project
+ * @copyright 2012 Alan DeKok (aland@freeradius.org)
+ * @copyright 2000 Chris Parker (cparker@starnetusa.com)
  */
 
 RCSID("$Id$")
@@ -50,6 +50,8 @@ static long ssl_built = OPENSSL_VERSION_NUMBER;
  *
  * Where status >= 0 && < 10 means beta, and status 10 means release.
  *
+ *	https://wiki.openssl.org/index.php/Versioning
+ *
  * Startup check for whether the linked version of OpenSSL matches the
  * version the server was built against.
  *
@@ -62,6 +64,24 @@ int ssl_check_consistency(void)
 	long ssl_linked;
 
 	ssl_linked = SSLeay();
+
+	/*
+	 *	Major and minor versions mismatch, that's bad.
+	 */
+	if ((ssl_linked & 0xfff00000) != (ssl_built & 0xfff00000)) goto mismatch;
+
+	/*
+	 *	1.1.0 and later export all of the APIs we need, so we
+	 *	don't care about mismatches in fix / patch / status
+	 *	fields.  If the major && minor fields match, that's
+	 *	good enough.
+	 */
+	if ((ssl_linked & 0xfff00000) >= 0x10100000) return 0;
+
+	/*
+	 *	Before 1.1.0, we need all kinds of stupid checks to
+	 *	see if it might work.
+	 */
 
 	/*
 	 *	Status mismatch always triggers error.
@@ -378,14 +398,6 @@ void dependency_features_init(CONF_SECTION *cs)
 #endif
 				);
 
-	dependency_feature_add(cs, "osfc2",
-#ifdef OSFC2
-				true
-#else
-				false
-#endif
-				);
-
 	dependency_feature_add(cs, "proxy",
 #ifdef WITH_PROXY
 				true
@@ -395,7 +407,15 @@ void dependency_features_init(CONF_SECTION *cs)
 				);
 
 	dependency_feature_add(cs, "regex-pcre",
-#if defined(HAVE_REGEX_PCRE2) || defined(HAVE_REGEX_PCRE)
+#ifdef HAVE_REGEX_PCRE
+				true
+#else
+				false
+#endif
+				);
+
+	dependency_feature_add(cs, "regex-pcre2",
+#ifdef HAVE_REGEX_PCRE2
 				true
 #else
 				false
@@ -418,6 +438,14 @@ void dependency_features_init(CONF_SECTION *cs)
 
 	dependency_feature_add(cs, "stats",
 #ifdef WITH_STATS
+				true
+#else
+				false
+#endif
+				);
+
+	dependency_feature_add(cs, "systemd",
+#ifdef HAVE_SYSTEMD
 				true
 #else
 				false

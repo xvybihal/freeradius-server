@@ -112,7 +112,7 @@ mailing lists first to determine whether it really is a defect or
 missing feature.
 
 Instructions for gathering data for defect reports can be found in
-``doc/bugs.md`` or on the [wiki](https://wiki.freeradius.org/project/bug-reports).
+``doc/source/bugs.md`` or on the [wiki](https://wiki.freeradius.org/project/bug-reports).
 
 Under no circumstances should the issue tracker be used for support
 requests, those questions belong on the user's mailing list.  If you
@@ -158,7 +158,7 @@ Technical support, managed systems support, custom deployments,
 sponsored feature development and many other commercial services
 are available from [Network RADIUS](https://www.networkradius.com).
 
-[CoverityStatus]: https://scan.coverity.com/projects/58/badge.svg? "Coverity Status"
+[CoverityStatus]: https://scan.coverity.com/projects/58/badge.svg?flat=1 "Coverity Status"
 [CoverityStatusLink]: https://scan.coverity.com/projects/58
-[BuildStatus]: https://travis-ci.org/FreeRADIUS/freeradius-server.png?branch=v4.0.x "Travis CI status"
+[BuildStatus]: https://travis-ci.org/FreeRADIUS/freeradius-server.png?branch=master "Travis CI status"
 [BuildStatusLink]: https://travis-ci.org/FreeRADIUS/freeradius-server

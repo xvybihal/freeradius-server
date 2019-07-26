@@ -20,8 +20,8 @@
  * @note This API must be used by all modules in the public distribution that
  * maintain pools of connections.
  *
- * @copyright 2012  The FreeRADIUS server project
- * @copyright 2012  Alan DeKok <aland@deployingradius.com>
+ * @copyright 2012 The FreeRADIUS server project
+ * @copyright 2012 Alan DeKok (aland@deployingradius.com)
  */
 RCSID("$Id$")
 
@@ -34,6 +34,8 @@ RCSID("$Id$")
 
 #include <freeradius-devel/util/heap.h>
 #include <freeradius-devel/util/misc.h>
+
+#include <time.h>
 
 typedef struct fr_pool_connection_s fr_pool_connection_t;
 
@@ -52,9 +54,9 @@ struct fr_pool_connection_s {
 	int32_t		heap_id;			//!< For the next connection heap.
 
 	time_t		created;		//!< Time connection was created.
-	struct timeval 	last_reserved;		//!< Last time the connection was reserved.
+	fr_time_t	last_reserved;		//!< Last time the connection was reserved.
 
-	struct timeval	last_released;  	//!< Time the connection was released.
+	fr_time_t	last_released;  	//!< Time the connection was released.
 
 	uint32_t	num_uses;		//!< Number of times the connection has been reserved.
 	uint64_t	number;			//!< Unique ID assigned when the connection is created,
@@ -88,20 +90,21 @@ struct fr_pool_s {
 	uint32_t	max;			//!< Maximum number of concurrent connections to allow.
 	uint32_t	max_pending;		//!< Max number of pending connections to allow.
 	uint32_t	spare;			//!< Number of spare connections to try.
-	uint32_t	retry_delay;		//!< seconds to delay re-open after a failed open.
-	uint32_t	cleanup_interval; 	//!< Initial timer for how often we sweep the pool
-						//!< for free connections. (0 is infinite).
-	int		delay_interval;		//!< When we next do a cleanup.  Initialized to
-						//!< cleanup_interval, and increase from there based
-						//!< on the delay.
 	uint64_t	max_uses;		//!< Maximum number of times a connection can be used
 						//!< before being closed.
 	uint32_t	pending_window;		//!< Sliding window of pending connections.
-	uint32_t	lifetime;		//!< How long a connection can be open before being
+
+	fr_time_delta_t	retry_delay;		//!< seconds to delay re-open after a failed open.
+	fr_time_delta_t	cleanup_interval; 	//!< Initial timer for how often we sweep the pool
+						//!< for free connections. (0 is infinite).
+	fr_time_delta_t	delay_interval;		//!< When we next do a cleanup.  Initialized to
+						//!< cleanup_interval, and increase from there based
+						//!< on the delay.
+	fr_time_delta_t	lifetime;		//!< How long a connection can be open before being
 						//!< closed (irrespective of whether it's idle or not).
-	uint32_t	idle_timeout;		//!< How long a connection can be idle before
+	fr_time_delta_t	idle_timeout;		//!< How long a connection can be idle before
 						//!< being closed.
-	struct timeval	connect_timeout;	//!< New connection timeout, enforced by the create
+	fr_time_delta_t	connect_timeout;	//!< New connection timeout, enforced by the create
 						//!< callback.
 
 	bool		spread;			//!< If true we spread requests over the connections,
@@ -126,13 +129,15 @@ struct fr_pool_s {
 	char const	*log_prefix;		//!< Log prefix to prepend to all log messages created
 						//!< by the connection pool code.
 
+	bool		triggers_enabled;	//!< Whether we call the trigger functions.
+
 	char const	*trigger_prefix;	//!< Prefix to prepend to names of all triggers
 						//!< fired by the connection pool code.
 	VALUE_PAIR	*trigger_args;		//!< Arguments to make available in connection pool triggers.
 
-	struct timeval	held_trigger_min;	//!< If a connection is held for less than the specified
+	fr_time_delta_t	held_trigger_min;	//!< If a connection is held for less than the specified
 						//!< period, fire a trigger.
-	struct timeval	held_trigger_max;	//!< If a connection is held for longer than the specified
+	fr_time_delta_t	held_trigger_max;	//!< If a connection is held for longer than the specified
 						//!< period, fire a trigger.
 
 	fr_pool_connection_create_t	create;	//!< Function used to create new connections.
@@ -150,14 +155,13 @@ static const CONF_PARSER pool_config[] = {
 	{ FR_CONF_OFFSET("max_pending", FR_TYPE_UINT32, fr_pool_t, max_pending), .dflt = "0" },
 	{ FR_CONF_OFFSET("spare", FR_TYPE_UINT32, fr_pool_t, spare), .dflt = "3" },
 	{ FR_CONF_OFFSET("uses", FR_TYPE_UINT64, fr_pool_t, max_uses), .dflt = "0" },
-	{ FR_CONF_OFFSET("lifetime", FR_TYPE_UINT32, fr_pool_t, lifetime), .dflt = "0" },
-	{ FR_CONF_OFFSET("cleanup_delay", FR_TYPE_UINT32, fr_pool_t, cleanup_interval) },
-	{ FR_CONF_OFFSET("cleanup_interval", FR_TYPE_UINT32, fr_pool_t, cleanup_interval), .dflt = "30" },
-	{ FR_CONF_OFFSET("idle_timeout", FR_TYPE_UINT32, fr_pool_t, idle_timeout), .dflt = "60" },
-	{ FR_CONF_OFFSET("connect_timeout", FR_TYPE_TIMEVAL, fr_pool_t, connect_timeout), .dflt = "3.0" },
-	{ FR_CONF_OFFSET("held_trigger_min", FR_TYPE_TIMEVAL, fr_pool_t, held_trigger_min), .dflt = "0.0" },
-	{ FR_CONF_OFFSET("held_trigger_max", FR_TYPE_TIMEVAL, fr_pool_t, held_trigger_max), .dflt = "0.5" },
-	{ FR_CONF_OFFSET("retry_delay", FR_TYPE_UINT32, fr_pool_t, retry_delay), .dflt = "1" },
+	{ FR_CONF_OFFSET("lifetime", FR_TYPE_TIME_DELTA, fr_pool_t, lifetime), .dflt = "0" },
+	{ FR_CONF_OFFSET("cleanup_interval", FR_TYPE_TIME_DELTA, fr_pool_t, cleanup_interval), .dflt = "30" },
+	{ FR_CONF_OFFSET("idle_timeout", FR_TYPE_TIME_DELTA, fr_pool_t, idle_timeout), .dflt = "60" },
+	{ FR_CONF_OFFSET("connect_timeout", FR_TYPE_TIME_DELTA, fr_pool_t, connect_timeout), .dflt = "3.0" },
+	{ FR_CONF_OFFSET("held_trigger_min", FR_TYPE_TIME_DELTA, fr_pool_t, held_trigger_min), .dflt = "0.0" },
+	{ FR_CONF_OFFSET("held_trigger_max", FR_TYPE_TIME_DELTA, fr_pool_t, held_trigger_max), .dflt = "0.5" },
+	{ FR_CONF_OFFSET("retry_delay", FR_TYPE_TIME_DELTA, fr_pool_t, retry_delay), .dflt = "1" },
 	{ FR_CONF_OFFSET("spread", FR_TYPE_BOOL, fr_pool_t, spread), .dflt = "no" },
 	CONF_PARSER_TERMINATOR
 };
@@ -167,13 +171,8 @@ static const CONF_PARSER pool_config[] = {
 static int last_reserved_cmp(void const *one, void const *two)
 {
 	fr_pool_connection_t const *a = one, *b = two;
-	int ret;
 
-	ret = (a->last_reserved.tv_sec < b->last_reserved.tv_sec) - (a->last_reserved.tv_sec > b->last_reserved.tv_sec);
-	if (ret != 0) return ret;
-
-	return (a->last_reserved.tv_usec < b->last_reserved.tv_usec) -
-	       (a->last_reserved.tv_usec > b->last_reserved.tv_usec);
+	return fr_time_cmp(a->last_reserved, b->last_reserved);
 }
 
 /** Order connections by released longest ago
@@ -181,14 +180,8 @@ static int last_reserved_cmp(void const *one, void const *two)
 static int last_released_cmp(void const *one, void const *two)
 {
 	fr_pool_connection_t const *a = one, *b = two;
-	int ret;
 
-	ret = (b->last_released.tv_sec < a->last_released.tv_sec) -
-	      (b->last_released.tv_sec > a->last_released.tv_sec);
-	if (ret != 0) return ret;
-
-	return (b->last_released.tv_usec < a->last_released.tv_usec) -
-	       (b->last_released.tv_usec > a->last_released.tv_usec);
+	return fr_time_cmp(a->last_released, b->last_released);
 }
 
 /** Removes a connection from the connection list
@@ -260,7 +253,7 @@ static inline void fr_pool_trigger_exec(fr_pool_t *pool, REQUEST *request, char 
 	rad_assert(pool != NULL);
 	rad_assert(event != NULL);
 
-	if (!pool->trigger_prefix) return;
+	if (!pool->triggers_enabled) return;
 
 	snprintf(name, sizeof(name), "%s.%s", pool->trigger_prefix, event);
 	trigger_exec(request, pool->cs, name, true, pool->trigger_args);
@@ -330,7 +323,7 @@ static fr_pool_connection_t *connection_find(fr_pool_t *pool, void *conn)
  *	- New connection struct.
  *	- NULL on error.
  */
-static fr_pool_connection_t *connection_spawn(fr_pool_t *pool, REQUEST *request, time_t now, bool in_use, bool unlock)
+static fr_pool_connection_t *connection_spawn(fr_pool_t *pool, REQUEST *request, fr_time_t now, bool in_use, bool unlock)
 {
 	uint64_t		number;
 	uint32_t		pending_window;
@@ -368,7 +361,7 @@ static fr_pool_connection_t *connection_spawn(fr_pool_t *pool, REQUEST *request,
 	if (pool->state.last_failed && ((pool->state.last_failed + pool->retry_delay) > now)) {
 		bool complain = false;
 
-		if (pool->state.last_throttled != now) {
+		if ((now - pool->state.last_throttled) >= NSEC) {
 			complain = true;
 
 			pool->state.last_throttled = now;
@@ -377,8 +370,8 @@ static fr_pool_connection_t *connection_spawn(fr_pool_t *pool, REQUEST *request,
 		pthread_mutex_unlock(&pool->mutex);
 
 		if (!RATE_LIMIT_ENABLED || complain) {
-			ROPTIONAL(RERROR, ERROR, "Last connection attempt failed, waiting %d seconds before retrying",
-				  (int)((pool->state.last_failed + pool->retry_delay) - now));
+			ROPTIONAL(RERROR, ERROR, "Last connection attempt failed, waiting %pV seconds before retrying",
+				  fr_box_time_delta(pool->state.last_failed + pool->retry_delay - now));
 		}
 
 		return NULL;
@@ -418,7 +411,7 @@ static fr_pool_connection_t *connection_spawn(fr_pool_t *pool, REQUEST *request,
 	 */
 	pending_window = (pool->max - pool->state.num);
 	if (pool->pending_window < pending_window) pending_window = pool->pending_window;
-	ROPTIONAL(RDEBUG, DEBUG, "Opening additional connection (%" PRIu64 "), %u of %u pending slots used",
+	ROPTIONAL(RDEBUG2, DEBUG2, "Opening additional connection (%" PRIu64 "), %u of %u pending slots used",
 		  number, pool->state.pending, pending_window);
 
 	/*
@@ -434,7 +427,7 @@ static fr_pool_connection_t *connection_spawn(fr_pool_t *pool, REQUEST *request,
 	 *	about other threads opening new connections, as we
 	 *	already have no free connections.
 	 */
-	conn = pool->create(ctx, pool->opaque, &pool->connect_timeout);
+	conn = pool->create(ctx, pool->opaque, pool->connect_timeout);
 	if (!conn) {
 		ROPTIONAL(RERROR, ERROR, "Opening connection failed (%" PRIu64 ")", number);
 
@@ -478,7 +471,7 @@ static fr_pool_connection_t *connection_spawn(fr_pool_t *pool, REQUEST *request,
 	this->in_use = in_use;
 
 	this->number = number;
-	gettimeofday(&this->last_reserved, NULL);
+	this->last_reserved = fr_time();
 	this->last_released = this->last_reserved;
 
 	/*
@@ -508,7 +501,7 @@ static fr_pool_connection_t *connection_spawn(fr_pool_t *pool, REQUEST *request,
 		pool->pending_window++;
 	}
 
-	pool->state.last_spawned = time(NULL);
+	pool->state.last_spawned = fr_time();
 	pool->delay_interval = pool->cleanup_interval;
 	pool->state.next_delay = pool->cleanup_interval;
 	pool->state.last_failed = 0;
@@ -622,9 +615,9 @@ static int connection_manage(fr_pool_t *pool, REQUEST *request, fr_pool_connecti
 	}
 
 	if ((pool->idle_timeout > 0) &&
-	    ((this->last_released.tv_sec + pool->idle_timeout) < now)) {
-		ROPTIONAL(RINFO, INFO, "Closing connection (%" PRIu64 "): Hit idle_timeout, was idle for %u seconds",
-		     	  this->number, (int) (now - this->last_released.tv_sec));
+	    ((this->last_released + pool->idle_timeout) < now)) {
+		ROPTIONAL(RINFO, INFO, "Closing connection (%" PRIu64 "): Hit idle_timeout, was idle for %pVs",
+		     	  this->number, fr_box_time_delta(now - this->last_released));
 		goto do_delete;
 	}
 
@@ -648,11 +641,11 @@ static int connection_manage(fr_pool_t *pool, REQUEST *request, fr_pool_connecti
  */
 static int connection_check(fr_pool_t *pool, REQUEST *request)
 {
-	uint32_t spawn, idle, extra;
-	time_t now = time(NULL);
-	fr_pool_connection_t *this, *next;
+	uint32_t	spawn, idle, extra;
+	fr_time_t		now = fr_time();
+	fr_pool_connection_t	*this, *next;
 
-	if (pool->state.last_checked == now) {
+	if ((now - pool->state.last_checked) >= NSEC) {
 		pthread_mutex_unlock(&pool->mutex);
 		return 1;
 	}
@@ -763,14 +756,12 @@ static int connection_check(fr_pool_t *pool, REQUEST *request)
 		for (this = pool->tail; this != NULL; this = this->prev) {
 			if (this->in_use) continue;
 
-			if (!found || (fr_timeval_cmp(&this->last_reserved, &found->last_reserved) < 0)) {
-				found = this;
-			}
+			if (!found || (this->last_reserved < found->last_reserved)) found = this;
 		}
 
 		if (!fr_cond_assert(found)) goto done;
 
-		ROPTIONAL(RDEBUG, DEBUG, "Closing connection (%" PRIu64 "), from %d unused connections",
+		ROPTIONAL(RDEBUG2, DEBUG2, "Closing connection (%" PRIu64 "), from %d unused connections",
 			  found->number, extra);
 		connection_close_internal(pool, request, found);
 
@@ -811,14 +802,14 @@ done:
  */
 static void *connection_get_internal(fr_pool_t *pool, REQUEST *request, bool spawn)
 {
-	time_t now;
+	fr_time_t now;
 	fr_pool_connection_t *this;
 
 	if (!pool) return NULL;
 
 	pthread_mutex_lock(&pool->mutex);
 
-	now = time(NULL);
+	now = fr_time();
 
 	/*
 	 *	Grab the link with the lowest latency, and check it
@@ -845,7 +836,7 @@ static void *connection_get_internal(fr_pool_t *pool, REQUEST *request, bool spa
 		/*
 		 *	Rate-limit complaints.
 		 */
-		if (pool->state.last_at_max != now) {
+		if ((now - pool->state.last_at_max) > NSEC) {
 			complain = true;
 			pool->state.last_at_max = now;
 		}
@@ -879,7 +870,7 @@ static void *connection_get_internal(fr_pool_t *pool, REQUEST *request, bool spa
 do_return:
 	pool->state.active++;
 	this->num_uses++;
-	gettimeofday(&this->last_reserved, NULL);
+	this->last_reserved = fr_time();
 	this->in_use = true;
 
 #ifdef PTHREAD_DEBUG
@@ -908,6 +899,8 @@ do_return:
  */
 void fr_pool_enable_triggers(fr_pool_t *pool, char const *trigger_prefix, VALUE_PAIR *trigger_args)
 {
+	pool->triggers_enabled = true;
+
 	talloc_const_free(pool->trigger_prefix);
 	MEM(pool->trigger_prefix = trigger_prefix ? talloc_typed_strdup(pool, trigger_prefix) : "");
 
@@ -944,26 +937,16 @@ fr_pool_t *fr_pool_init(TALLOC_CTX *ctx,
 			fr_pool_connection_create_t c, fr_pool_connection_alive_t a,
 			char const *log_prefix)
 {
-	uint32_t i;
-	fr_pool_t *pool = NULL;
-	fr_pool_connection_t *this;
-	time_t now;
+	fr_pool_t		*pool = NULL;
 
 	if (!cs || !opaque || !c) return NULL;
-
-	now = time(NULL);
 
 	/*
 	 *	Pool is allocated in the NULL context as
 	 *	threads are likely to allocate memory
 	 *	beneath the pool.
 	 */
-	pool = talloc_zero(NULL, fr_pool_t);
-	if (!pool) {
-		/* Simply using ERROR here results in a null pointer dereference */
-		fr_log(&default_log, L_ERR, "%s: Out of memory", __FUNCTION__);
-		return NULL;
-	}
+	MEM(pool = talloc_zero(NULL, fr_pool_t));
 
 	/*
 	 *	Ensure the pool is freed at the same time
@@ -1026,7 +1009,8 @@ fr_pool_t *fr_pool_init(TALLOC_CTX *ctx,
 	}
 	if (!pool->heap) {
 		ERROR("%s: Failed creating connection heap", __FUNCTION__);
-		talloc_free(pool);
+	error:
+		fr_pool_free(pool);
 		return NULL;
 	}
 
@@ -1070,11 +1054,12 @@ fr_pool_t *fr_pool_init(TALLOC_CTX *ctx,
 	FR_INTEGER_BOUND_CHECK("spare", pool->spare, <=, (pool->max - pool->min));
 
 	if (pool->lifetime > 0) {
-		FR_INTEGER_COND_CHECK("idle_timeout", pool->idle_timeout, (pool->idle_timeout <= pool->lifetime), 0);
+		FR_TIME_DELTA_COND_CHECK("idle_timeout", pool->idle_timeout,
+					 (pool->idle_timeout <= pool->lifetime), 0);
 	}
 
 	if (pool->idle_timeout > 0) {
-		FR_INTEGER_BOUND_CHECK("cleanup_interval", pool->cleanup_interval, <=, pool->idle_timeout);
+		FR_TIME_DELTA_BOUND_CHECK("cleanup_interval", pool->cleanup_interval, <=, pool->idle_timeout);
 	}
 
 	/*
@@ -1082,7 +1067,7 @@ fr_pool_t *fr_pool_init(TALLOC_CTX *ctx,
 	 *	as instantaneous timeout.  Solve the inconsistency by making
 	 *	the smallest allowable timeout 100ms.
 	 */
-	FR_TIMEVAL_BOUND_CHECK("connect_timeout", &pool->connect_timeout, >=, 0, 100000);
+	FR_TIME_DELTA_BOUND_CHECK("connect_timeout", pool->connect_timeout, >=, fr_time_delta_from_msec(100));
 
 	/*
 	 *	Don't open any connections.  Instead, force the limits
@@ -1094,24 +1079,33 @@ fr_pool_t *fr_pool_init(TALLOC_CTX *ctx,
 		return pool;
 	}
 
+	return pool;
+}
+
+int fr_pool_start(fr_pool_t *pool)
+{
+	uint32_t		i;
+	fr_pool_connection_t 	*this;
+
 	/*
 	 *	Create all of the connections, unless the admin says
 	 *	not to.
 	 */
 	for (i = 0; i < pool->start; i++) {
-		this = connection_spawn(pool, NULL, now, false, true);
+		/*
+		 *	Call time() once for each spawn attempt as there
+		 *	could be a significant delay.
+		 */
+		this = connection_spawn(pool, NULL, time(NULL), false, true);
 		if (!this) {
 			ERROR("Failed spawning initial connections");
-		error:
-			/* coverity[missing_unlock] */
-			fr_pool_free(pool);
-			return NULL;
+			return -1;
 		}
 	}
 
 	fr_pool_trigger_exec(pool, NULL, "start");
 
-	return pool;
+	return 0;
 }
 
 /** Allocate a new pool using an existing one as a template
@@ -1150,7 +1144,7 @@ fr_pool_state_t const *fr_pool_state(fr_pool_t *pool)
  * @param[in] pool to get connection timeout for.
  * @return the connection timeout configured for the pool.
  */
-struct timeval fr_pool_timeout(fr_pool_t *pool)
+fr_time_delta_t fr_pool_timeout(fr_pool_t *pool)
 {
 	return pool->connect_timeout;
 }
@@ -1160,7 +1154,7 @@ struct timeval fr_pool_timeout(fr_pool_t *pool)
  * @param[in] pool to get connection start for.
  * @return the connection start value configured for the pool.
  */
-int fr_pool_start(fr_pool_t *pool)
+int fr_pool_start_num(fr_pool_t *pool)
 {
 	return pool->start;
 }
@@ -1375,9 +1369,9 @@ void *fr_pool_connection_get(fr_pool_t *pool, REQUEST *request)
  */
 void fr_pool_connection_release(fr_pool_t *pool, REQUEST *request, void *conn)
 {
-	fr_pool_connection_t *this;
-	struct timeval	held;
-	bool trigger_min = false, trigger_max = false;
+	fr_pool_connection_t	*this;
+	fr_time_delta_t		held;
+	bool			trigger_min = false, trigger_max = false;
 
 	this = connection_find(pool, conn);
 	if (!this) return;
@@ -1387,33 +1381,35 @@ void fr_pool_connection_release(fr_pool_t *pool, REQUEST *request, void *conn)
 	/*
 	 *	Record when the connection was last released
 	 */
-	gettimeofday(&this->last_released, NULL);
+	this->last_reserved = fr_time();
 	pool->state.last_released = this->last_released;
 
 	/*
 	 *	This is done inside the mutex to ensure
 	 *	updates are atomic.
 	 */
-	fr_timeval_subtract(&held, &this->last_released, &this->last_reserved);
+	held = this->last_released - this->last_reserved;
 
 	/*
 	 *	Check we've not exceeded out trigger limits
+	 *
+	 *      These should only fire once per second.
 	 */
-	if ((pool->held_trigger_min.tv_sec || pool->held_trigger_min.tv_usec) &&
-	    (fr_timeval_cmp(&held, &pool->held_trigger_min) < 0) &&
-	    (pool->state.last_held_min != this->last_released.tv_sec)) {
+	if (pool->held_trigger_min &&
+	    (held < pool->held_trigger_min) &&
+	    ((this->last_released - pool->state.last_held_min) >= NSEC)) {
 	    	trigger_min = true;
-	    	pool->state.last_held_min = this->last_released.tv_sec;
+	    	pool->state.last_held_min = this->last_released;
 	}
 
-	if ((pool->held_trigger_max.tv_sec || pool->held_trigger_min.tv_usec) &&
-	    (fr_timeval_cmp(&held, &pool->held_trigger_max) > 0) &&
-	    (pool->state.last_held_max != this->last_released.tv_sec)) {
+	if (pool->held_trigger_min &&
+	    (held > pool->held_trigger_max) &&
+	    ((this->last_released - pool->state.last_held_max) >= NSEC)) {
 	    	trigger_max = true;
-	    	pool->state.last_held_max = this->last_released.tv_sec;
+	    	pool->state.last_held_max = this->last_released;
 	}
 
-	fr_stats_bins(&pool->state.held_stats, &this->last_reserved, &this->last_released);
+	fr_stats_bins(&pool->state.held_stats, this->last_reserved, this->last_released);
 
 	/*
 	 *	Insert the connection in the heap.
@@ -1513,7 +1509,7 @@ int fr_pool_connection_close(fr_pool_t *pool, REQUEST *request, void *conn)
 	/*
 	 *	Record the last time a connection was closed
 	 */
-	gettimeofday(&pool->state.last_closed, NULL);
+	pool->state.last_closed = fr_time();
 
 	ROPTIONAL(RINFO, INFO, "Deleting connection (%" PRIu64 ")", this->number);
 

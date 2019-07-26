@@ -20,8 +20,8 @@
  * @file tls/ctx.c
  * @brief Initialise and configure SSL_CTX structures.
  *
- * @copyright 2001 hereUare Communications, Inc. <raghud@hereuare.com>
- * @copyright 2003  Alan DeKok <aland@freeradius.org>
+ * @copyright 2001 hereUare Communications, Inc. (raghud@hereuare.com)
+ * @copyright 2003 Alan DeKok (aland@freeradius.org)
  * @copyright 2006-2016 The FreeRADIUS server project
  */
 RCSID("$Id$")
@@ -289,17 +289,28 @@ SSL_CTX *tls_ctx_alloc(fr_tls_conf_t const *conf, bool client)
 	int		ctx_options = 0;
 	void		*app_data_index;
 
+	/*
+	 *	This addresses memory leaks in OpenSSL 1.0.2
+	 *	at the cost of the server occasionally
+	 *	crashing on exit.
+	 */
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 	SSL_BIND_OBJ_MEMORY(ctx = SSL_CTX_new(SSLv23_method())); /* which is really "all known SSL / TLS methods".  Idiots. */
+#else
+	ctx = SSL_CTX_new(SSLv23_method());
+#endif
 	if (!ctx) {
 		tls_log_error(NULL, "Failed creating TLS context");
 		return NULL;
 	}
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 	/*
 	 *	Bind any other memory to the ctx to fix
 	 *	leaks on exit.
 	 */
 	SSL_BIND_MEMORY_BEGIN(ctx);
+#endif
 
 	/*
 	 *	Save the config on the context so that callbacks which
@@ -320,7 +331,9 @@ SSL_CTX *tls_ctx_alloc(fr_tls_conf_t const *conf, bool client)
 		if (!*conf->psk_query) {
 			ERROR("Invalid PSK Configuration: psk_query cannot be empty");
 		error:
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 			SSL_BIND_MEMORY_END;
+#endif
 			SSL_CTX_free(ctx);
 			return NULL;
 		}
@@ -371,7 +384,7 @@ SSL_CTX *tls_ctx_alloc(fr_tls_conf_t const *conf, bool client)
 	 *	Do more sanity checking if we have a PSK identity.  We
 	 *	check the password, and convert it to it's final form.
 	 */
-	if (conf->psk_identity) {
+	if (conf->psk_identity && *conf->psk_identity) {
 		size_t psk_len, hex_len;
 		uint8_t buffer[PSK_MAX_PSK_LEN];
 
@@ -379,9 +392,7 @@ SSL_CTX *tls_ctx_alloc(fr_tls_conf_t const *conf, bool client)
 			SSL_CTX_set_psk_client_callback(ctx, tls_session_psk_client_cb);
 		}
 
-#ifdef __clang_analyzer__
 		if (!conf->psk_password) goto error; /* clang is too dumb to catch the above checks */
-#endif
 
 		psk_len = strlen(conf->psk_password);
 		if (strlen(conf->psk_password) > (2 * PSK_MAX_PSK_LEN)) {
@@ -602,7 +613,7 @@ post_ca:
 	}
 
 	{
-		int min_version = TLS1_VERSION;
+		int min_version = TLS1_2_VERSION;
 
 		if (conf->tls_min_version < (float) 1.0) {
 			ERROR("tls_min_version must be >= 1.0 as SSLv2 and SSLv3 are permanently disabled");
@@ -616,7 +627,6 @@ post_ca:
 #  endif
 		else if (conf->tls_min_version >= (float) 1.2) min_version = TLS1_2_VERSION;
 		else if (conf->tls_min_version >= (float) 1.1) min_version = TLS1_1_VERSION;
-		else min_version = TLS1_VERSION;
 
 		if (!SSL_CTX_set_min_proto_version(ctx, min_version)) {
 			tls_log_error(NULL, "Failed setting TLS minimum version");
@@ -831,7 +841,9 @@ post_ca:
 	/*
 	 *	We're done configuring the ctx.
 	 */
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 	SSL_BIND_MEMORY_END;
+#endif
 
 	/*
 	 *	Setup session caching

@@ -155,6 +155,8 @@ typedef struct {
 #define vp_date_microseconds	data.vb_date_microseconds
 #define vp_date_nanoseconds	data.vb_date_nanoseconds
 
+#define vp_group		data.datum.ptr
+
 #define vp_size			data.datum.size
 #define vp_filter		data.datum.filter
 
@@ -300,15 +302,12 @@ int		fr_pair_list_copy_by_ancestor(TALLOC_CTX *ctx, VALUE_PAIR **to,
 					      VALUE_PAIR *from, fr_dict_attr_t const *parent_da);
 
 void		fr_pair_list_move(VALUE_PAIR **to, VALUE_PAIR **from);
-int		fr_pair_list_move_by_da(TALLOC_CTX *ctx, VALUE_PAIR **to,
-					VALUE_PAIR **from, fr_dict_attr_t const *da);
-int		fr_pair_list_move_by_ancestor(TALLOC_CTX *ctx, VALUE_PAIR **to,
-					      VALUE_PAIR **from, fr_dict_attr_t const *da);
 
 /* Value manipulation */
+void		fr_pair_value_copy(VALUE_PAIR *out, VALUE_PAIR *in);
 int		fr_pair_value_from_str(VALUE_PAIR *vp, char const *value, ssize_t len, char quote, bool tainted);
-void		fr_pair_value_memcpy(VALUE_PAIR *vp, uint8_t const *src, size_t len);
-void		fr_pair_value_memsteal(VALUE_PAIR *vp, uint8_t const *src);
+int		fr_pair_value_memcpy(VALUE_PAIR *vp, uint8_t const *src, size_t len, bool tainted);
+void		fr_pair_value_memsteal(VALUE_PAIR *vp, uint8_t const *src, bool tainted);
 void		fr_pair_value_strsteal(VALUE_PAIR *vp, char const *src);
 void		fr_pair_value_strcpy(VALUE_PAIR *vp, char const *src);
 void		fr_pair_value_bstrncpy(VALUE_PAIR *vp, void const *src, size_t len);
@@ -322,7 +321,9 @@ char const	*fr_pair_value_enum(VALUE_PAIR const *vp, char buff[static 20]);
 
 size_t		fr_pair_snprint(char *out, size_t outlen, VALUE_PAIR const *vp);
 void		fr_pair_fprint(FILE *, VALUE_PAIR const *vp);
-void		fr_pair_list_fprint(FILE *, VALUE_PAIR const *vp);
+
+#define		fr_pair_list_log(_log, _vp) _fr_pair_list_log(_log, _vp, __FILE__, __LINE__);
+void		_fr_pair_list_log(fr_log_t *log, VALUE_PAIR const *vp, char const *file, int line);
 char		*fr_pair_type_asprint(TALLOC_CTX *ctx, fr_type_t type);
 char		*fr_pair_asprint(TALLOC_CTX *ctx, VALUE_PAIR const *vp, char quote);
 

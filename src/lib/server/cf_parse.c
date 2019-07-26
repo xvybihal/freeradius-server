@@ -20,9 +20,9 @@
  * @brief Covert internal format configuration values into native C types.
  *
  * @copyright 2017 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
- * @copyright 2000,2006  The FreeRADIUS server project
- * @copyright 2000  Miquel van Smoorenburg <miquels@cistron.nl>
- * @copyright 2000  Alan DeKok <aland@freeradius.org>
+ * @copyright 2000,2006 The FreeRADIUS server project
+ * @copyright 2000 Miquel van Smoorenburg (miquels@cistron.nl)
+ * @copyright 2000 Alan DeKok (aland@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -173,6 +173,8 @@ int cf_pair_parse_value(TALLOC_CTX *ctx, void *out, UNUSED void *base, CONF_ITEM
 	if (tmpl) {
 		vp_tmpl_t *vpt;
 
+		cf_log_debug(cs, "%.*s%s = %s", PAIR_SPACE(cs), parse_spaces, cf_pair_attr(cp), cp->value);
+
 		/*
 		 *	This is so we produce TMPL_TYPE_ATTR_UNDEFINED template that
 		 *	the bootstrap functions can use to create an attribute.
@@ -182,7 +184,7 @@ int cf_pair_parse_value(TALLOC_CTX *ctx, void *out, UNUSED void *base, CONF_ITEM
 		 *	xlat strings.
 		 */
 		if (attribute) {
-			slen = tmpl_afrom_attr_str(cp, &vpt, cp->value,
+			slen = tmpl_afrom_attr_str(cp, NULL, &vpt, cp->value,
 						   &(vp_tmpl_rules_t){
 							.allow_unknown = true,
 							.allow_undefined = true
@@ -311,7 +313,8 @@ int cf_pair_parse_value(TALLOC_CTX *ctx, void *out, UNUSED void *base, CONF_ITEM
 		if (secret && (rad_debug_lvl < L_DBG_LVL_3)) {
 			cf_log_debug(cs, "%.*s%s = <<< secret >>>", PAIR_SPACE(cs), parse_spaces, cf_pair_attr(cp));
 		} else {
-			cf_log_debug(cs, "%.*s%s = \"%s\"", PAIR_SPACE(cs), parse_spaces, cf_pair_attr(cp), cp->value);
+			cf_log_debug(cs, "%.*s%s = \"%pV\"", PAIR_SPACE(cs), parse_spaces, cf_pair_attr(cp),
+				     fr_box_strvalue_buffer(cp->value));
 		}
 
 		/*
@@ -386,18 +389,23 @@ int cf_pair_parse_value(TALLOC_CTX *ctx, void *out, UNUSED void *base, CONF_ITEM
 		}
 		break;
 
-	case FR_TYPE_TIMEVAL:
+	case FR_TYPE_TIME_DELTA:
 	{
-		struct timeval tv;
+		fr_time_delta_t delta;
+		char *p;
 
-		if (fr_timeval_from_str(&tv, cp->value) < 0) {
+		if (fr_time_delta_from_str(&delta, cp->value, FR_TIME_RES_SEC) < 0) {
 			cf_log_perr(cp, "Failed parsing config item");
 			rcode = -1;
 			goto error;
 		}
-		cf_log_debug(cs, "%.*s%s = %d.%06d", PAIR_SPACE(cs), parse_spaces, cf_pair_attr(cp),
-			    (int)tv.tv_sec, (int)tv.tv_usec);
-		memcpy(out, &tv, sizeof(tv));
+
+		p = fr_value_box_asprint(NULL, fr_box_time_delta(delta), 0);
+
+		cf_log_debug(cs, "%.*s%s = %s", PAIR_SPACE(cs), parse_spaces, cf_pair_attr(cp), p);
+		talloc_free(p);
+
+		memcpy(out, &delta, sizeof(delta));
 	}
 		break;
 
@@ -426,7 +434,7 @@ int cf_pair_parse_value(TALLOC_CTX *ctx, void *out, UNUSED void *base, CONF_ITEM
 		rad_assert(type < FR_TYPE_MAX);
 
 		cf_log_err(cp, "type '%s' (%i) is not supported in the configuration files",
-			   fr_int2str(fr_value_box_type_names, type, "?Unknown?"), type);
+			   fr_int2str(fr_value_box_type_table, type, "?Unknown?"), type);
 		rcode = -1;
 		goto error;
 	}
@@ -643,8 +651,8 @@ static int CC_HINT(nonnull(4,5)) cf_pair_parse_internal(TALLOC_CTX *ctx, void *o
 			array = (void **)talloc_zero_array(ctx, fr_ipaddr_t, count);
 			break;
 
-		case FR_TYPE_TIMEVAL:
-			array = (void **)talloc_zero_array(ctx, struct timeval, count);
+		case FR_TYPE_TIME_DELTA:
+			array = (void **)talloc_zero_array(ctx, fr_time_delta_t, count);
 			break;
 
 		case FR_TYPE_VOID:
@@ -784,7 +792,7 @@ static int CC_HINT(nonnull(4,5)) cf_pair_parse_internal(TALLOC_CTX *ctx, void *o
  * | FR_TYPE_IPV6_PREFIX     | ``fr_ipaddr_t``    | No                     |
  * | FR_TYPE_COMBO_IP_ADDR   | ``fr_ipaddr_t``    | No                     |
  * | FR_TYPE_COMBO_IP_PREFIX | ``fr_ipaddr_t``    | No                     |
- * | FR_TYPE_TIMEVAL         | ``struct timeval`` | No                     |
+ * | FR_TYPE_TIME_DELTA      | ``fr_time_delta_t``| No                     |
  *
  * @param[in] ctx	To allocate arrays and values in.
  * @param[in] cs	to search for matching #CONF_PAIR in.
@@ -809,7 +817,7 @@ static int CC_HINT(nonnull(4,5)) cf_pair_parse_internal(TALLOC_CTX *ctx, void *o
  *						  prefix 32/128).
  *	- ``data`` #FR_TYPE_COMBO_IP_PREFIX	- @copybrief FR_TYPE_COMBO_IP_PREFIX (IPv4/IPv6 address with
  *						  variable prefix).
- *	- ``data`` #FR_TYPE_TIMEVAL		- @copybrief FR_TYPE_TIMEVAL
+ *	- ``data`` #FR_TYPE_TIME_DELTA		- @copybrief FR_TYPE_TIME_DELTA
  *	- ``flag`` #FR_TYPE_DEPRECATED		- @copybrief FR_TYPE_DEPRECATED
  *	- ``flag`` #FR_TYPE_REQUIRED		- @copybrief FR_TYPE_REQUIRED
  *	- ``flag`` #FR_TYPE_ATTRIBUTE		- @copybrief FR_TYPE_ATTRIBUTE
@@ -1307,7 +1315,6 @@ int cf_section_parse_pass2(void *base, CONF_SECTION *cs)
 		 *	to FR_TYPE_TMPL.
 		 */
 		if (is_xlat) {
-			char const	*error;
 			ssize_t		slen;
 			char		*value;
 			xlat_exp_t	*xlat;
@@ -1319,7 +1326,7 @@ int cf_section_parse_pass2(void *base, CONF_SECTION *cs)
 			 *	xlat expansions should be parseable.
 			 */
 			value = talloc_typed_strdup(cs, cp->value); /* modified by xlat_tokenize */
-			slen = xlat_tokenize(cs, &xlat, &error, value, NULL);
+			slen = xlat_tokenize(cs, &xlat, value, NULL);
 			if (slen < 0) {
 				char *spaces, *text;
 
@@ -1327,7 +1334,7 @@ int cf_section_parse_pass2(void *base, CONF_SECTION *cs)
 
 				cf_log_err(cp, "Failed parsing expansion string:");
 				cf_log_err(cp, "%s", text);
-				cf_log_err(cp, "%s^ %s", spaces, error);
+				cf_log_err(cp, "%s^ %s", spaces, fr_strerror());
 
 				talloc_free(spaces);
 				talloc_free(text);
@@ -1374,7 +1381,7 @@ int cf_section_parse_pass2(void *base, CONF_SECTION *cs)
 				return -1;
 			}
 
-			if (attribute && (vpt->type != TMPL_TYPE_ATTR)) {
+			if (attribute && !tmpl_is_attr(vpt)) {
 				cf_log_err(cp, "Expected attr got %s",
 					   fr_int2str(tmpl_type_table, vpt->type, "???"));
 				return -1;
@@ -1535,6 +1542,24 @@ int _cf_section_rules_push(CONF_SECTION *cs, CONF_PARSER const *rules, char cons
 	 *	missing terminators reliably
 	 */
 	fr_cond_assert(rule_p->type == conf_term.type);
+
+	return 0;
+}
+
+/** Generic function for parsing conf pair values as int
+ *
+ * @note This should be used for enum types as c99 6.4.4.3 states that the enumeration
+ * constants are of type int.
+ *
+ */
+int cf_table_parse_int(UNUSED TALLOC_CTX *ctx, void *out, UNUSED void *parent,
+		       CONF_ITEM *ci, CONF_PARSER const *rule)
+{
+	int num;
+
+	if (cf_pair_in_table(&num, rule->uctx, cf_item_to_pair(ci)) < 0) return -1;
+
+	*((int *)out) = num;
 
 	return 0;
 }

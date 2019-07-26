@@ -36,9 +36,9 @@ static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM
 static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM *ci, CONF_PARSER const *rule);
 
 static CONF_PARSER const limit_config[] = {
-	{ FR_CONF_OFFSET("cleanup_delay", FR_TYPE_TIMEVAL, proto_radius_t, io.cleanup_delay), .dflt = "5.0" } ,
-	{ FR_CONF_OFFSET("idle_timeout", FR_TYPE_TIMEVAL, proto_radius_t, io.idle_timeout), .dflt = "30.0" } ,
-	{ FR_CONF_OFFSET("nak_lifetime", FR_TYPE_TIMEVAL, proto_radius_t, io.nak_lifetime), .dflt = "30.0" } ,
+	{ FR_CONF_OFFSET("cleanup_delay", FR_TYPE_TIME_DELTA, proto_radius_t, io.cleanup_delay), .dflt = "5.0" } ,
+	{ FR_CONF_OFFSET("idle_timeout", FR_TYPE_TIME_DELTA, proto_radius_t, io.idle_timeout), .dflt = "30.0" } ,
+	{ FR_CONF_OFFSET("nak_lifetime", FR_TYPE_TIME_DELTA, proto_radius_t, io.nak_lifetime), .dflt = "30.0" } ,
 
 	{ FR_CONF_OFFSET("max_connections", FR_TYPE_UINT32, proto_radius_t, io.max_connections), .dflt = "1024" } ,
 	{ FR_CONF_OFFSET("max_clients", FR_TYPE_UINT32, proto_radius_t, io.max_clients), .dflt = "256" } ,
@@ -113,7 +113,7 @@ fr_dict_attr_autoload_t proto_radius_dict_attr[] = {
  * the proto_radius_auth module.
  *
  * @param[in] ctx	to allocate data in (instance of proto_radius).
- * @param[out] out	Where to write a dl_instance_t containing the module handle and instance.
+ * @param[out] out	Where to write a dl_module_inst_t containing the module handle and instance.
  * @param[in] parent	Base structure address.
  * @param[in] ci	#CONF_PAIR specifying the name of the type module.
  * @param[in] rule	unused.
@@ -123,21 +123,20 @@ fr_dict_attr_autoload_t proto_radius_dict_attr[] = {
  */
 static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
 {
-	static char const *type_lib_table[] = {
+	static char const *type_lib_table[FR_RADIUS_MAX_PACKET_CODE] = {
 		[FR_CODE_ACCESS_REQUEST]	= "auth",
 		[FR_CODE_ACCOUNTING_REQUEST]	= "acct",
 		[FR_CODE_COA_REQUEST]		= "coa",
 		[FR_CODE_DISCONNECT_REQUEST]	= "coa",
 		[FR_CODE_STATUS_SERVER]		= "status",
-		[FR_CODE_MAX] 			= NULL
 	};
 
 	char const		*type_str = cf_pair_value(cf_item_to_pair(ci));
 	CONF_SECTION		*listen_cs = cf_item_to_section(cf_parent(ci));
-	CONF_SECTION		*process_app_cs;
 	CONF_SECTION		*server = cf_item_to_section(cf_parent(listen_cs));
+	CONF_SECTION		*process_app_cs;
 	proto_radius_t		*inst;
-	dl_instance_t		*parent_inst;
+	dl_module_inst_t		*parent_inst;
 	char const		*name = NULL;
 	fr_dict_enum_t const	*type_enum;
 	uint32_t		code;
@@ -169,7 +168,7 @@ static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM
 	cf_data_add(ci, type_enum, NULL, false);
 
 	code = type_enum->value->vb_uint32;
-	if (code >= FR_MAX_PACKET_CODE) {
+	if (code >= FR_RADIUS_MAX_PACKET_CODE) {
 	invalid_type:
 		cf_log_err(ci, "Unsupported 'type = %s'", type_str);
 		return -1;
@@ -193,7 +192,7 @@ static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM
 	name = type_lib_table[code];
 	if (!name) goto invalid_type;
 
-	parent_inst = cf_data_value(cf_data_find(listen_cs, dl_instance_t, "proto_radius"));
+	parent_inst = cf_data_value(cf_data_find(listen_cs, dl_module_inst_t, "proto_radius"));
 	rad_assert(parent_inst);
 
 	/*
@@ -222,15 +221,15 @@ static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM
 	}
 
 	/*
-	 *	Parent dl_instance_t added in virtual_servers.c (listen_parse)
+	 *	Parent dl_module_inst_t added in virtual_servers.c (listen_parse)
 	 */
-	return dl_instance(ctx, out, process_app_cs, parent_inst, name, DL_TYPE_SUBMODULE);
+	return dl_module_instance(ctx, out, process_app_cs, parent_inst, name, DL_MODULE_TYPE_SUBMODULE);
 }
 
 /** Wrapper around dl_instance
  *
  * @param[in] ctx	to allocate data in (instance of proto_radius).
- * @param[out] out	Where to write a dl_instance_t containing the module handle and instance.
+ * @param[out] out	Where to write a dl_module_inst_t containing the module handle and instance.
  * @param[in] parent	Base structure address.
  * @param[in] ci	#CONF_PAIR specifying the name of the type module.
  * @param[in] rule	unused.
@@ -241,14 +240,14 @@ static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM
 static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
 {
 	char const	*name = cf_pair_value(cf_item_to_pair(ci));
-	dl_instance_t	*parent_inst;
+	dl_module_inst_t	*parent_inst;
 	proto_radius_t	*inst;
 	CONF_SECTION	*listen_cs = cf_item_to_section(cf_parent(ci));
 	CONF_SECTION	*transport_cs;
 
 	transport_cs = cf_section_find(listen_cs, name, NULL);
 
-	parent_inst = cf_data_value(cf_data_find(listen_cs, dl_instance_t, "proto_radius"));
+	parent_inst = cf_data_value(cf_data_find(listen_cs, dl_module_inst_t, "proto_radius"));
 	rad_assert(parent_inst);
 
 	/*
@@ -268,7 +267,7 @@ static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF
 		inst->io.app_io_conf = transport_cs;
 	}
 
-	return dl_instance(ctx, out, transport_cs, parent_inst, name, DL_TYPE_SUBMODULE);
+	return dl_module_instance(ctx, out, transport_cs, parent_inst, name, DL_MODULE_TYPE_SUBMODULE);
 }
 
 /** Decode the packet
@@ -281,12 +280,7 @@ static int mod_decode(void const *instance, REQUEST *request, uint8_t *const dat
 	fr_io_address_t		*address = track->address;
 	RADCLIENT const		*client;
 
-	rad_assert(data[0] < FR_MAX_PACKET_CODE);
-
-	if (DEBUG_ENABLED3) {
-		RDEBUG("proto_radius decode packet");
-		fr_radius_print_hex(fr_log_fp, data, data_len);
-	}
+	rad_assert(data[0] < FR_RADIUS_MAX_PACKET_CODE);
 
 	/*
 	 *	Set the request dictionary so that we can do
@@ -368,7 +362,7 @@ static int mod_decode(void const *instance, REQUEST *request, uint8_t *const dat
 					break;
 
 				case FR_TYPE_OCTETS:
-					fr_pair_value_memcpy(vp, (uint8_t const *) "", 1);
+					fr_pair_value_memcpy(vp, (uint8_t const *) "", 1, true);
 					break;
 
 				case FR_TYPE_STRING:
@@ -421,7 +415,7 @@ static ssize_t mod_encode(void const *instance, REQUEST *request, uint8_t *buffe
 	 *	"Do not respond"
 	 */
 	if ((request->reply->code == FR_CODE_DO_NOT_RESPOND) ||
-	    (request->reply->code == 0) || (request->reply->code >= FR_MAX_PACKET_CODE)) {
+	    (request->reply->code == 0) || (request->reply->code >= FR_RADIUS_MAX_PACKET_CODE)) {
 		*buffer = false;
 		return 1;
 	}
@@ -503,7 +497,7 @@ static ssize_t mod_encode(void const *instance, REQUEST *request, uint8_t *buffe
 	}
 
 	if (RDEBUG_ENABLED) {
-		RDEBUG("Sent %s ID %i from %pV:%i to %pV:%i length %zu via socket %s",
+		RDEBUG("Sending %s ID %i from %pV:%i to %pV:%i length %zu via socket %s",
 		       fr_packet_codes[request->reply->code],
 		       request->reply->id,
 		       fr_box_ipaddr(request->reply->src_ipaddr),
@@ -515,7 +509,10 @@ static ssize_t mod_encode(void const *instance, REQUEST *request, uint8_t *buffe
 
 		log_request_pair_list(L_DBG_LVL_1, request, request->reply->vps, "");
 
-		if (DEBUG_ENABLED3) fr_radius_print_hex(fr_log_fp, buffer, data_len);
+		if (DEBUG_ENABLED3) {
+			RDEBUG("proto_radius encoded packet");
+			if (DEBUG_ENABLED3) fr_log_hex(&default_log, L_DBG, __FILE__, __LINE__, buffer, data_len, NULL);
+		}
 	}
 
 	return data_len;
@@ -524,11 +521,11 @@ static ssize_t mod_encode(void const *instance, REQUEST *request, uint8_t *buffe
 static void mod_entry_point_set(void const *instance, REQUEST *request)
 {
 	proto_radius_t const	*inst = talloc_get_type_abort_const(instance, proto_radius_t);
-	dl_instance_t		*type_submodule;
+	dl_module_inst_t	*type_submodule;
 	fr_io_track_t		*track = request->async->packet_ctx;
 
 	rad_assert(request->packet->code != 0);
-	rad_assert(request->packet->code <= FR_CODE_MAX);
+	rad_assert(request->packet->code <= FR_RADIUS_MAX_PACKET_CODE);
 
 	request->server_cs = inst->io.server_cs;
 
@@ -548,7 +545,7 @@ static void mod_entry_point_set(void const *instance, REQUEST *request)
 
 	type_submodule = inst->type_submodule_by_code[request->packet->code];
 	if (!type_submodule) {
-		REDEBUG("No module available to handle packet code %i", request->packet->code);
+		REDEBUG("The server is not configured to accept 'type = %s'", fr_packet_codes[request->packet->code]);
 		return;
 	}
 
@@ -562,7 +559,7 @@ static int mod_priority_set(void const *instance, uint8_t const *buffer, UNUSED 
 	proto_radius_t const *inst = talloc_get_type_abort_const(instance, proto_radius_t);
 
 	rad_assert(buffer[0] > 0);
-	rad_assert(buffer[0] < FR_MAX_PACKET_CODE);
+	rad_assert(buffer[0] < FR_RADIUS_MAX_PACKET_CODE);
 
 	/*
 	 *	Disallowed packet
@@ -607,29 +604,6 @@ static int mod_open(void *instance, fr_schedule_t *sc, UNUSED CONF_SECTION *conf
 				   inst->max_packet_size, inst->num_messages);
 }
 
-static rlm_components_t code2component[FR_CODE_DO_NOT_RESPOND + 1] = {
-	[FR_CODE_ACCESS_REQUEST] = MOD_AUTHORIZE,
-	[FR_CODE_ACCESS_ACCEPT] = MOD_POST_AUTH,
-	[FR_CODE_ACCESS_REJECT] = MOD_POST_AUTH,
-	[FR_CODE_ACCESS_CHALLENGE] = MOD_POST_AUTH,
-
-	[FR_CODE_STATUS_SERVER] = MOD_AUTHORIZE,
-
-	[FR_CODE_ACCOUNTING_REQUEST] = MOD_PREACCT,
-	[FR_CODE_ACCOUNTING_RESPONSE] = MOD_ACCOUNTING,
-
-	[FR_CODE_COA_REQUEST] = MOD_RECV_COA,
-	[FR_CODE_COA_ACK] = MOD_SEND_COA,
-	[FR_CODE_COA_NAK] = MOD_SEND_COA,
-
-	[FR_CODE_DISCONNECT_REQUEST] = MOD_RECV_COA,
-	[FR_CODE_DISCONNECT_ACK] = MOD_SEND_COA,
-	[FR_CODE_DISCONNECT_NAK] = MOD_SEND_COA,
-
-	[FR_CODE_PROTOCOL_ERROR] = MOD_POST_AUTH,
-	[FR_CODE_DO_NOT_RESPOND] = MOD_POST_AUTH,
-};
-
 /** Instantiate the application
  *
  * Instantiate I/O and type submodules.
@@ -643,96 +617,11 @@ static rlm_components_t code2component[FR_CODE_DO_NOT_RESPOND + 1] = {
 static int mod_instantiate(void *instance, CONF_SECTION *conf)
 {
 	proto_radius_t		*inst = talloc_get_type_abort(instance, proto_radius_t);
-	size_t			i;
-
-	CONF_ITEM		*ci = NULL;
-	CONF_SECTION		*server = cf_item_to_section(cf_parent(conf));
-	vp_tmpl_rules_t		parse_rules;
-
-	memset(&parse_rules, 0, sizeof(parse_rules));
-	parse_rules.dict_def = dict_radius;
-
-	/*
-	 *	Compile each "send/recv + RADIUS packet type" section.
-	 *	This is so that the submodules don't need to do this.
-	 */
-	i = 0;
-	while((ci = cf_item_next(server, ci))) {
-		fr_dict_enum_t const	*dv;
-		char const		*name, *packet_type;
-		CONF_SECTION		*subcs;
-
-		if (!cf_item_is_section(ci)) continue;
-
-		subcs = cf_item_to_section(ci);
-		name = cf_section_name1(subcs);
-
-		/*
-		 *	We only process recv/send sections.
-		 *	proto_radius_auth will handle the
-		 *	"authenticate" sections.
-		 */
-		if ((strcmp(name, "recv") != 0) &&
-		    (strcmp(name, "send") != 0)) continue;
-
-		/*
-		 *	One more "recv" or "send" section has been
-		 *	found.
-		 */
-		i++;
-
-		/*
-		 *	Skip a section if it was already compiled.
-		 */
-		if (cf_data_find(subcs, unlang_group_t, NULL) != NULL) continue;
-
-		/*
-		 *	Check that the packet type is known.
-		 */
-		packet_type = cf_section_name2(subcs);
-		dv = fr_dict_enum_by_alias(attr_packet_type, packet_type, -1);
-		if (!dv || (dv->value->vb_uint32 > FR_CODE_DO_NOT_RESPOND) ||
-		    !code2component[dv->value->vb_uint32]) {
-			cf_log_err(subcs, "Invalid RADIUS packet type in '%s %s {...}'", name, packet_type);
-			return -1;
-		}
-
-		/*
-		 *	Skip 'recv foo' when it's a request packet
-		 *	that isn't used by this instance.  Note that
-		 *	we DO compile things like 'recv
-		 *	Access-Accept', so that rlm_radius can use it.
-		 */
-		if ((strcmp(name, "recv") == 0) && (dv->value->vb_uint32 <= FR_CODE_MAX) &&
-		    fr_request_packets[dv->value->vb_uint32] &&
-		    !inst->code_allowed[dv->value->vb_uint32]) {
-			/* Don't emit warnings here - likely handled by a different listen section */
-			continue;
-		}
-
-		/*
-		 *	Try to compile it, and fail if it doesn't work.
-		 */
-		cf_log_debug(subcs, "compiling - %s %s {...}", name, packet_type);
-
-		if (unlang_compile(subcs, code2component[dv->value->vb_uint32], &parse_rules) < 0) {
-			cf_log_err(subcs, "Failed compiling '%s %s { ... }' section", name, packet_type);
-			return -1;
-		}
-	}
-
-	/*
-	 *	No 'recv' or 'send' sections.  That's an error.
-	 */
-	if (!i) {
-		cf_log_err(server, "Virtual servers cannot be empty.");
-		return -1;
-	}
 
 	/*
 	 *	Instantiate the process modules
 	 */
-	if (fr_app_process_instantiate(inst->type_submodule, inst->type_submodule_by_code,
+	if (fr_app_process_instantiate(inst->io.server_cs, inst->type_submodule, inst->type_submodule_by_code,
 				       sizeof(inst->type_submodule_by_code) / sizeof(inst->type_submodule_by_code[0]),
 				       conf) < 0) {
 		return -1;
@@ -786,7 +675,7 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 	/*
 	 *	Bootstrap the app_process modules.
 	 */
-	if (fr_app_process_bootstrap(inst->type_submodule, conf, inst->io.server_cs) < 0) return -1;
+	if (fr_app_process_bootstrap(inst->io.server_cs, inst->type_submodule, conf) < 0) return -1;
 
 	/*
 	 *	No IO module, it's an empty listener.
@@ -796,20 +685,19 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 	/*
 	 *	These timers are usually protocol specific.
 	 */
-	FR_TIMEVAL_BOUND_CHECK("idle_timeout", &inst->io.idle_timeout, >=, 1, 0);
-	FR_TIMEVAL_BOUND_CHECK("idle_timeout", &inst->io.idle_timeout, <=, 600, 0);
+	FR_TIME_DELTA_BOUND_CHECK("idle_timeout", inst->io.idle_timeout, >=, fr_time_delta_from_sec(1));
+	FR_TIME_DELTA_BOUND_CHECK("idle_timeout", inst->io.idle_timeout, <=, fr_time_delta_from_sec(600));
 
-	FR_TIMEVAL_BOUND_CHECK("nak_lifetime", &inst->io.nak_lifetime, >=, 1, 0);
-	FR_TIMEVAL_BOUND_CHECK("nak_lifetime", &inst->io.nak_lifetime, <=, 600, 0);
+	FR_TIME_DELTA_BOUND_CHECK("nak_lifetime", inst->io.nak_lifetime, >=, fr_time_delta_from_sec(1));
+	FR_TIME_DELTA_BOUND_CHECK("nak_lifetime", inst->io.nak_lifetime, <=, fr_time_delta_from_sec(600));
 
-	FR_TIMEVAL_BOUND_CHECK("cleanup_delay", &inst->io.cleanup_delay, <=, 30, 0);
+	FR_TIME_DELTA_BOUND_CHECK("cleanup_delay", inst->io.cleanup_delay, <=, fr_time_delta_from_sec(30));
 
 	/*
 	 *	No Access-Request packets, then no cleanup delay.
 	 */
 	if (!inst->code_allowed[FR_CODE_ACCESS_REQUEST]) {
-		inst->io.cleanup_delay.tv_sec = 0;
-		inst->io.cleanup_delay.tv_usec = 0;
+		inst->io.cleanup_delay = 0;
 	}
 
 	/*
@@ -821,7 +709,7 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 	/*
 	 *	We will need this for dynamic clients and connected sockets.
 	 */
-	inst->io.dl_inst = dl_instance_find(inst);
+	inst->io.dl_inst = dl_module_instance_by_data(inst);
 	rad_assert(inst != NULL);
 
 	/*

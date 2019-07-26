@@ -19,9 +19,9 @@
  * @file groups.c
  * @brief LDAP module group functions.
  *
- * @author Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  *
- * @copyright 2013 Network RADIUS SARL <info@networkradius.com>
+ * @copyright 2013 Network RADIUS SARL (info@networkradius.com)
  * @copyright 2013-2015 The FreeRADIUS Server Project.
  */
 RCSID("$Id$")
@@ -92,7 +92,7 @@ char const *rlm_ldap_find_user(rlm_ldap_t const *inst, REQUEST *request, fr_ldap
 	if (!force) {
 		vp = fr_pair_find_by_da(request->control, attr_ldap_userdn, TAG_ANY);
 		if (vp) {
-			RDEBUG("Using user DN from request \"%pV\"", &vp->data);
+			RDEBUG2("Using user DN from request \"%pV\"", &vp->data);
 			*rcode = RLM_MODULE_OK;
 			return vp->vp_strvalue;
 		}
@@ -104,7 +104,7 @@ char const *rlm_ldap_find_user(rlm_ldap_t const *inst, REQUEST *request, fr_ldap
 	if ((*pconn)->rebound) {
 		status = fr_ldap_bind(request, pconn, (*pconn)->config->admin_identity,
 				      (*pconn)->config->admin_password, &(*pconn)->config->admin_sasl,
-				      NULL, NULL, NULL);
+				      0, NULL, NULL);
 		if (status != LDAP_PROC_SUCCESS) {
 			*rcode = RLM_MODULE_FAIL;
 			return NULL;
@@ -194,7 +194,7 @@ char const *rlm_ldap_find_user(rlm_ldap_t const *inst, REQUEST *request, fr_ldap
 	}
 	fr_ldap_util_normalise_dn(dn, dn);
 
-	RDEBUG("User object found at DN \"%s\"", dn);
+	RDEBUG2("User object found at DN \"%s\"", dn);
 
 	MEM(pair_update_control(&vp, attr_ldap_userdn) >= 0);
 	fr_pair_value_strcpy(vp, dn);
@@ -231,18 +231,18 @@ rlm_rcode_t rlm_ldap_check_access(rlm_ldap_t const *inst, REQUEST *request,
 	if (values) {
 		if (inst->access_positive) {
 			if ((values[0]->bv_len >= 5) && (strncasecmp(values[0]->bv_val, "false", 5) == 0)) {
-				RDEBUG("\"%s\" attribute exists but is set to 'false' - user locked out",
-				       inst->userobj_access_attr);
+				REDEBUG("\"%s\" attribute exists but is set to 'false' - user locked out",
+				        inst->userobj_access_attr);
 				rcode = RLM_MODULE_USERLOCK;
 			}
 			/* RLM_MODULE_OK set above... */
 		} else if ((values[0]->bv_len < 5) || (strncasecmp(values[0]->bv_val, "false", 5) != 0)) {
-			RDEBUG("\"%s\" attribute exists - user locked out", inst->userobj_access_attr);
+			REDEBUG("\"%s\" attribute exists - user locked out", inst->userobj_access_attr);
 			rcode = RLM_MODULE_USERLOCK;
 		}
 		ldap_value_free_len(values);
 	} else if (inst->access_positive) {
-		RDEBUG("No \"%s\" attribute - user locked out", inst->userobj_access_attr);
+		REDEBUG("No \"%s\" attribute - user locked out", inst->userobj_access_attr);
 		rcode = RLM_MODULE_USERLOCK;
 	}
 

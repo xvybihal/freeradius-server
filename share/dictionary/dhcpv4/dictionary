@@ -1,5 +1,7 @@
 # -*- text -*-
-# Copyright (C) 2015 The FreeRADIUS Server project and contributors
+# Copyright (C) 2019 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id$
 ##############################################################################
 #
 #	DHCP dictionary.
@@ -23,8 +25,10 @@
 #	On top of that, a number of options are really TLV's.
 #	We need to be able to understand them, too.
 #
-PROTOCOL	DHCPv4	2
+PROTOCOL	DHCPv4		2
 BEGIN-PROTOCOL	DHCPv4
+
+$INCLUDE dictionary.freeradius.internal
 
 # Fixme should be broken out into separate RFCs
 $INCLUDE dictionary.rfc2131

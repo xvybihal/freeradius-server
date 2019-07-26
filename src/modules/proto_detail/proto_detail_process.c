@@ -34,45 +34,32 @@
 #include "proto_detail.h"
 
 static fr_dict_t *dict_freeradius;
-static fr_dict_t *dict_radius;
 
 extern fr_dict_autoload_t proto_detail_process_dict[];
 fr_dict_autoload_t proto_detail_process_dict[] = {
 	{ .out = &dict_freeradius, .proto = "freeradius" },
-	{ .out = &dict_radius, .proto = "radius" },
 
 	{ NULL }
 };
-
-static fr_dict_attr_t const *attr_packet_type;
 
 extern fr_dict_attr_autoload_t proto_detail_process_dict_attr[];
 fr_dict_attr_autoload_t proto_detail_process_dict_attr[] = {
-	{ .out = &attr_packet_type, .name = "Packet-Type", .type = FR_TYPE_UINT32, .dict = &dict_radius },
 	{ NULL }
 };
 
-static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, fr_io_action_t action)
+static fr_io_final_t mod_process(void const *instance, REQUEST *request)
 {
-	VALUE_PAIR		*vp;
-	rlm_rcode_t		rcode;
-	CONF_SECTION		*unlang;
+	VALUE_PAIR			*vp;
+	rlm_rcode_t			rcode;
+	CONF_SECTION			*unlang;
+	proto_detail_process_t const	*inst = instance;
 
 	REQUEST_VERIFY(request);
-
-	/*
-	 *	Pass this through asynchronously to the module which
-	 *	is waiting for something to happen.
-	 */
-	if (action != FR_IO_ACTION_RUN) {
-		unlang_signal(request, (fr_state_signal_t) action);
-		return FR_IO_DONE;
-	}
 
 	switch (request->request_state) {
 	case REQUEST_INIT:
 		RDEBUG("Received %s ID %i",
-		       fr_dict_enum_alias_by_value(attr_packet_type, fr_box_uint32(request->reply->code)),
+		       fr_dict_enum_alias_by_value(inst->attr_packet_type, fr_box_uint32(request->packet->code)),
 		       request->packet->id);
 		log_request_pair_list(L_DBG_LVL_1, request, request->packet->vps, "");
 
@@ -85,13 +72,13 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 		}
 
 		RDEBUG("Running 'recv' from file %s", cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_RECV;
 		/* FALL-THROUGH */
 
 	case REQUEST_RECV:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
 
@@ -122,9 +109,10 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 				request->reply->code = 0;
 				break;
 			}
-			break;
+			/* FALL-THROUGH */
 
 		case RLM_MODULE_HANDLED:
+			unlang = cf_section_find(request->server_cs, "send", "ok");
 			break;
 
 		/*
@@ -139,30 +127,30 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 		case RLM_MODULE_USERLOCK:
 		default:
 			request->reply->code = 0;
+			unlang = cf_section_find(request->server_cs, "send", "fail");
 			break;
 		}
 
 		/*
 		 *	Allow for over-ride of reply code.
 		 */
-		vp = fr_pair_find_by_da(request->reply->vps, attr_packet_type, TAG_ANY);
+		vp = fr_pair_find_by_da(request->reply->vps, inst->attr_packet_type, TAG_ANY);
 		if (vp) request->reply->code = vp->vp_uint32;
 
 		if (request->reply->code == FR_CODE_DO_NOT_RESPOND) {
 			RWARN("Ignoring 'do_not_respond' as it does not apply to detail files");
 		}
 
-		unlang = cf_section_find(request->server_cs, "send", "ok");
 		if (!unlang) goto send_reply;
 
 		RDEBUG("Running 'send %s { ... }' from file %s", cf_section_name2(unlang), cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_SEND;
 		/* FALL-THROUGH */
 
 	case REQUEST_SEND:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
 
@@ -192,7 +180,7 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 			REDEBUG("Failed ID %i", request->reply->id);
 		} else {
 			RDEBUG("Sent %s ID %i",
-			       fr_dict_enum_alias_by_value(attr_packet_type, fr_box_uint32(request->reply->code)),
+			       fr_dict_enum_alias_by_value(inst->attr_packet_type, fr_box_uint32(request->reply->code)),
 			       request->reply->id);
 		}
 
@@ -207,37 +195,32 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 }
 
 
+static virtual_server_compile_t compile_list[] = {
+	{ "recv", NULL,			MOD_AUTHORIZE },
+	{ "send", "ok",			MOD_POST_AUTH },
+	{ "send", "fail",		MOD_POST_AUTH },
+
+	COMPILE_TERMINATOR
+};
+
+
 static int mod_instantiate(void *instance, CONF_SECTION *listen_cs)
 {
-	int rcode;
-	CONF_SECTION *server_cs;
 	proto_detail_process_t *inst = talloc_get_type_abort(instance, proto_detail_process_t);
+	CONF_SECTION		*server_cs;
 	vp_tmpl_rules_t		parse_rules;
 
 	memset(&parse_rules, 0, sizeof(parse_rules));
-	parse_rules.dict_def = dict_freeradius;
+	parse_rules.dict_def = inst->dict;
 
 	rad_assert(listen_cs);
 
 	server_cs = cf_item_to_section(cf_parent(listen_cs));
 	rad_assert(strcmp(cf_section_name1(server_cs), "server") == 0);
 
-	rcode = unlang_compile_subsection(server_cs, "recv", NULL, inst->recv_type, &parse_rules);
-	if (rcode < 0) return rcode;
-	if (rcode == 0) {
-		cf_log_err(server_cs, "Failed finding 'recv { ... }' section of virtual server %s",
-			   cf_section_name2(server_cs));
-		return -1;
-	}
-
-	rcode = unlang_compile_subsection(server_cs, "send", "ok", inst->send_type, &parse_rules);
-	if (rcode < 0) return rcode;
-
-	rcode = unlang_compile_subsection(server_cs, "send", "fail", inst->send_type, &parse_rules);
-	if (rcode < 0) return rcode;
-
-	return 0;
+	return virtual_server_compile_sections(server_cs, compile_list, &parse_rules);
 }
+
 
 extern fr_app_worker_t proto_detail_process;
 fr_app_worker_t proto_detail_process = {

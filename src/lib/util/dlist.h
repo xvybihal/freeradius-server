@@ -19,7 +19,7 @@
  *
  * @file src/lib/util/dlist.h
  *
- * @copyright 2016 Alan DeKok <aland@freeradius.org>
+ * @copyright 2016 Alan DeKok (aland@freeradius.org)
  */
 RCSIDH(dlist_h, "$Id$")
 
@@ -58,6 +58,15 @@ typedef struct {
 static inline void fr_dlist_entry_init(fr_dlist_t *entry)
 {
 	entry->prev = entry->next = entry;
+}
+
+/** Remove an item from the dlist when we don't have access to the head
+ *
+ */
+static inline void fr_dlist_entry_unlink(fr_dlist_t *entry)
+{
+	entry->prev->next = entry->next;
+	entry->next->prev = entry->prev;
 }
 
 /** Initialise the head structure of a doubly linked list
@@ -392,6 +401,21 @@ static inline CC_HINT(nonnull) void fr_dlist_move(fr_dlist_head_t *list_dst, fr_
 	dst->prev = src->prev;
 
 	fr_dlist_entry_init(src);
+}
+
+/** Free all items in a doubly linked list (with talloc)
+ *
+ * @param[in] head of list to free.
+ */
+static inline void fr_dlist_talloc_free(fr_dlist_head_t *head)
+{
+	void *e = NULL, *p;
+
+	while ((e = fr_dlist_next(head, e))) {
+		p = fr_dlist_remove(head, e);
+		talloc_free(e);
+		e = p;
+	}
 }
 
 #ifdef __cplusplus

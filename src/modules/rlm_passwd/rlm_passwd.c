@@ -19,7 +19,7 @@
  * @file rlm_passwd.c
  * @brief Enables authentication against unix passwd files.
  *
- * @copyright 2000,2006  The FreeRADIUS server project
+ * @copyright 2000,2006 The FreeRADIUS server project
  */
 RCSID("$Id$")
 
@@ -524,10 +524,10 @@ static void result_add(TALLOC_CTX *ctx, rlm_passwd_t const *inst, REQUEST *reque
 				vp = fr_pair_make(ctx, request->dict,
 						  vps, inst->pwd_fmt->field[i], pw->field[i], T_OP_EQ);
 				if (vp) {
-					RDEBUG("Added %s: '%s' to %s ", inst->pwd_fmt->field[i], pw->field[i], listname);
+					RDEBUG2("Added %s: '%s' to %s ", inst->pwd_fmt->field[i], pw->field[i], listname);
 				}
 			} else
-				RDEBUG("NOOP %s: '%s' to %s ", inst->pwd_fmt->field[i], pw->field[i], listname);
+				RDEBUG2("NOOP %s: '%s' to %s ", inst->pwd_fmt->field[i], pw->field[i], listname);
 		}
 	}
 }
@@ -571,8 +571,8 @@ static rlm_rcode_t CC_HINT(nonnull) mod_passwd_map(void *instance, UNUSED void *
 	return RLM_MODULE_OK;
 }
 
-extern rad_module_t rlm_passwd;
-rad_module_t rlm_passwd = {
+extern module_t rlm_passwd;
+module_t rlm_passwd = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "passwd",
 	.inst_size	= sizeof(rlm_passwd_t),

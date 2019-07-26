@@ -17,7 +17,7 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- *   @copyright 2003 Alan DeKok <aland@freeradius.org>
+ *   @copyright 2003 Alan DeKok (aland@freeradius.org)
  *   @copyright 2006 The FreeRADIUS server project
  */
 
@@ -107,7 +107,7 @@ static int eap_peap_identity(eap_session_t *eap_session, tls_session_t *tls_sess
 	eap_packet.id = eap_session->this_round->response->id + 1;
 	eap_packet.length[0] = 0;
 	eap_packet.length[1] = EAP_HEADER_LEN + 1;
-	eap_packet.data[0] = FR_EAP_IDENTITY;
+	eap_packet.data[0] = FR_EAP_METHOD_IDENTITY;
 
 	(tls_session->record_from_buff)(&tls_session->clean_in, &eap_packet, sizeof(eap_packet));
 	tls_session_send(eap_session->request, tls_session);
@@ -168,38 +168,37 @@ static void eap_peap_soh_verify(REQUEST *request, RADIUS_PACKET *packet,
 	vp->vp_bool = false;
 	fr_pair_add(&packet->vps, vp);
 
-	if (data && data[0] == FR_EAP_NAK) {
-		RDEBUG("SoH - client NAKed");
+	if (data && data[0] == FR_EAP_METHOD_NAK) {
+		REDEBUG("SoH - client NAKed");
 		return;
 	}
 
 	if (!data || data_len < 8) {
-		RDEBUG("SoH - eap payload too short");
+		REDEBUG("SoH - eap payload too short");
 		return;
 	}
 
 	eap_method_base = *data++;
 	if (eap_method_base != 254) {
-		RDEBUG("SoH - response is not extended EAP: %i", eap_method_base);
+		REDEBUG("SoH - response is not extended EAP: %i", eap_method_base);
 		return;
 	}
 
 	eap_vendor = soh_pull_be_24(data); data += 3;
 	if (eap_vendor != 0x137) {
-		RDEBUG("SoH - extended eap vendor %08x is not Microsoft", eap_vendor);
+		REDEBUG("SoH - extended eap vendor %08x is not Microsoft", eap_vendor);
 		return;
 	}
 
 	eap_method = soh_pull_be_32(data); data += 4;
 	if (eap_method != 0x21) {
-		RDEBUG("SoH - response eap type %08x is not EAP-SoH", eap_method);
+		REDEBUG("SoH - response eap type %08x is not EAP-SoH", eap_method);
 		return;
 	}
 
-
 	rv = soh_verify(request, data, data_len - 8);
-	if (rv<0) {
-		RDEBUG("SoH - error decoding payload: %s", fr_strerror());
+	if (rv < 0) {
+		REDEBUG("SoH - error decoding payload: %s", fr_strerror());
 	} else {
 		vp->vp_uint32 = 1;
 	}
@@ -218,7 +217,7 @@ static int eap_peap_verify(REQUEST *request, peap_tunnel_t *peap_tunnel,
 	/*
 	 *	No data, OR only 1 byte of EAP type.
 	 */
-	if (!data || (data_len == 0) || ((data_len <= 1) && (data[0] != FR_EAP_IDENTITY))) return 0;
+	if (!data || (data_len == 0) || ((data_len <= 1) && (data[0] != FR_EAP_METHOD_IDENTITY))) return 0;
 
 	/*
 	 *  Since the full EAP header is sent for the EAP Extensions type (Type 33),
@@ -244,7 +243,7 @@ static int eap_peap_verify(REQUEST *request, peap_tunnel_t *peap_tunnel,
 
 	eap_method = data[0];	/* Inner EAP header misses off code and identifier */
 	switch (eap_method) {
-	case FR_EAP_IDENTITY:
+	case FR_EAP_METHOD_IDENTITY:
 		RDEBUG2("Received EAP-Identity-Response");
 		return 0;
 
@@ -252,7 +251,7 @@ static int eap_peap_verify(REQUEST *request, peap_tunnel_t *peap_tunnel,
 	 *	We normally do Microsoft MS-CHAPv2 (26), versus
 	 *	Cisco MS-CHAPv2 (29).
 	 */
-	case FR_EAP_MSCHAPV2:
+	case FR_EAP_METHOD_MSCHAPV2:
 	default:
 		RDEBUG2("EAP method %s (%d)", eap_type2name(eap_method), eap_method);
 		return 0;
@@ -291,7 +290,7 @@ static VALUE_PAIR *eap_peap_inner_to_pairs(UNUSED REQUEST *request, RADIUS_PACKE
 	p[2] = (data_len + EAP_HEADER_LEN) >> 8;
 	p[3] = (data_len + EAP_HEADER_LEN) & 0xff;
 	memcpy(p + EAP_HEADER_LEN, data, total);
-	fr_pair_value_memsteal(vp, p);
+	fr_pair_value_memsteal(vp, p, false);
 
 	fr_cursor_init(&cursor, &head);
 	fr_cursor_append(&cursor, vp);
@@ -302,7 +301,7 @@ static VALUE_PAIR *eap_peap_inner_to_pairs(UNUSED REQUEST *request, RADIUS_PACKE
 			return NULL;
 		}
 
-		fr_pair_value_memcpy(vp, data + total, (data_len - total));
+		fr_pair_value_memcpy(vp, data + total, (data_len - total), false);
 
 		total += vp->vp_length;
 
@@ -370,7 +369,7 @@ static int eap_peap_check_tlv(REQUEST *request, uint8_t const *data, size_t data
 		}
 	}
 
-	RDEBUG("Unknown TLV %02x", data[10]);
+	RDEBUG2("Unknown TLV %02x", data[10]);
 
 	return 0;
 }
@@ -538,7 +537,7 @@ rlm_rcode_t eap_peap_process(eap_session_t *eap_session, tls_session_t *tls_sess
 
 	case PEAP_STATUS_INNER_IDENTITY_REQ_SENT:
 		/* we're expecting an identity response */
-		if (data[0] != FR_EAP_IDENTITY) {
+		if (data[0] != FR_EAP_METHOD_IDENTITY) {
 			REDEBUG("Expected EAP-Identity, got something else");
 			rcode = RLM_MODULE_REJECT;
 			goto finish;
@@ -553,7 +552,7 @@ rlm_rcode_t eap_peap_process(eap_session_t *eap_session, tls_session_t *tls_sess
 
 		fr_pair_value_bstrncpy(t->username, data + 1, data_len - 1);
 
-		RDEBUG("Got inner identity \"%pV\"", &t->username->data);
+		RDEBUG2("Got inner identity \"%pV\"", &t->username->data);
 		if (t->soh) {
 			t->status = PEAP_STATUS_WAIT_FOR_SOH_RESPONSE;
 			RDEBUG2("Requesting SoH from client");
@@ -565,14 +564,14 @@ rlm_rcode_t eap_peap_process(eap_session_t *eap_session, tls_session_t *tls_sess
 		break;
 
 	case PEAP_STATUS_WAIT_FOR_SOH_RESPONSE:
-		fake = request_alloc_fake(request);
+		fake = request_alloc_fake(request, NULL);
 		rad_assert(!fake->packet->vps);
 		eap_peap_soh_verify(fake, fake->packet, data, data_len);
 		setup_fake_request(request, fake, t);
 
 		if (t->soh_virtual_server) fake->server_cs = virtual_server_find(t->soh_virtual_server);
 
-		RDEBUG("Sending SoH request to server %s",
+		RDEBUG2("Sending SoH request to server %s",
 		       fake->server_cs ? cf_section_name2(fake->server_cs) : "NULL");
 		rad_virtual_server(fake);
 
@@ -654,7 +653,7 @@ rlm_rcode_t eap_peap_process(eap_session_t *eap_session, tls_session_t *tls_sess
 		return RLM_MODULE_REJECT;
 
 		case PEAP_STATUS_PHASE2_INIT:
-			RDEBUG("In state machine in phase2 init?");
+			RDEBUG2("In state machine in phase2 init?");
 
 		case PEAP_STATUS_PHASE2:
 			break;
@@ -665,7 +664,7 @@ rlm_rcode_t eap_peap_process(eap_session_t *eap_session, tls_session_t *tls_sess
 			goto finish;
 	}
 
-	fake = request_alloc_fake(request);
+	fake = request_alloc_fake(request, NULL);
 	rad_assert(!fake->packet->vps);
 
 	switch (t->status) {
@@ -691,11 +690,11 @@ rlm_rcode_t eap_peap_process(eap_session_t *eap_session, tls_session_t *tls_sess
 		q[1] = eap_round->response->id;
 		q[2] = (len >> 8) & 0xff;
 		q[3] = len & 0xff;
-		q[4] = FR_EAP_IDENTITY;
+		q[4] = FR_EAP_METHOD_IDENTITY;
 		memcpy(q + EAP_HEADER_LEN + 1,
 		       t->username->vp_strvalue, t->username->vp_length);
 
-		fr_pair_value_memsteal(vp, q);
+		fr_pair_value_memsteal(vp, q, false);
 		fr_pair_add(&fake->packet->vps, vp);
 	}
 		break;
@@ -729,7 +728,7 @@ rlm_rcode_t eap_peap_process(eap_session_t *eap_session, tls_session_t *tls_sess
 		 *	so we add one here, by pulling it out of the
 		 *	EAP-Identity packet.
 		 */
-		if ((data[0] == FR_EAP_IDENTITY) && (data_len > 1)) {
+		if ((data[0] == FR_EAP_METHOD_IDENTITY) && (data_len > 1)) {
 			t->username = fr_pair_afrom_da(t, attr_user_name);
 			rad_assert(t->username != NULL);
 			t->username->vp_tainted = true;

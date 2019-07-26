@@ -10,7 +10,7 @@
 .RE
 .sp
 ..
-.TH dictionary 5 "24 Jul 2016"
+.TH dictionary 5 "14 May 2019"
 .SH NAME
 dictionary \- RADIUS dictionary file
 .SH DESCRIPTION
@@ -94,8 +94,7 @@ other structs.
 The last (optional) field of an attribute definition are additional
 flags for that attribute, in a comma-separated list.  Previous
 versions of the server allowed these flags to include a vendor name.
-This behavior may still work, but it is deprecated, and is not
-recommended.
+This usage is no longer allowed.
 
 The options are:
 
@@ -121,6 +120,20 @@ definition found there for printing diagnostic and log messages.  When
 the server sees an attribute name in a configuration file, it looks up
 that attribute by name in the dictionary, and uses the definition
 found there.
+
+.TP 0.5i
+.B MEMBER name  type [flags]
+Define a member attribute of a structure.  The MEMBER definitions MUST
+follow the ATTRIBUTE entry that defines the 'struct'.  Multiple MEMBER
+definitions are allowed.
+
+The MEMBER keyword allows the dictionaries to define attributes which
+look like other attributes for all intents and purposes.  The only
+difference is that numbers do not have to be assigned to each MEMBER
+of an ATTRIBUTE of type 'struct'.
+
+The 'name' 'type' and 'flags' fields for MEMBER definitions have the
+same meaning as given above for the ATTRIBUTE definitions.
 
 .TP 0.5i
 .B FLAGS flag-name

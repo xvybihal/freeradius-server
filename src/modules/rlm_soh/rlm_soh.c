@@ -19,7 +19,7 @@
  * @file rlm_soh.c
  * @brief Decodes Microsoft's Statement of Health sub-protocol.
  *
- * @copyright 2010 Phil Mayers <p.mayers@imperial.ac.uk>
+ * @copyright 2010 Phil Mayers (p.mayers@imperial.ac.uk)
  */
 RCSID("$Id$")
 
@@ -170,7 +170,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 				if (vlen <= 1) {
 					uint8_t *p;
 
-					RDEBUG("SoH adding NAP marker to DHCP reply");
+					RDEBUG2("SoH adding NAP marker to DHCP reply");
 					/* client probe; send "NAP" in the reply */
 					vp = fr_pair_afrom_da(request->reply, attr_dhcp_vendor);
 					p = talloc_array(vp, uint8_t, 5);
@@ -179,11 +179,11 @@ static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *t
 					p[4] = 'N';
 					p[3] = 'A';
 					p[2] = 'P';
-					fr_pair_value_memsteal(vp, p);
+					fr_pair_value_memsteal(vp, p, false);
 					fr_pair_add(&request->reply->vps, vp);
 
 				} else {
-					RDEBUG("SoH decoding NAP from DHCP request");
+					RDEBUG2("SoH decoding NAP from DHCP request");
 					/* SoH payload */
 					rcode = soh_verify(request, data, vlen);
 					if (rcode < 0) {
@@ -212,11 +212,11 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(UNUSED void *instance, UNUSED 
 	/* try to find the MS-SoH payload */
 	vp = fr_pair_find_by_da(request->packet->vps, attr_ms_quarantine_soh, TAG_ANY);
 	if (!vp) {
-		RDEBUG("SoH radius VP not found");
+		RDEBUG2("SoH radius VP not found");
 		return RLM_MODULE_NOOP;
 	}
 
-	RDEBUG("SoH radius VP found");
+	RDEBUG2("SoH radius VP found");
 	/* decode it */
 	rv = soh_verify(request, vp->vp_octets, vp->vp_length);
 	if (rv < 0) {
@@ -253,8 +253,8 @@ static void mod_unload(void)
 	fr_soh_free();
 }
 
-extern rad_module_t rlm_soh;
-rad_module_t rlm_soh = {
+extern module_t rlm_soh;
+module_t rlm_soh = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "soh",
 	.type		= RLM_TYPE_THREAD_SAFE,

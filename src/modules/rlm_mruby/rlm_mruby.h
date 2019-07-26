@@ -18,10 +18,13 @@
  * @file rlm_mruby.h
  * @brief Translates requests between the server an an mruby interpreter.
  *
- * @copyright 2016 Herwin Weststrate <freeradius@herwinw.nl>
+ * @copyright 2016 Herwin Weststrate (freeradius@herwinw.nl)
  * @copyright 2016 The FreeRADIUS server project
  */
 
+#ifdef HAVE_WDOCUMENTATION
+DIAG_OFF(documentation)
+#endif
 #include <mruby.h>
 #include <mruby/compile.h>
 #include <mruby/array.h>
@@ -29,5 +32,8 @@
 #include <mruby/numeric.h>
 #include <mruby/string.h>
 #include <mruby/variable.h>
+#ifdef HAVE_WDOCUMENTATION
+DIAG_ON(documentation)
+#endif
 
 struct RClass *mruby_request_class(mrb_state *mrb, struct RClass *parent);

@@ -18,8 +18,8 @@
  *
  * @file src/lib/util/debug.c
  *
- * @copyright 2013  The FreeRADIUS server project
- * @copyright 2013  Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2013 The FreeRADIUS server project
+ * @copyright 2013 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 #include "debug.h"
 
@@ -322,9 +322,9 @@ int fr_get_debug_state(void)
 		lsan_disable = true;
 #endif
 
-DIAG_OFF(deprecated-declarations);
+DIAG_OFF(deprecated-declarations)
 		flags = PT_ATTACH;
-DIAG_ON(deprecated-declarations);
+DIAG_ON(deprecated-declarations)
 
 		/* Close parent's side */
 		close(from_child[0]);

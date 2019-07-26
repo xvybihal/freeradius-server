@@ -3,9 +3,9 @@
  * @file rlm_yubikey/validate.c
  * @brief Authentication for yubikey OTP tokens using the ykclient library.
  *
- * @author Arran Cudbard-Bell <a.cudbardb@networkradius.com>
+ * @author Arran Cudbard-Bell (a.cudbardb@networkradius.com)
  * @copyright 2013 The FreeRADIUS server project
- * @copyright 2013 Network RADIUS <info@networkradius.com>
+ * @copyright 2013 Network RADIUS (info@networkradius.com)
  */
 #define LOG_PREFIX "rlm_yubikey (%s) - "
 #define LOG_PREFIX_ARGS inst->name
@@ -37,7 +37,7 @@ static int _mod_conn_free(ykclient_handle_t **yandle)
  * @see fr_pool_connection_create_t
  * @see connection.c
  */
-static void *mod_conn_create(TALLOC_CTX *ctx, void *instance, UNUSED struct timeval const *timeout)
+static void *mod_conn_create(TALLOC_CTX *ctx, void *instance, UNUSED fr_time_delta_t timeout)
 {
 	rlm_yubikey_t const *inst = instance;
 	ykclient_rc status;

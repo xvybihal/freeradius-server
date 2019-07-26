@@ -33,6 +33,7 @@
 #include <freeradius-devel/io/listen.h>
 #include <freeradius-devel/io/schedule.h>
 #include <freeradius-devel/server/rad_assert.h>
+
 #include "proto_radius.h"
 
 extern fr_app_io_t proto_radius_udp;
@@ -65,6 +66,7 @@ typedef struct {
 	bool				recv_buff_is_set;	//!< Whether we were provided with a recv_buff
 	bool				send_buff_is_set;	//!< Whether we were provided with a send_buff
 	bool				dynamic_clients;	//!< whether we have dynamic clients
+	bool				dedup_authenticator;	//!< dedup using the request authenticator
 
 	RADCLIENT_LIST			*clients;		//!< local clients
 
@@ -95,6 +97,7 @@ static const CONF_PARSER udp_listen_config[] = {
 	{ FR_CONF_OFFSET_IS_SET("recv_buff", FR_TYPE_UINT32, proto_radius_udp_t, recv_buff) },
 	{ FR_CONF_OFFSET_IS_SET("send_buff", FR_TYPE_UINT32, proto_radius_udp_t, send_buff) },
 
+	{ FR_CONF_OFFSET("accept_conflicting_packets", FR_TYPE_BOOL, proto_radius_udp_t, dedup_authenticator) } ,
 	{ FR_CONF_OFFSET("dynamic_clients", FR_TYPE_BOOL, proto_radius_udp_t, dynamic_clients) } ,
 	{ FR_CONF_POINTER("networks", FR_TYPE_SUBSECTION, NULL), .subcs = (void const *) networks_config },
 
@@ -114,7 +117,7 @@ static ssize_t mod_read(fr_listen_t *li, void **packet_ctx, fr_time_t **recv_tim
 	int				flags;
 	ssize_t				data_size;
 	size_t				packet_len;
-	struct timeval			timestamp;
+	fr_time_t			timestamp;
 	decode_fail_t			reason;
 
 	fr_time_t			*recv_time_p;
@@ -162,7 +165,7 @@ static ssize_t mod_read(fr_listen_t *li, void **packet_ctx, fr_time_t **recv_tim
 		return 0;
 	}
 
-	if ((buffer[0] == 0) || (buffer[0] > FR_MAX_PACKET_CODE)) {
+	if ((buffer[0] == 0) || (buffer[0] > FR_RADIUS_MAX_PACKET_CODE)) {
 		DEBUG("proto_radius_udp got invalid packet code %d", buffer[0]);
 		thread->stats.total_unknown_types++;
 		return 0;
@@ -180,8 +183,7 @@ static ssize_t mod_read(fr_listen_t *li, void **packet_ctx, fr_time_t **recv_tim
 		return 0;
 	}
 
-	// @todo - maybe convert timestamp?
-	*recv_time_p = fr_time();
+	*recv_time_p = timestamp;
 
 	/*
 	 *	proto_radius sets the priority
@@ -313,6 +315,8 @@ static int mod_open(fr_listen_t *li)
 		return -1;
 	}
 
+	li->app_io_addr = fr_app_io_socket_addr(li, IPPROTO_UDP, &inst->ipaddr, port);
+
 	/*
 	 *	Set SO_REUSEPORT before bind, so that all packets can
 	 *	listen on the same destination IP address.
@@ -389,16 +393,26 @@ static int mod_fd_set(fr_listen_t *li, int fd)
 					     &thread->connection->src_ipaddr, thread->connection->src_port,
 					     &inst->ipaddr, inst->port,
 					     inst->interface);
-	
+
 	return 0;
 }
 
-static int mod_compare(UNUSED void const *instance, void const *one, void const *two)
+static int mod_compare(void const *instance, UNUSED void *thread_instance, UNUSED RADCLIENT *client,
+		       void const *one, void const *two)
 {
 	int rcode;
+	proto_radius_udp_t const *inst = talloc_get_type_abort_const(instance, proto_radius_udp_t);
 
 	uint8_t const *a = one;
 	uint8_t const *b = two;
+
+	/*
+	 *	Do a better job of deduping input packet.
+	 */
+	if (inst->dedup_authenticator) {
+		rcode = memcmp(a + 4, b + 4, RADIUS_AUTH_VECTOR_LENGTH);
+		if (rcode != 0) return rcode;
+	}
 
 	/*
 	 *	The tree is ordered by IDs, which are (hopefully)
@@ -408,7 +422,7 @@ static int mod_compare(UNUSED void const *instance, void const *one, void const 
 	if (rcode != 0) return rcode;
 
 	/*
-	 *	Then ordered by code, which is usally the same.
+	 *	Then ordered by code, which is usually the same.
 	 */
 	return (a[0] < b[0]) - (a[0] > b[0]);
 }
@@ -472,10 +486,6 @@ static int mod_bootstrap(void *instance, CONF_SECTION *cs)
 	/*
 	 *	Parse and create the trie for dynamic clients, even if
 	 *	there's no dynamic clients.
-	 *
-	 *	@todo - we could use this for source IP filtering?
-	 *	e.g. allow clients from a /16, but not from a /24
-	 *	within that /16.
 	 */
 	num = talloc_array_length(inst->allow);
 	if (!num) {
@@ -505,7 +515,7 @@ static int mod_bootstrap(void *instance, CONF_SECTION *cs)
 	 *	for IPPROTO_UDP, and require a "secret".
 	 */
 	if (cf_section_find_next(server_cs, NULL, "client", CF_IDENT_ANY)) {
-		inst->clients = client_list_parse_section(server_cs, false);
+		inst->clients = client_list_parse_section(server_cs, IPPROTO_UDP, false);
 		if (!inst->clients) {
 			cf_log_err(cs, "Failed creating local clients");
 			return -1;

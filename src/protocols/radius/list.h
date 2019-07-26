@@ -21,7 +21,7 @@
  * @file protocols/radius/list.h
  * @brief Constants for the RADIUS protocol.
  *
- * @copyright 2015  The FreeRADIUS server project
+ * @copyright 2015 The FreeRADIUS server project
  */
 RCSIDH(list_h, "$Id$")
 
@@ -57,13 +57,13 @@ bool fr_packet_list_socket_add(fr_packet_list_t *pl, int sockfd, int proto,
 bool fr_packet_list_socket_del(fr_packet_list_t *pl, int sockfd);
 bool fr_packet_list_socket_freeze(fr_packet_list_t *pl, int sockfd);
 bool fr_packet_list_socket_thaw(fr_packet_list_t *pl, int sockfd);
-int fr_packet_list_walk(fr_packet_list_t *pl, void *ctx, rb_walker_t callback);
+int fr_packet_list_walk(fr_packet_list_t *pl, rb_walker_t callback, void *uctx);
 int fr_packet_list_fd_set(fr_packet_list_t *pl, fd_set *set);
 RADIUS_PACKET *fr_packet_list_recv(fr_packet_list_t *pl, fd_set *set, uint32_t max_attributes, bool require_ma);
 
 uint32_t fr_packet_list_num_incoming(fr_packet_list_t *pl);
 uint32_t fr_packet_list_num_outgoing(fr_packet_list_t *pl);
-void fr_packet_header_print(FILE *fp, RADIUS_PACKET *packet, bool received);
+void fr_packet_header_log(fr_log_t const *log, RADIUS_PACKET *packet, bool received);
 
 /*
  *	"find" returns a pointer to the RADIUS_PACKET* member in the

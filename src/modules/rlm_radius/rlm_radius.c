@@ -19,8 +19,8 @@
  * @file rlm_radius.c
  * @brief A RADIUS client library.
  *
- * @copyright 2016  The FreeRADIUS server project
- * @copyright 2016  Network RADIUS SARL
+ * @copyright 2016 The FreeRADIUS server project
+ * @copyright 2016 Network RADIUS SARL
  */
 RCSID("$Id$")
 
@@ -53,16 +53,16 @@ static CONF_PARSER const status_check_update_config[] = {
 };
 
 static CONF_PARSER const connection_config[] = {
-	{ FR_CONF_OFFSET("connect_timeout", FR_TYPE_TIMEVAL, rlm_radius_t, connection_timeout),
+	{ FR_CONF_OFFSET("connect_timeout", FR_TYPE_TIME_DELTA, rlm_radius_t, connection_timeout),
 	  .dflt = STRINGIFY(5) },
 
-	{ FR_CONF_OFFSET("reconnect_delay", FR_TYPE_TIMEVAL, rlm_radius_t, reconnection_delay),
+	{ FR_CONF_OFFSET("reconnect_delay", FR_TYPE_TIME_DELTA, rlm_radius_t, reconnection_delay),
 	  .dflt = STRINGIFY(5) },
 
-	{ FR_CONF_OFFSET("idle_timeout", FR_TYPE_TIMEVAL, rlm_radius_t, idle_timeout),
+	{ FR_CONF_OFFSET("idle_timeout", FR_TYPE_TIME_DELTA, rlm_radius_t, idle_timeout),
 	  .dflt = STRINGIFY(300) },
 
-	{ FR_CONF_OFFSET("zombie_period", FR_TYPE_TIMEVAL, rlm_radius_t, zombie_period),
+	{ FR_CONF_OFFSET("zombie_period", FR_TYPE_TIME_DELTA, rlm_radius_t, zombie_period),
 	  .dflt = STRINGIFY(40) },
 
 	CONF_PARSER_TERMINATOR
@@ -139,7 +139,7 @@ static CONF_PARSER const module_config[] = {
 	CONF_PARSER_TERMINATOR
 };
 
-static CONF_PARSER const type_interval_config[FR_MAX_PACKET_CODE] = {
+static CONF_PARSER const type_interval_config[FR_RADIUS_MAX_PACKET_CODE] = {
 	[FR_CODE_ACCESS_REQUEST] = { FR_CONF_POINTER("Access-Request", FR_TYPE_SUBSECTION, NULL), .subcs = (void const *) auth_config },
 
 	[FR_CODE_ACCOUNTING_REQUEST] = { FR_CONF_POINTER("Accounting-Request", FR_TYPE_SUBSECTION, NULL), .subcs = (void const *) acct_config },
@@ -216,7 +216,7 @@ static int type_parse(UNUSED TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 	}
 
 	if (!code ||
-	    (code >= FR_MAX_PACKET_CODE) ||
+	    (code >= FR_RADIUS_MAX_PACKET_CODE) ||
 	    (!type_interval_config[code].name)) goto invalid_code;
 
 	/*
@@ -233,7 +233,7 @@ static int type_parse(UNUSED TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 /** Wrapper around dl_instance
  *
  * @param[in] ctx	to allocate data in (instance of proto_radius).
- * @param[out] out	Where to write a dl_instance_t containing the module handle and instance.
+ * @param[out] out	Where to write a dl_module_inst_t containing the module handle and instance.
  * @param[in] parent	Base structure address.
  * @param[in] ci	#CONF_PAIR specifying the name of the type module.
  * @param[in] rule	unused.
@@ -245,7 +245,7 @@ static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 			   CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
 {
 	char const	*name = cf_pair_value(cf_item_to_pair(ci));
-	dl_instance_t	*parent_inst;
+	dl_module_inst_t	*parent_inst;
 	CONF_SECTION	*cs = cf_item_to_section(cf_parent(ci));
 	CONF_SECTION	*transport_cs;
 
@@ -257,10 +257,10 @@ static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 	 */
 	if (!transport_cs) transport_cs = cf_section_alloc(cs, cs, name, NULL);
 
-	parent_inst = cf_data_value(cf_data_find(cs, dl_instance_t, "rlm_radius"));
+	parent_inst = cf_data_value(cf_data_find(cs, dl_module_inst_t, "rlm_radius"));
 	rad_assert(parent_inst);
 
-	return dl_instance(ctx, out, transport_cs, parent_inst, name, DL_TYPE_SUBMODULE);
+	return dl_module_instance(ctx, out, transport_cs, parent_inst, name, DL_MODULE_TYPE_SUBMODULE);
 }
 
 
@@ -301,7 +301,7 @@ static int status_check_type_parse(UNUSED TALLOC_CTX *ctx, void *out, UNUSED voi
 	 *	types.
 	 */
 	if (!code ||
-	    (code >= FR_MAX_PACKET_CODE) ||
+	    (code >= FR_RADIUS_MAX_PACKET_CODE) ||
 	    (!type_interval_config[code].name)) goto invalid_code;
 
 	/*
@@ -376,8 +376,7 @@ static int status_check_update_parse(TALLOC_CTX *ctx, void *out, UNUSED void *pa
 }
 
 
-static void mod_radius_signal(REQUEST *request, void *instance, void *thread, void *ctx,
-			      fr_state_signal_t action)
+static void mod_radius_signal(void *instance, void *thread, REQUEST *request, void *rctx, fr_state_signal_t action)
 {
 	rlm_radius_t const *inst = talloc_get_type_abort_const(instance, rlm_radius_t);
 	rlm_radius_thread_t *t = talloc_get_type_abort(thread, rlm_radius_thread_t);
@@ -392,7 +391,7 @@ static void mod_radius_signal(REQUEST *request, void *instance, void *thread, vo
 	 *	necessary.
 	 */
 	if (action == FR_SIGNAL_CANCEL) {
-		talloc_free(ctx);
+		talloc_free(rctx);
 		return;
 	}
 
@@ -405,14 +404,14 @@ static void mod_radius_signal(REQUEST *request, void *instance, void *thread, vo
 
 	if (!inst->io->signal) return;
 
-	inst->io->signal(request, inst->io_instance, t->thread_io_ctx, ctx, action);
+	inst->io->signal(request, inst->io_instance, t->thread_io_ctx, rctx, action);
 }
 
 
-/** Continue after unlang_resumable()
+/** Continue after unlang_interpret_resumable()
  *
  */
-static rlm_rcode_t mod_radius_resume(REQUEST *request, void *instance, void *thread, void *ctx)
+static rlm_rcode_t mod_radius_resume(void *instance, void *thread, REQUEST *request, void *ctx)
 {
 	rlm_radius_t const *inst = talloc_get_type_abort_const(instance, rlm_radius_t);
 	rlm_radius_thread_t *t = talloc_get_type_abort(thread, rlm_radius_thread_t);
@@ -450,7 +449,7 @@ static void radius_fixups(rlm_radius_t *inst, REQUEST *request)
 	if (fr_pair_find_by_da(request->packet->vps, attr_chap_password, TAG_ANY) &&
 	    !fr_pair_find_by_da(request->packet->vps, attr_chap_challenge, TAG_ANY)) {
 	    	MEM(pair_add_request(&vp, attr_chap_challenge) >= 0);
-		fr_pair_value_memcpy(vp, request->packet->vector, sizeof(request->packet->vector));
+		fr_pair_value_memcpy(vp, request->packet->vector, sizeof(request->packet->vector), true);
 	}
 }
 
@@ -466,7 +465,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_process(void *instance, void *thread, RE
 	void *request_io_ctx;
 
 	if (!request->packet->code) {
-		RDEBUG("You MUST specify a packet code");
+		REDEBUG("You MUST specify a packet code");
 		return RLM_MODULE_FAIL;
 	}
 
@@ -479,7 +478,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_process(void *instance, void *thread, RE
 		return RLM_MODULE_FAIL;
 	}
 
-	if ((request->packet->code >= FR_MAX_PACKET_CODE) ||
+	if ((request->packet->code >= FR_RADIUS_MAX_PACKET_CODE) ||
 	    !inst->retry[request->packet->code].irt) { /* can't be zero */
 		REDEBUG("Invalid packet code %d", request->packet->code);
 		return RLM_MODULE_FAIL;
@@ -550,19 +549,17 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 	inst->name = cf_section_name2(conf);
 	if (!inst->name) inst->name = cf_section_name1(conf);
 
-	FR_TIMEVAL_BOUND_CHECK("connection.connect_timeout", &inst->connection_timeout, >=, 1, 0);
-	FR_TIMEVAL_BOUND_CHECK("connection.connect_timeout", &inst->connection_timeout, <=, 30, 0);
+	FR_TIME_DELTA_BOUND_CHECK("connection.connect_timeout", inst->connection_timeout, >=, fr_time_delta_from_sec(1));
+	FR_TIME_DELTA_BOUND_CHECK("connection.connect_timeout", inst->connection_timeout, <=, fr_time_delta_from_sec(30));
 
-	FR_TIMEVAL_BOUND_CHECK("connection.reconnect_delay", &inst->reconnection_delay, >=, 5, 0);
-	FR_TIMEVAL_BOUND_CHECK("connection.reconnect_delay", &inst->reconnection_delay, <=, 300, 0);
+	FR_TIME_DELTA_BOUND_CHECK("connection.reconnect_delay", inst->reconnection_delay, >=, fr_time_delta_from_sec(5));
+	FR_TIME_DELTA_BOUND_CHECK("connection.reconnect_delay", inst->reconnection_delay, <=, fr_time_delta_from_sec(300));
 
-	if ((inst->idle_timeout.tv_sec != 0) && (inst->idle_timeout.tv_usec != 0)) {
-		FR_TIMEVAL_BOUND_CHECK("connection.idle_timeout", &inst->idle_timeout, >=, 5, 0);
-	}
-	FR_TIMEVAL_BOUND_CHECK("connection.idle_timeout", &inst->idle_timeout, <=, 600, 0);
+	FR_TIME_DELTA_BOUND_CHECK("connection.idle_timeout", inst->idle_timeout, >=, fr_time_delta_from_sec(5));
+	FR_TIME_DELTA_BOUND_CHECK("connection.idle_timeout", inst->idle_timeout, <=, fr_time_delta_from_sec(600));
 
-	FR_TIMEVAL_BOUND_CHECK("connection.zombie_period", &inst->zombie_period, >=, 1, 0);
-	FR_TIMEVAL_BOUND_CHECK("connection.zombie_period", &inst->zombie_period, <=, 120, 0);
+	FR_TIME_DELTA_BOUND_CHECK("connection.zombie_period", inst->zombie_period, >=, fr_time_delta_from_sec(1));
+	FR_TIME_DELTA_BOUND_CHECK("connection.zombie_period", inst->zombie_period, <=, fr_time_delta_from_sec(120));
 
 	num_types = talloc_array_length(inst->types);
 	rad_assert(num_types > 0);
@@ -575,12 +572,12 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 
 		code = inst->types[i];
 		rad_assert(code > 0);
-		rad_assert(code < FR_MAX_PACKET_CODE);
+		rad_assert(code < FR_RADIUS_MAX_PACKET_CODE);
 
 		inst->allowed[code] = 1;
 	}
 
-	rad_assert(inst->status_check < FR_MAX_PACKET_CODE);
+	rad_assert(inst->status_check < FR_RADIUS_MAX_PACKET_CODE);
 
 	/*
 	 *	If we have status_check = packet, then 'packet' MUST either be
@@ -835,8 +832,8 @@ static void mod_unload(void)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_radius;
-rad_module_t rlm_radius = {
+extern module_t rlm_radius;
+module_t rlm_radius = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "radius",
 	.type		= RLM_TYPE_THREAD_SAFE | RLM_TYPE_RESUMABLE,

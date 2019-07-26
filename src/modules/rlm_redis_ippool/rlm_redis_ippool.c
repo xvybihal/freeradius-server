@@ -35,7 +35,7 @@
  * - @verbatim {<pool name>:<pool type>}:device:<client id> @endverbatim (string) contains last
  *	IP address bound by this client.
  *
- * @copyright 2015 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2015 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  * @copyright 2015 The FreeRADIUS server project
  */
 
@@ -49,6 +49,10 @@ RCSID("$Id$")
 #include <freeradius-devel/redis/base.h>
 #include <freeradius-devel/redis/cluster.h>
 #include "redis_ippool.h"
+
+#ifdef WITH_DHCP
+#include <freeradius-devel/dhcpv4/dhcpv4.h>
+#endif
 
 /** rlm_redis module instance
  *
@@ -69,7 +73,7 @@ typedef struct {
 	uint32_t		wait_num;	//!< How many slaves we want to acknowledge allocations
 						//!< or updates.
 
-	struct timeval		wait_timeout;	//!< How long we wait for slaves to acknowledge writing.
+	fr_time_delta_t		wait_timeout;	//!< How long we wait for slaves to acknowledge writing.
 
 	vp_tmpl_t		*device_id;	//!< Unique device identifier.  Could be mac-address
 						//!< or a combination of User-Name and something
@@ -111,7 +115,7 @@ static CONF_PARSER module_config[] = {
 	{ FR_CONF_OFFSET("lease_time", FR_TYPE_TMPL | FR_TYPE_REQUIRED, rlm_redis_ippool_t, lease_time) },
 
 	{ FR_CONF_OFFSET("wait_num", FR_TYPE_UINT32, rlm_redis_ippool_t, wait_num) },
-	{ FR_CONF_OFFSET("wait_timeout", FR_TYPE_TIMEVAL, rlm_redis_ippool_t, wait_timeout) },
+	{ FR_CONF_OFFSET("wait_timeout", FR_TYPE_TIME_DELTA, rlm_redis_ippool_t, wait_timeout) },
 
 	{ FR_CONF_OFFSET("requested_address", FR_TYPE_TMPL | FR_TYPE_REQUIRED, rlm_redis_ippool_t, requested_address), .dflt = "%{%{DHCP-Requested-IP-Address}:-%{DHCP-Client-IP-Address}}", .quote = T_DOUBLE_QUOTED_STRING },
 	{ FR_CONF_DEPRECATED("ip_address", FR_TYPE_TMPL | FR_TYPE_REQUIRED, rlm_redis_ippool_t, NULL) },
@@ -135,21 +139,33 @@ static CONF_PARSER module_config[] = {
 
 static fr_dict_t *dict_freeradius;
 static fr_dict_t *dict_radius;
+#ifdef WITH_DHCP
+static fr_dict_t *dict_dhcpv4;
+#endif
 
 extern fr_dict_autoload_t rlm_redis_ippool_dict[];
 fr_dict_autoload_t rlm_redis_ippool_dict[] = {
 	{ .out = &dict_freeradius, .proto = "freeradius" },
 	{ .out = &dict_radius, .proto = "radius" },
+#ifdef WITH_DHCP
+	{ .out = &dict_dhcpv4, .proto = "dhcpv4" },
+#endif
 	{ NULL }
 };
 
 static fr_dict_attr_t const *attr_pool_action;
 static fr_dict_attr_t const *attr_acct_status_type;
+#ifdef WITH_DHCP
+static fr_dict_attr_t const *attr_message_type;
+#endif
 
 extern fr_dict_attr_autoload_t rlm_redis_ippool_dict_attr[];
 fr_dict_attr_autoload_t rlm_redis_ippool_dict_attr[] = {
 	{ .out = &attr_pool_action, .name = "Pool-Action", .type = FR_TYPE_UINT32, .dict = &dict_freeradius },
 	{ .out = &attr_acct_status_type, .name = "Acct-Status-Type", .type = FR_TYPE_UINT32, .dict = &dict_radius },
+#ifdef WITH_DHCP
+	{ .out = &attr_message_type, .name = "DHCP-Message-Type", .type = FR_TYPE_UINT8, .dict = &dict_dhcpv4 },
+#endif
 	{ NULL }
 };
 
@@ -191,37 +207,41 @@ static char lua_alloc_cmd[] =
 	"  if expires_in > 0 then" EOL									/* 11 */
 	"    ip = redis.call('HMGET', '{' .. KEYS[1] .. '}:"IPPOOL_ADDRESS_KEY":' .. exists, 'device', 'range', 'counter')" EOL	/* 12 */
 	"    if ip and (ip[1] == ARGV[3]) then" EOL							/* 13 */
-	"      return {" STRINGIFY(_IPPOOL_RCODE_SUCCESS) ", exists, ip[2], expires_in, ip[3] }" EOL	/* 14 */
-	"    end" EOL											/* 15 */
-	"  end" EOL											/* 16 */
-	"end" EOL											/* 17 */
+//	"      if expires_in < ARGV[2] then" EOL							/* 14 */
+//	"        redis.call('ZADD', pool_key, 'XX', ARGV[1] + ARGV[2], ip[1])" EOL			/* 15 */
+//	"        expires_in = ARGV[2]" EOL								/* 16 */
+//	"      end" EOL											/* 17 */
+	"      return {" STRINGIFY(_IPPOOL_RCODE_SUCCESS) ", exists, ip[2], expires_in, ip[3] }" EOL	/* 18 */
+	"    end" EOL											/* 19 */
+	"  end" EOL											/* 20 */
+	"end" EOL											/* 21 */
 
 	/*
 	 *	Else, get the IP address which expired the longest time ago.
 	 */
-	"ip = redis.call('ZREVRANGE', pool_key, -1, -1, 'WITHSCORES')" EOL				/* 18 */
-	"if not ip or not ip[1] then" EOL								/* 19 */
-	"  return {" STRINGIFY(_IPPOOL_RCODE_POOL_EMPTY) "}" EOL					/* 20 */
-	"end" EOL											/* 21 */
-	"if ip[2] >= ARGV[1] then" EOL									/* 22 */
-	"  return {" STRINGIFY(_IPPOOL_RCODE_POOL_EMPTY) "}" EOL					/* 23 */
-	"end" EOL											/* 24 */
-	"redis.call('ZADD', pool_key, ARGV[1] + ARGV[2], ip[1])" EOL					/* 25 */
+	"ip = redis.call('ZREVRANGE', pool_key, -1, -1, 'WITHSCORES')" EOL				/* 22 */
+	"if not ip or not ip[1] then" EOL								/* 23 */
+	"  return {" STRINGIFY(_IPPOOL_RCODE_POOL_EMPTY) "}" EOL					/* 24 */
+	"end" EOL											/* 25 */
+	"if ip[2] >= ARGV[1] then" EOL									/* 26 */
+	"  return {" STRINGIFY(_IPPOOL_RCODE_POOL_EMPTY) "}" EOL					/* 27 */
+	"end" EOL											/* 28 */
+	"redis.call('ZADD', pool_key, 'XX', ARGV[1] + ARGV[2], ip[1])" EOL				/* 29 */
 
 	/*
 	 *	Set the device/gateway keys
 	 */
-	"address_key = '{' .. KEYS[1] .. '}:"IPPOOL_ADDRESS_KEY":' .. ip[1]" EOL			/* 26 */
-	"redis.call('HMSET', address_key, 'device', ARGV[3], 'gateway', ARGV[4])" EOL			/* 27 */
-	"redis.call('SET', device_key, ip[1])" EOL							/* 28 */
-	"redis.call('EXPIRE', device_key, ARGV[2])" EOL							/* 29 */
-	"return { " EOL											/* 30 */
-	"  " STRINGIFY(_IPPOOL_RCODE_SUCCESS) "," EOL							/* 31 */
-	"  ip[1], " EOL											/* 32 */
-	"  redis.call('HGET', address_key, 'range'), " EOL						/* 33 */
-	"  tonumber(ARGV[2]), " EOL									/* 34 */
-	"  redis.call('HINCRBY', address_key, 'counter', 1)" EOL					/* 35 */
-	"}" EOL;											/* 36 */
+	"address_key = '{' .. KEYS[1] .. '}:"IPPOOL_ADDRESS_KEY":' .. ip[1]" EOL			/* 30 */
+	"redis.call('HMSET', address_key, 'device', ARGV[3], 'gateway', ARGV[4])" EOL			/* 31 */
+	"redis.call('SET', device_key, ip[1])" EOL							/* 32 */
+	"redis.call('EXPIRE', device_key, ARGV[2])" EOL							/* 33 */
+	"return { " EOL											/* 34 */
+	"  " STRINGIFY(_IPPOOL_RCODE_SUCCESS) "," EOL							/* 35 */
+	"  ip[1], " EOL											/* 36 */
+	"  redis.call('HGET', address_key, 'range'), " EOL						/* 37 */
+	"  tonumber(ARGV[2]), " EOL									/* 38 */
+	"  redis.call('HINCRBY', address_key, 'counter', 1)" EOL					/* 39 */
+	"}" EOL;											/* 40 */
 static char lua_alloc_digest[(SHA1_DIGEST_LENGTH * 2) + 1];
 
 /** Lua script for updating leases
@@ -253,7 +273,10 @@ static char lua_update_cmd[] =
 	 */
 	"address_key = '{' .. KEYS[1] .. '}:"IPPOOL_ADDRESS_KEY":' .. ARGV[3]" EOL	/* 6 */
 	"found = redis.call('HMGET', address_key, 'range', 'device', 'gateway', 'counter' )" EOL	/* 7 */
-	"if not found[1] then" EOL							/* 8 */
+	/*
+	 *	Range may be nil (if not used), so we use the device key
+	 */
+	"if not found[2] then" EOL							/* 8 */
 	"  return {" STRINGIFY(_IPPOOL_RCODE_NOT_FOUND) "}" EOL				/* 9 */
 	"end" EOL									/* 10 */
 	"if found[2] ~= ARGV[4] then" EOL						/* 11 */
@@ -428,23 +451,23 @@ static void ippool_action_print(REQUEST *request, ippool_action_t action,
  *
  * @note All replies will be freed on error.
  *
- * @param[out] out Where to write Redis reply object resulting from the command.
- * @param[in] request The current request.
- * @param[in] cluster configuration.
- * @param[in] key to use to determine the cluster node.
- * @param[in] key_len length of the key.
- * @param[in] wait_num If > 0 wait until this many slaves have replicated the data
- *	from the last command.
- * @param[in] wait_timeout How long to wait for slaves.
- * @param[in] digest of script.
- * @param[in] script to upload.
- * @param[in] cmd EVALSHA command to execute.
- * @param[in] ... Arguments for the eval command.
+ * @param[out] out		Where to write Redis reply object resulting from the command.
+ * @param[in] request		The current request.
+ * @param[in] cluster		configuration.
+ * @param[in] key		to use to determine the cluster node.
+ * @param[in] key_len		length of the key.
+ * @param[in] wait_num		If > 0 wait until this many slaves have replicated the data
+ *				from the last command.
+ * @param[in] wait_timeout	How long to wait for slaves.
+ * @param[in] digest		of script.
+ * @param[in] script		to upload.
+ * @param[in] cmd		EVALSHA command to execute.
+ * @param[in] ...		Arguments for the eval command.
  * @return status of the command.
  */
 static fr_redis_rcode_t ippool_script(redisReply **out, REQUEST *request, fr_redis_cluster_t *cluster,
 				      uint8_t const *key, size_t key_len,
-				      uint32_t wait_num, uint32_t wait_timeout,
+				      uint32_t wait_num, fr_time_delta_t wait_timeout,
 				      char const digest[], char const *script,
 				      char const *cmd, ...)
 {
@@ -460,6 +483,10 @@ static fr_redis_rcode_t ippool_script(redisReply **out, REQUEST *request, fr_red
 
 	*out = NULL;
 
+#ifndef NDEBUG
+	memset(replies, 0, sizeof(replies));
+#endif
+
 	va_start(ap, cmd);
 
 	for (s_ret = fr_redis_cluster_state_init(&state, &conn, cluster, request, key, key_len, false);
@@ -473,13 +500,18 @@ static fr_redis_rcode_t ippool_script(redisReply **out, REQUEST *request, fr_red
 		va_end(copy);
 		pipelined = 1;
 		if (wait_num) {
-			redisAppendCommand(conn->handle, "WAIT %i %i", wait_num, wait_timeout);
+			redisAppendCommand(conn->handle, "WAIT %i %i", wait_num, fr_time_delta_to_msec(wait_timeout));
 			pipelined++;
 		}
 		reply_cnt = fr_redis_pipeline_result(&pipelined, &status,
 						     replies, sizeof(replies) / sizeof(*replies),
 						     conn);
 		if (status != REDIS_RCODE_NO_SCRIPT) continue;
+
+		/*
+		 *	Clear out the existing reply
+		 */
+		fr_redis_pipeline_free(replies, reply_cnt);
 
 		/*
 		 *	Last command failed with NOSCRIPT, this means
@@ -537,7 +569,7 @@ static fr_redis_rcode_t ippool_script(redisReply **out, REQUEST *request, fr_red
 	switch (reply_cnt) {
 	case 2:	/* EVALSHA with wait */
 		if (ippool_wait_check(request, wait_num, replies[1]) < 0) goto error;
-		fr_redis_reply_free(replies[1]);	/* Free the wait response */
+		fr_redis_reply_free(&replies[1]);	/* Free the wait response */
 		break;
 
 	case 1:	/* EVALSHA */
@@ -546,16 +578,16 @@ static fr_redis_rcode_t ippool_script(redisReply **out, REQUEST *request, fr_red
 
 	case 5: /* LOADSCRIPT + EVALSHA + WAIT */
 		if (ippool_wait_check(request, wait_num, replies[4]) < 0) goto error;
-		fr_redis_reply_free(replies[4]);	/* Free the wait response */
+		fr_redis_reply_free(&replies[4]);	/* Free the wait response */
 		/* FALL-THROUGH */
 
 	case 4: /* LOADSCRIPT + EVALSHA */
-		fr_redis_reply_free(replies[2]);	/* Free the queued cmd response*/
-		fr_redis_reply_free(replies[1]);	/* Free the queued script load response */
-		fr_redis_reply_free(replies[0]);	/* Free the queued multi response */
+		fr_redis_reply_free(&replies[2]);	/* Free the queued cmd response*/
+		fr_redis_reply_free(&replies[1]);	/* Free the queued script load response */
+		fr_redis_reply_free(&replies[0]);	/* Free the queued multi response */
 		*out = replies[3]->element[1];
 		replies[3]->element[1] = NULL;		/* Prevent double free */
-		fr_redis_reply_free(replies[3]);	/* This works because hiredis checks for NULL elements */
+		fr_redis_reply_free(&replies[3]);	/* This works because hiredis checks for NULL elements */
 		break;
 
 	case 0:
@@ -585,7 +617,7 @@ static ippool_rcode_t redis_ippool_allocate(rlm_redis_ippool_t const *inst, REQU
 	rad_assert(key_prefix);
 	rad_assert(device_id);
 
-	gettimeofday(&now, NULL);
+	now = fr_time_to_timeval(fr_time());
 
 	/*
 	 *	hiredis doesn't deal well with NULL string pointers
@@ -594,7 +626,7 @@ static ippool_rcode_t redis_ippool_allocate(rlm_redis_ippool_t const *inst, REQU
 
 	status = ippool_script(&reply, request, inst->cluster,
 			       key_prefix, key_prefix_len,
-			       inst->wait_num, FR_TIMEVAL_TO_MS(&inst->wait_timeout),
+			       inst->wait_num, inst->wait_timeout,
 			       lua_alloc_digest, lua_alloc_cmd,
 	 		       "EVALSHA %s 1 %b %u %u %b %b",
 	 		       lua_alloc_digest,
@@ -665,7 +697,7 @@ static ippool_rcode_t redis_ippool_allocate(rlm_redis_ippool_t const *inst, REQU
 				tmp.type = FR_TYPE_UINT32;
 
 				if (fr_value_box_cast(NULL, &ip_map.rhs->tmpl_value, FR_TYPE_IPV4_ADDR,
-						    NULL, &tmp)) {
+						      NULL, &tmp)) {
 					RPEDEBUG("Failed converting integer to IPv4 address");
 					ret = IPPOOL_RCODE_FAIL;
 					goto finish;
@@ -771,7 +803,7 @@ static ippool_rcode_t redis_ippool_allocate(rlm_redis_ippool_t const *inst, REQU
 		}
 	}
 finish:
-	fr_redis_reply_free(reply);
+	fr_redis_reply_free(&reply);
 	return ret;
 }
 
@@ -794,7 +826,7 @@ static ippool_rcode_t redis_ippool_update(rlm_redis_ippool_t const *inst, REQUES
 	vp_tmpl_t		range_rhs = { .name = "", .type = TMPL_TYPE_DATA, .tmpl_value_type = FR_TYPE_STRING, .quote = T_DOUBLE_QUOTED_STRING };
 	vp_map_t		range_map = { .lhs = inst->range_attr, .op = T_OP_SET, .rhs = &range_rhs };
 
-	gettimeofday(&now, NULL);
+	now = fr_time_to_timeval(fr_time());
 
 	/*
 	 *	hiredis doesn't deal well with NULL string pointers
@@ -805,7 +837,7 @@ static ippool_rcode_t redis_ippool_update(rlm_redis_ippool_t const *inst, REQUES
 	if ((ip->af == AF_INET) && inst->ipv4_integer) {
 		status = ippool_script(&reply, request, inst->cluster,
 				       key_prefix, key_prefix_len,
-				       inst->wait_num, FR_TIMEVAL_TO_MS(&inst->wait_timeout),
+				       inst->wait_num, inst->wait_timeout,
 				       lua_update_digest, lua_update_cmd,
 				       "EVALSHA %s 1 %b %u %u %u %b %b",
 				       lua_update_digest,
@@ -820,7 +852,7 @@ static ippool_rcode_t redis_ippool_update(rlm_redis_ippool_t const *inst, REQUES
 		IPPOOL_SPRINT_IP(ip_buff, ip, ip->prefix);
 		status = ippool_script(&reply, request, inst->cluster,
 				       key_prefix, key_prefix_len,
-				       inst->wait_num, FR_TIMEVAL_TO_MS(&inst->wait_timeout),
+				       inst->wait_num, inst->wait_timeout,
 				       lua_update_digest, lua_update_cmd,
 				       "EVALSHA %s 1 %b %u %u %s %b %b",
 				       lua_update_digest,
@@ -914,7 +946,7 @@ static ippool_rcode_t redis_ippool_update(rlm_redis_ippool_t const *inst, REQUES
 	}
 
 finish:
-	fr_redis_reply_free(reply);
+	fr_redis_reply_free(&reply);
 
 	return ret;
 }
@@ -933,7 +965,7 @@ static ippool_rcode_t redis_ippool_release(rlm_redis_ippool_t const *inst, REQUE
 	fr_redis_rcode_t	status;
 	ippool_rcode_t		ret = IPPOOL_RCODE_SUCCESS;
 
-	gettimeofday(&now, NULL);
+	now = fr_time_to_timeval(fr_time());
 
 	/*
 	 *	hiredis doesn't deal well with NULL string pointers
@@ -943,7 +975,7 @@ static ippool_rcode_t redis_ippool_release(rlm_redis_ippool_t const *inst, REQUE
 	if ((ip->af == AF_INET) && inst->ipv4_integer) {
 		status = ippool_script(&reply, request, inst->cluster,
 				       key_prefix, key_prefix_len,
-				       inst->wait_num, FR_TIMEVAL_TO_MS(&inst->wait_timeout),
+				       inst->wait_num, inst->wait_timeout,
 				       lua_release_digest, lua_release_cmd,
 				       "EVALSHA %s 1 %b %u %u %b",
 				       lua_release_digest,
@@ -957,7 +989,7 @@ static ippool_rcode_t redis_ippool_release(rlm_redis_ippool_t const *inst, REQUE
 		IPPOOL_SPRINT_IP(ip_buff, ip, ip->prefix);
 		status = ippool_script(&reply, request, inst->cluster,
 				       key_prefix, key_prefix_len,
-				       inst->wait_num, FR_TIMEVAL_TO_MS(&inst->wait_timeout),
+				       inst->wait_num, inst->wait_timeout,
 				       lua_release_digest, lua_release_cmd,
 				       "EVALSHA %s 1 %b %u %s %b",
 				       lua_release_digest,
@@ -997,7 +1029,7 @@ static ippool_rcode_t redis_ippool_release(rlm_redis_ippool_t const *inst, REQUE
 	if (ret < 0) goto finish;
 
 finish:
-	fr_redis_reply_free(reply);
+	fr_redis_reply_free(&reply);
 
 	return ret;
 }
@@ -1021,7 +1053,7 @@ static inline ssize_t ippool_pool_name(uint8_t const **out, uint8_t buff[], size
 
 	slen = tmpl_expand(out, (char *)buff, bufflen, request, inst->pool_name, NULL, NULL);
 	if (slen < 0) {
-		if (inst->pool_name->type == TMPL_TYPE_ATTR) {
+		if (tmpl_is_attr(inst->pool_name)) {
 			RDEBUG2("Pool attribute not present in request.  Doing nothing");
 			return 0;
 		}
@@ -1300,13 +1332,32 @@ static rlm_rcode_t mod_post_auth(void *instance, UNUSED void *thread, REQUEST *r
 {
 	rlm_redis_ippool_t const	*inst = instance;
 	VALUE_PAIR			*vp;
+	ippool_action_t			action = POOL_ACTION_ALLOCATE;
 
 	/*
 	 *	Unless it's overridden the default action is to allocate
 	 *	when called in Post-Auth.
 	 */
 	vp = fr_pair_find_by_da(request->control, attr_pool_action, TAG_ANY);
-	return mod_action(inst, request, vp ? vp->vp_uint32 : POOL_ACTION_ALLOCATE);
+	if (vp) {
+		if ((vp->vp_uint32 > 0) && (vp->vp_uint32 <= POOL_ACTION_BULK_RELEASE)) {
+			action = vp->vp_uint32;
+
+		} else {
+			RWDEBUG("Ignoring invalid action %d", vp->vp_uint32);
+			return RLM_MODULE_NOOP;
+		}
+#ifdef WITH_DHCP
+	} else if (request->dict == dict_dhcpv4) {
+		vp = fr_pair_find_by_da(request->control, attr_message_type, TAG_ANY);
+		if (!vp) goto run;
+
+		if (vp->vp_uint8 == FR_DHCP_REQUEST) action = POOL_ACTION_UPDATE;
+#endif
+	}
+
+run:
+	return mod_action(inst, request, action);
 }
 
 static int mod_instantiate(void *instance, CONF_SECTION *conf)
@@ -1316,7 +1367,7 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
 
 	rlm_redis_ippool_t		*inst = instance;
 
-	rad_assert(inst->allocated_address_attr->type == TMPL_TYPE_ATTR);
+	rad_assert(tmpl_is_attr(inst->allocated_address_attr));
 	rad_assert(subcs);
 
 	inst->cluster = fr_redis_cluster_alloc(inst, subcs, &inst->conf, true, NULL, NULL, NULL);
@@ -1366,8 +1417,8 @@ static int mod_load(void)
 	return 0;
 }
 
-extern rad_module_t rlm_redis_ippool;
-rad_module_t rlm_redis_ippool = {
+extern module_t rlm_redis_ippool;
+module_t rlm_redis_ippool = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "redis",
 	.type		= RLM_TYPE_THREAD_SAFE,

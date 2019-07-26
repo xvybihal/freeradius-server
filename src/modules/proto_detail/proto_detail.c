@@ -31,6 +31,7 @@
 #include "proto_detail.h"
 
 extern fr_app_t proto_detail;
+static int dictionary_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM *ci, CONF_PARSER const *rule);
 static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM *ci, CONF_PARSER const *rule);
 static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM *ci, CONF_PARSER const *rule);
 
@@ -48,8 +49,10 @@ static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF
  *
  */
 static CONF_PARSER const proto_detail_config[] = {
-	{ FR_CONF_OFFSET("type", FR_TYPE_VOID | FR_TYPE_NOT_EMPTY, proto_detail_t,
-			  type_submodule), .dflt = "Accounting-Request", .func = type_parse },
+	{ FR_CONF_OFFSET("dictionary", FR_TYPE_VOID | FR_TYPE_NOT_EMPTY | FR_TYPE_REQUIRED, proto_detail_t,
+			  dict), .dflt = "radius", .func = dictionary_parse },
+	{ FR_CONF_OFFSET("type", FR_TYPE_VOID | FR_TYPE_NOT_EMPTY | FR_TYPE_REQUIRED, proto_detail_t,
+			  type_submodule), .func = type_parse },
 	{ FR_CONF_OFFSET("transport", FR_TYPE_VOID, proto_detail_t, io_submodule),
 	  .func = transport_parse },
 
@@ -70,12 +73,10 @@ static CONF_PARSER const proto_detail_config[] = {
 };
 
 static fr_dict_t *dict_freeradius;
-static fr_dict_t *dict_radius;
 
 extern fr_dict_autoload_t proto_detail_dict[];
 fr_dict_autoload_t proto_detail_dict[] = {
 	{ .out = &dict_freeradius, .proto = "freeradius" },
-	{ .out = &dict_radius, .proto = "radius" },
 
 	{ NULL }
 };
@@ -87,11 +88,7 @@ static fr_dict_attr_t const *attr_packet_original_timestamp;
 static fr_dict_attr_t const *attr_packet_src_ip_address;
 static fr_dict_attr_t const *attr_packet_src_ipv6_address;
 static fr_dict_attr_t const *attr_packet_src_port;
-static fr_dict_attr_t const *attr_packet_type;
 static fr_dict_attr_t const *attr_protocol;
-
-static fr_dict_attr_t const *attr_event_timestamp;
-static fr_dict_attr_t const *attr_acct_delay_time;
 
 extern fr_dict_attr_autoload_t proto_detail_dict_attr[];
 fr_dict_attr_autoload_t proto_detail_dict_attr[] = {
@@ -104,16 +101,13 @@ fr_dict_attr_autoload_t proto_detail_dict_attr[] = {
 	{ .out = &attr_packet_src_port, .name = "Packet-Src-Port", .type = FR_TYPE_UINT16, .dict = &dict_freeradius },
 	{ .out = &attr_protocol, .name = "Protocol", .type = FR_TYPE_UINT32, .dict = &dict_freeradius },
 
-	{ .out = &attr_acct_delay_time, .name = "Acct-Delay-Time", .type = FR_TYPE_UINT32, .dict = &dict_radius },
-	{ .out = &attr_event_timestamp, .name = "Event-Timestamp", .type = FR_TYPE_DATE, .dict = &dict_radius },
-	{ .out = &attr_packet_type, .name = "Packet-Type", .type = FR_TYPE_UINT32, .dict = &dict_radius },
 	{ NULL }
 };
 
-/** Wrapper around dl_instance which translates the packet-type into a submodule name
+/** Wrapper around fr_dict_t* which translates the dictionary name into a dictionary
  *
  * @param[in] ctx	to allocate data in (instance of proto_detail).
- * @param[out] out	Where to write a dl_instance_t containing the module handle and instance.
+ * @param[out] out	Where to write a fr_dict_t *
  * @param[in] parent	Base structure address.
  * @param[in] ci	#CONF_PAIR specifying the name of the type module.
  * @param[in] rule	unused.
@@ -121,17 +115,56 @@ fr_dict_attr_autoload_t proto_detail_dict_attr[] = {
  *	- 0 on success.
  *	- -1 on failure.
  */
-static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
+static int dictionary_parse(UNUSED TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
+{
+	char const		*dict_str = cf_pair_value(cf_item_to_pair(ci));
+	fr_dict_t		*dict;
+
+	dict = fr_dict_by_protocol_name(dict_str);
+	if (!dict) {
+		cf_log_err(ci, "Unknown dictionary");
+		return -1;
+	}
+
+	*(fr_dict_t **) out = dict;
+
+	return 0;
+}
+
+/** Wrapper around dl_instance which translates the packet-type into a submodule name
+ *
+ * @param[in] ctx	to allocate data in (instance of proto_detail).
+ * @param[out] out	Where to write a dl_module_inst_t containing the module handle and instance.
+ * @param[in] parent	Base structure address.
+ * @param[in] ci	#CONF_PAIR specifying the name of the type module.
+ * @param[in] rule	unused.
+ * @return
+ *	- 0 on success.
+ *	- -1 on failure.
+ */
+static int type_parse(TALLOC_CTX *ctx, void *out, void *parent, CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
 {
 	char const		*type_str = cf_pair_value(cf_item_to_pair(ci));
 	CONF_SECTION		*listen_cs = cf_item_to_section(cf_parent(ci));
-	dl_instance_t		*parent_inst;
+	dl_module_inst_t		*parent_inst;
 	fr_dict_enum_t const	*type_enum;
-	uint32_t		code;
-	dl_instance_t		*process_dl;
+	dl_module_inst_t		*process_dl;
 	proto_detail_process_t	*process_inst;
+	fr_dict_attr_t const	*attr_packet_type;
+	proto_detail_t		*inst = parent;
 
 	rad_assert(listen_cs && (strcmp(cf_section_name1(listen_cs), "listen") == 0));
+
+	if (!inst->dict) {
+		cf_log_err(ci, "Please define 'dictionary' BEFORE 'type'");
+		return -1;
+	}
+
+	attr_packet_type = fr_dict_attr_by_name(inst->dict, "Packet-Type");
+	if (!attr_packet_type) {
+		cf_log_err(ci, "Failed to find 'Packet-Type' attribute");
+		return -1;
+	}
 
 	/*
 	 *	Allow the process module to be specified by
@@ -143,47 +176,23 @@ static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM
 		return -1;
 	}
 
-	code = type_enum->value->vb_uint32;
-	if (!code || (code > FR_CODE_MAX)) {
-		cf_log_err(ci, "Invalid value for 'type = %s'", type_str);
-		return -1;
-	}
+	inst->code = type_enum->value->vb_uint32;
 
-	if ((code != FR_CODE_ACCOUNTING_REQUEST) &&
-	    (code != FR_CODE_COA_REQUEST) &&
-	    (code != FR_CODE_DISCONNECT_REQUEST)) {
-		cf_log_err(ci, "Cannot process packets of Packet-Type = '%s'", type_str);
-		return -1;
-	}
-
-	parent_inst = cf_data_value(cf_data_find(listen_cs, dl_instance_t, "proto_detail"));
+	parent_inst = cf_data_value(cf_data_find(listen_cs, dl_module_inst_t, "proto_detail"));
 	rad_assert(parent_inst);
 
 	/*
-	 *	Parent dl_instance_t added in virtual_servers.c (listen_parse)
+	 *	Parent dl_module_inst_t added in virtual_servers.c (listen_parse)
 	 */
-	if (dl_instance(ctx, out, listen_cs, parent_inst, "process", DL_TYPE_SUBMODULE) < 0) {
+	if (dl_module_instance(ctx, out, listen_cs, parent_inst, "process", DL_MODULE_TYPE_SUBMODULE) < 0) {
 		return -1;
 	}
 
-	process_dl = *(dl_instance_t **) out;
-	process_inst = process_dl->data;
+	process_dl = *(dl_module_inst_t **) out;
+	process_inst = inst->process_instance = process_dl->data;
 
-	switch (code) {
-	default:
-		return -1;
-
-	case FR_CODE_ACCOUNTING_REQUEST:
-		process_inst->recv_type = MOD_PREACCT;
-		process_inst->send_type = MOD_ACCOUNTING;
-		break;
-
-	case FR_CODE_COA_REQUEST:
-	case FR_CODE_DISCONNECT_REQUEST:
-		process_inst->recv_type = MOD_RECV_COA;
-		process_inst->send_type = MOD_SEND_COA;
-		break;
-	}
+	process_inst->dict = inst->dict;
+	process_inst->attr_packet_type = attr_packet_type;
 
 	return 0;
 }
@@ -191,7 +200,7 @@ static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent, CONF_ITEM
 /** Wrapper around dl_instance
  *
  * @param[in] ctx	to allocate data in (instance of proto_detail).
- * @param[out] out	Where to write a dl_instance_t containing the module handle and instance.
+ * @param[out] out	Where to write a dl_module_inst_t containing the module handle and instance.
  * @param[in] parent	Base structure address.
  * @param[in] ci	#CONF_PAIR specifying the name of the type module.
  * @param[in] rule	unused.
@@ -203,7 +212,7 @@ static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 			   CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
 {
 	char const	*name = cf_pair_value(cf_item_to_pair(ci));
-	dl_instance_t	*parent_inst;
+	dl_module_inst_t	*parent_inst;
 	CONF_SECTION	*listen_cs = cf_item_to_section(cf_parent(ci));
 	CONF_SECTION	*transport_cs;
 
@@ -215,10 +224,10 @@ static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 	 */
 	if (!transport_cs) transport_cs = cf_section_alloc(listen_cs, listen_cs, name, NULL);
 
-	parent_inst = cf_data_value(cf_data_find(listen_cs, dl_instance_t, "proto_detail"));
+	parent_inst = cf_data_value(cf_data_find(listen_cs, dl_module_inst_t, "proto_detail"));
 	rad_assert(parent_inst);
 
-	return dl_instance(ctx, out, transport_cs, parent_inst, name, DL_TYPE_SUBMODULE);
+	return dl_module_instance(ctx, out, transport_cs, parent_inst, name, DL_MODULE_TYPE_SUBMODULE);
 }
 
 /** Decode the packet, and set the request->process function
@@ -233,7 +242,7 @@ static int mod_decode(void const *instance, REQUEST *request, uint8_t *const dat
 	fr_cursor_t		cursor;
 	time_t			timestamp = 0;
 
-	RHEXDUMP(L_DBG_LVL_3, data, data_len, "proto_detail decode packet");
+	RHEXDUMP3(data, data_len, "proto_detail decode packet");
 
 	request->packet->code = inst->code;
 
@@ -368,27 +377,6 @@ static int mod_decode(void const *instance, REQUEST *request, uint8_t *const dat
 	}
 
 	/*
-	 *	Create / update accounting attributes.
-	 */
-	if (request->packet->code == FR_CODE_ACCOUNTING_REQUEST) {
-		/*
-		 *	Prefer the Event-Timestamp in the packet, if it
-		 *	exists.  That is when the event occurred, whereas the
-		 *	"Timestamp" field is when we wrote the packet to the
-		 *	detail file, which could have been much later.
-		 */
-		vp = fr_pair_find_by_da(request->packet->vps, attr_event_timestamp, TAG_ANY);
-		if (vp) timestamp = vp->vp_uint32;
-
-		/*
-		 *	Look for Acct-Delay-Time, and update
-		 *	based on Acct-Delay-Time += (time(NULL) - timestamp)
-		 */
-		MEM(pair_update_request(&vp, attr_acct_delay_time) >= 0);
-		if (timestamp != 0) vp->vp_uint32 += time(NULL) - timestamp;
-	}
-
-	/*
 	 *	Let the app_io take care of populating additional fields in the request
 	 */
 	return inst->app_io->decode(inst->app_io_instance, request, data, data_len);
@@ -414,6 +402,7 @@ static void mod_entry_point_set(void const *instance, REQUEST *request)
 
 	request->server_cs = inst->server_cs;
 	request->async->process = app_process->entry_point;
+	request->async->process_inst = inst->process_instance;
 }
 
 /** Open listen sockets/connect to external event source
@@ -469,7 +458,7 @@ static int mod_open(void *instance, fr_schedule_t *sc, CONF_SECTION *conf)
 	 *	Testing: allow it to read a "detail.work" file
 	 *	directly.
 	 */
-	if (strcmp(inst->io_submodule->module->name, "proto_detail_work") == 0) {
+	if (strcmp(inst->io_submodule->module->dl->name, "proto_detail_work") == 0) {
 		if (!fr_schedule_listen_add(sc, li)) {
 			talloc_free(li);
 			return -1;
@@ -492,17 +481,6 @@ static int mod_open(void *instance, fr_schedule_t *sc, CONF_SECTION *conf)
 
 	return 0;
 }
-
-/*
- *	@todo - put these into configuration!
- */
-static uint32_t priorities[FR_MAX_PACKET_CODE] = {
-	[FR_CODE_ACCESS_REQUEST] = PRIORITY_HIGH,
-	[FR_CODE_ACCOUNTING_REQUEST] = PRIORITY_LOW - 1,
-	[FR_CODE_COA_REQUEST] = PRIORITY_NORMAL,
-	[FR_CODE_DISCONNECT_REQUEST] = PRIORITY_NORMAL,
-	[FR_CODE_STATUS_SERVER] = PRIORITY_NOW,
-};
 
 
 /** Instantiate the application
@@ -544,12 +522,6 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
 			return -1;
 		}
 
-		/*
-		 *	For now, every 'type' uses the same "process"
-		 *	function.  The only difference is what kind of
-		 *	packet is created.
-		 */
-		inst->code = fr_dict_enum_by_alias(attr_packet_type, cf_pair_value(cp), -1)->value->vb_uint32;
 		break;
 	}
 
@@ -567,14 +539,12 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
 	FR_INTEGER_BOUND_CHECK("max_packet_size", inst->max_packet_size, >=, 1024);
 	FR_INTEGER_BOUND_CHECK("max_packet_size", inst->max_packet_size, <=, 65536);
 
-	if (!inst->priority && inst->code && (inst->code < FR_MAX_PACKET_CODE)) {
-		inst->priority = priorities[inst->code];
-	}
+	if (!inst->priority) inst->priority = PRIORITY_NORMAL;
 
 	/*
 	 *	If the IO is "file" and not the worker, instantiate the worker now.
 	 */
-	if (strcmp(inst->io_submodule->module->name, "proto_detail_work") != 0) {
+	if (strcmp(inst->io_submodule->module->dl->name, "proto_detail_work") != 0) {
 		if (inst->work_io->instantiate && (inst->work_io->instantiate(inst->work_io_instance,
 									      inst->work_io_conf) < 0)) {
 			cf_log_err(inst->work_io_conf, "Instantiation failed for \"%s\"", inst->work_io->name);
@@ -611,8 +581,9 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 	 *	Bootstrap the process module.
 	 */
 	while ((cp = cf_pair_find_next(conf, cp, "type"))) {
-		dl_t const		*module = talloc_get_type_abort_const(inst->type_submodule->module, dl_t);
-		fr_app_worker_t const	*app_process = (fr_app_worker_t const *)module->common;
+		dl_module_t const	*module = talloc_get_type_abort_const(inst->type_submodule->module,
+									      dl_module_t);
+		fr_app_worker_t const	*app_process = (fr_app_worker_t const *)(module->common);
 
 		if (app_process->bootstrap && (app_process->bootstrap(inst->type_submodule->data,
 								      inst->type_submodule->conf) < 0)) {
@@ -646,14 +617,14 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 	/*
 	 *	If we're not loading the work submodule directly, then try to load it here.
 	 */
-	if (strcmp(inst->io_submodule->module->name, "proto_detail_work") != 0) {
+	if (strcmp(inst->io_submodule->module->dl->name, "proto_detail_work") != 0) {
 		CONF_SECTION *transport_cs;
-		dl_instance_t *parent_inst;
+		dl_module_inst_t *parent_inst;
 
 		inst->work_submodule = NULL;
 
 		transport_cs = cf_section_find(inst->cs, "work", NULL);
-		parent_inst = cf_data_value(cf_data_find(inst->cs, dl_instance_t, "proto_detail"));
+		parent_inst = cf_data_value(cf_data_find(inst->cs, dl_module_inst_t, "proto_detail"));
 		rad_assert(parent_inst);
 
 		if (!transport_cs) {
@@ -665,8 +636,8 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 			}
 		}
 
-		if (dl_instance(inst->cs, &inst->work_submodule, transport_cs,
-				parent_inst, "work", DL_TYPE_SUBMODULE) < 0) {
+		if (dl_module_instance(inst->cs, &inst->work_submodule, transport_cs,
+				parent_inst, "work", DL_MODULE_TYPE_SUBMODULE) < 0) {
 			cf_log_perr(inst->cs, "Failed to load proto_detail_work");
 			return -1;
 		}

@@ -30,7 +30,7 @@
 	103 (Sandy-Mail-Response), contains client's response, 16 octets
 	for APOP/CRAM-MD5/CRAM-MD4, 20 octets for CRAM-SHA1
    @endverbatim
- * @copyright 2001,2006  The FreeRADIUS server project
+ * @copyright 2001,2006 The FreeRADIUS server project
  * @copyright 2002 SANDY (http://www.sandy.ru/) under GPLr
  */
 RCSID("$Id$")
@@ -244,8 +244,8 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(UNUSED void *instance, UNUS
 
 }
 
-extern rad_module_t rlm_cram;
-rad_module_t rlm_cram = {
+extern module_t rlm_cram;
+module_t rlm_cram = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "cram",
 	.type		= RLM_TYPE_THREAD_SAFE,

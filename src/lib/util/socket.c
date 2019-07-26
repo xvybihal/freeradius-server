@@ -18,8 +18,8 @@
  *
  * @file src/lib/util/socket.c
  *
- * @author Arran Cudbard-Bell <a.cudbardb@freeradius.org>
- * @author Alan DeKok <aland@freeradius.org>
+ * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
+ * @author Alan DeKok (aland@freeradius.org)
  *
  * @copyright 2015 The FreeRADIUS project
  */
@@ -30,6 +30,7 @@
 #include <freeradius-devel/util/strerror.h>
 #include <freeradius-devel/util/syserror.h>
 #include <freeradius-devel/util/udpfromto.h>
+#include <freeradius-devel/util/value.h>
 
 #include <fcntl.h>
 #include <netdb.h>
@@ -607,10 +608,9 @@ int fr_socket_client_tcp(fr_ipaddr_t const *src_ipaddr, fr_ipaddr_t const *dst_i
  *	- -2 on timeout.
  *	- -3 on select error.
  */
-int fr_socket_wait_for_connect(int sockfd, struct timeval const *timeout)
+int fr_socket_wait_for_connect(int sockfd, fr_time_delta_t timeout)
 {
 	int	ret;
-	struct	timeval tv = *timeout;
 	fd_set	error_set;
 	fd_set	write_set;	/* POSIX says sockets are open when they become writable */
 
@@ -622,7 +622,7 @@ int fr_socket_wait_for_connect(int sockfd, struct timeval const *timeout)
 
 	/* Don't let signals mess up the select */
 	do {
-		ret = select(sockfd + 1, NULL, &write_set, &error_set, &tv);
+		ret = select(sockfd + 1, NULL, &write_set, &error_set, &fr_time_delta_to_timeval(timeout));
 	} while ((ret == -1) && (errno == EINTR));
 
 	switch (ret) {
@@ -645,8 +645,7 @@ int fr_socket_wait_for_connect(int sockfd, struct timeval const *timeout)
 
 	case 0: /* timeout */
 		if (!fr_cond_assert(timeout)) return -1;
-		fr_strerror_printf("Connection timed out after %" PRIu64"ms",
-				   (timeout->tv_sec * (uint64_t)1000) + (timeout->tv_usec / 1000));
+		fr_strerror_printf("Connection timed out after %pVs", fr_box_time_delta(timeout));
 		return -2;
 
 	case -1: /* select error */
@@ -937,44 +936,48 @@ skip_cap:
 	 *	Bind to a device BEFORE touching IP addresses.
 	 */
 	if (interface) {
-#ifdef SO_BINDTODEVICE
-		struct ifreq ifreq;
+#ifdef HAVE_NET_IF_H
+		uint32_t scope_id;
 
-		memset(&ifreq, 0, sizeof(ifreq));
-		strlcpy(ifreq.ifr_name, interface, sizeof(ifreq.ifr_name));
-
-		rcode = setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, (char *)&ifreq, sizeof(ifreq));
-		if (rcode < 0) {
-			fr_strerror_printf_push("Failed binding to interface %s: %s", interface, fr_syserror(errno));
+		scope_id = if_nametoindex(interface);
+		if (!scope_id) {
+			fr_strerror_printf_push("Failed finding interface %s: %s",
+						interface, fr_syserror(errno));
 			return -1;
-		} /* else it worked. */
-#else
+		}
 
-#  ifdef HAVE_STRUCT_SOCKADDR_IN6
-#  ifdef HAVE_NET_IF_H
 		/*
-		 *	Odds are that any system supporting "bind to
-		 *	device" also supports IPv6, so this next bit
-		 *	isn't necessary.  But it's here for
-		 *	completeness.
-		 *
-		 *	If we're doing IPv6, and the scope hasn't yet
-		 *	been defined, set the scope to the scope of
-		 *	the interface.
+		 *	If the scope ID hasn't already been set, then
+		 *	set it.  This allows us to get the scope from the interface name.
 		 */
-		if (my_ipaddr.af == AF_INET6) {
-			if (my_ipaddr.scope_id == 0) {
-				my_ipaddr.scope_id = if_nametoindex(interface);
-				if (my_ipaddr.scope_id == 0) {
-					fr_strerror_printf_push("Failed finding interface %s: %s",
-								interface, fr_syserror(errno));
-					return -1;
-				}
-			} /* else scope was defined: we're OK. */
-		} else
-#  endif
+		if ((my_ipaddr.scope_id != 0) && (scope_id != my_ipaddr.scope_id)) {
+			fr_strerror_printf_push("Cannot bind to interface %s: Socket is already about to another interface",
+						interface);
+			return -1;
+		}
 #endif
-		{
+
+#ifdef SO_BINDTODEVICE
+		if (!my_ipaddr.scope_id) {
+			struct ifreq ifreq;
+
+			memset(&ifreq, 0, sizeof(ifreq));
+			strlcpy(ifreq.ifr_name, interface, sizeof(ifreq.ifr_name));
+
+			rcode = setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, (char *)&ifreq, sizeof(ifreq));
+			if (rcode < 0) {
+				fr_strerror_printf_push("Failed binding to interface %s: %s", interface, fr_syserror(errno));
+				return -1;
+			} /* else it worked. */
+
+			/*
+			 *	Set the scope ID.
+			 */
+			my_ipaddr.scope_id = scope_id;
+		}
+#endif
+
+		if (!my_ipaddr.scope_id) {
 			/*
 			 *	IPv4: no link local addresses,
 			 *	and no bind to device.
@@ -983,7 +986,6 @@ skip_cap:
 						interface);
 			return -1;
 		}
-#endif
 	} /* else no interface */
 
 	/*

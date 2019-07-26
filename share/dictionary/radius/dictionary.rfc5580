@@ -1,5 +1,7 @@
 # -*- text -*-
-# Copyright (C) 2015 The FreeRADIUS Server project and contributors
+# Copyright (C) 2019 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id$
 #
 #	Attributes and values defined in RFC 5580.
 #	http://www.ietf.org/rfc/rfc5580.txt
@@ -20,21 +22,21 @@ ATTRIBUTE	Operator-Name				126	string
 #  Large blobs of stuff
 #
 ATTRIBUTE	Location-Information			127	struct
-ATTRIBUTE	Location-Information-Index		127.1	uint16
-ATTRIBUTE	Location-Information-Code		127.2	uint8
-ATTRIBUTE	Location-Information-Entity		127.3	uint8
-ATTRIBUTE	Location-Information-Sighting-Time	127.4	uint64
-ATTRIBUTE	Location-Information-TTL		127.5	uint64
-ATTRIBUTE	Location-Information-Method		127.6	string
+MEMBER		Location-Information-Index		uint16
+MEMBER		Location-Information-Code		uint8
+MEMBER		Location-Information-Entity		uint8
+MEMBER		Location-Information-Sighting-Time	uint64
+MEMBER		Location-Information-TTL		uint64
+MEMBER		Location-Information-Method		string
 
 ATTRIBUTE	Location-Data				128	struct
-ATTRIBUTE	Location-Data-Index			128.1	uint16
-ATTRIBUTE	Location-Data-Location			128.2	octets
+MEMBER		Location-Data-Index			uint16
+MEMBER		Location-Data-Location			octets
 
 ATTRIBUTE	Basic-Location-Policy-Rules		129	struct
-ATTRIBUTE	Basic-Location-Policy-Flags		129.1	uint16
-ATTRIBUTE	Basic-Location-Policy-Retention-Expires	129.2	uint64
-ATTRIBUTE	Basic-Location-Policy-Note-Well		129.3	string
+MEMBER		Basic-Location-Policy-Flags		uint16
+MEMBER		Basic-Location-Policy-Retention-Expires	uint64
+MEMBER		Basic-Location-Policy-Note-Well		string
 
 ATTRIBUTE	Extended-Location-Policy-Rules		130	string
 

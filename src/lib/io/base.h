@@ -21,14 +21,14 @@
  * @file lib/io/base.h
  * @brief Transport-specific functions.
  *
- * @copyright 2016 Alan DeKok <aland@freeradius.org>
+ * @copyright 2016 Alan DeKok (aland@freeradius.org)
  */
 RCSIDH(io_h, "$Id$")
 
 #include <talloc.h>
 
 #include <freeradius-devel/server/base.h>
-#include <freeradius-devel/io/time.h>
+#include <freeradius-devel/util/time.h>
 #include <freeradius-devel/io/channel.h>
 
 #ifdef __cplusplus
@@ -44,16 +44,6 @@ typedef struct {
 	uint64_t	dup;
 	uint64_t	dropped;
 } fr_io_stats_t;
-
-/**
- *  Tell an async process function if it should run or exit.
- */
-typedef enum {
-	FR_IO_ACTION_INVALID = 0,
-	FR_IO_ACTION_RUN,
-	FR_IO_ACTION_DONE,
-	FR_IO_ACTION_DUP,
-} fr_io_action_t;
 
 /**
  *  Answer from an async process function if the worker should yield,
@@ -294,6 +284,8 @@ typedef void (*fr_io_data_vnode_t)(fr_listen_t *li, uint32_t fflags);
  * packets take the same place in any dedup tree.
  *
  * @param[in] instance		the context for this function
+ * @param[in] thread_instance	the thread instance for this function
+ * @param[in] client		the client associated with this packet
  * @param[in] packet1		one packet
  * @param[in] packet2		a second packet
  * @return
@@ -301,7 +293,7 @@ typedef void (*fr_io_data_vnode_t)(fr_listen_t *li, uint32_t fflags);
  *	- >0 on packet two "larger" than packet one
  *	- =0 on the two packets being identical
  */
-typedef int (*fr_io_data_cmp_t)(void const *instance, void const *packet1, void const *packet2);
+typedef int (*fr_io_data_cmp_t)(void const *instance, void *thread_instance, RADCLIENT *client, void const *packet1, void const *packet2);
 
 /**  Handle an error on the socket.
  *
@@ -337,7 +329,7 @@ typedef int (*fr_io_close_t)(fr_listen_t *li);
  *				for the #fr_app_worker_t that gave us the
  *				entry point.
  */
-typedef	fr_io_final_t (*fr_io_process_t)(void const *instance, REQUEST *request, fr_io_action_t action);
+typedef	fr_io_final_t (*fr_io_process_t)(void const *instance, REQUEST *request);
 
 /*
  *	Structures and definitions for the master IO handler.

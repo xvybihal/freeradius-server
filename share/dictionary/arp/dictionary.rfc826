@@ -1,0 +1,53 @@
+# -*- text -*-
+# Copyright (C) 2019 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id$
+
+##############################################################################
+#
+#	Dictionary for the ARP protocol.
+#
+#	$Id$
+#
+##############################################################################
+
+ATTRIBUTE	Arp-Packet				1	struct
+MEMBER		Hardware-Format				short
+MEMBER		Protocol-Format				short
+MEMBER		Hardware-Address-Length			byte
+MEMBER		Protocol-Address-Length			byte
+MEMBER		ARP-Operation				short
+MEMBER		Sender-Hardware-Address			ether
+MEMBER		Sender-Protocol-Address			ipaddr
+MEMBER		Target-Hardware-Address			ether
+MEMBER		Target-Protocol-Address			ipaddr
+
+VALUE	Hardware-Format			Ethernet		1
+
+VALUE	Protocol-Format			IPv4			0x0800
+
+VALUE	ARP-Operation			Request			1
+VALUE	ARP-Operation			Reply			2
+VALUE	ARP-Operation			Reverse-Request		3
+VALUE	ARP-Operation			Reverse-Reply		4
+VALUE	ARP-Operation			DRARP-Request		5
+VALUE	ARP-Operation			DRARP-Reply		6
+VALUE	ARP-Operation			DRARP-Error		7
+VALUE	ARP-Operation			InARP-Request		8
+VALUE	ARP-Operation			InARP-Reply		9
+VALUE	ARP-Operation			ARP-NAK			10
+VALUE	ARP-Operation			MARS-Request		11
+VALUE	ARP-Operation			MARS-Multi		12
+VALUE	ARP-Operation			MARS-MServ		13
+VALUE	ARP-Operation			MARS-Join		14
+VALUE	ARP-Operation			MARS-Leave		15
+VALUE	ARP-Operation			MARS-NAK		16
+VALUE	ARP-Operation			MARS-Unserv		17
+VALUE	ARP-Operation			MARS-SJoin		18
+VALUE	ARP-Operation			MARS-SLeave		19
+VALUE	ARP-Operation			MARS-Grouplist-Request	20
+VALUE	ARP-Operation			MARS-Grouplist-Reply	21
+VALUE	ARP-Operation			MARS-Redirect-MAP	22
+VALUE	ARP-Operation			MAPOS-UNARP		23
+VALUE	ARP-Operation			OP_EXP1			24
+VALUE	ARP-Operation			OP_EXP2			25

@@ -21,7 +21,7 @@
  * The development of the EAP-SIM support was funded by Internet Foundation
  * Austria (http://www.nic.at/ipa).
  *
- * @copyright 2003 Michael Richardson <mcr@sandelman.ottawa.on.ca>
+ * @copyright 2003 Michael Richardson (mcr@sandelman.ottawa.on.ca)
  * @copyright 2003-2016 The FreeRADIUS server project
  */
 
@@ -37,7 +37,7 @@ RCSID("$Id$")
 #include <freeradius-devel/eap/types.h>
 #include "eap_sim_common.h"
 #include "base.h"
-#include "sim_attrs.h"
+#include "attrs.h"
 
 /*
  *  EAP-SIM/AKA/AKA' PACKET FORMAT
@@ -542,7 +542,7 @@ static ssize_t sim_decode_pair_value(TALLOC_CTX *ctx, fr_cursor_t *cursor, fr_di
 	FR_PROTO_TRACE("Parent %s len %zu", parent->name, attr_len);
 	FR_PROTO_HEX_DUMP(data, attr_len, __FUNCTION__ );
 
-	FR_PROTO_TRACE("Type \"%s\" (%u)", fr_int2str(fr_value_box_type_names, parent->type, "?Unknown?"), parent->type);
+	FR_PROTO_TRACE("Type \"%s\" (%u)", fr_int2str(fr_value_box_type_table, parent->type, "?Unknown?"), parent->type);
 
 	/*
 	 *	Special cases, attributes that either have odd formats, or need
@@ -615,7 +615,7 @@ static ssize_t sim_decode_pair_value(TALLOC_CTX *ctx, fr_cursor_t *cursor, fr_di
 		vp = fr_pair_afrom_da(ctx, parent);
 		if (!vp) return -1;
 
-		fr_pair_value_memcpy(vp, p + 2, res_len);
+		fr_pair_value_memcpy(vp, p + 2, res_len, true);
 	}
 		goto done;
 
@@ -640,7 +640,7 @@ static ssize_t sim_decode_pair_value(TALLOC_CTX *ctx, fr_cursor_t *cursor, fr_di
 		vp = fr_pair_afrom_da(ctx, parent);
 		if (!vp) return -1;
 
-		fr_pair_value_memcpy(vp, p + 2, attr_len - 2);
+		fr_pair_value_memcpy(vp, p + 2, attr_len - 2, true);
 		goto done;
 
 	default:
@@ -724,7 +724,7 @@ static ssize_t sim_decode_pair_value(TALLOC_CTX *ctx, fr_cursor_t *cursor, fr_di
 	 *	any reserved bytes.
 	 */
 	if (parent->flags.is_unknown || parent->flags.is_raw) {
-		fr_pair_value_memcpy(vp, p, attr_len);
+		fr_pair_value_memcpy(vp, p, attr_len, true);
 		vp->vp_length = attr_len;
 		goto done;
 	}
@@ -769,12 +769,12 @@ static ssize_t sim_decode_pair_value(TALLOC_CTX *ctx, fr_cursor_t *cursor, fr_di
 				return -1;
 			}
 
-			fr_pair_value_memcpy(vp, p + prefix, actual_len);
+			fr_pair_value_memcpy(vp, p + prefix, actual_len, true);
 		/*
 		 *	Fixed length octets buffer
 		 */
 		} else {
-			fr_pair_value_memcpy(vp, p + prefix, attr_len - prefix);
+			fr_pair_value_memcpy(vp, p + prefix, attr_len - prefix, true);
 		}
 		break;
 

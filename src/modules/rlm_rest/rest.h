@@ -20,7 +20,7 @@
  * @brief Function prototypes and datatypes for the REST (HTTP) transport.
  * @file rest.h
  *
- * @copyright 2012-2016 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2012-2016 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 RCSIDH(other_h, "$Id$")
 
@@ -29,6 +29,15 @@ RCSIDH(other_h, "$Id$")
 #include "config.h"
 
 #define CURL_NO_OLDIES 1
+
+/*
+ *	We have to use this as curl uses lots of enums
+ */
+#ifndef CURL_AT_LEAST_VERSION
+#  define CURL_VERSION_BITS(x, y, z) ((x) << 16 | (y) << 8 | z)
+#  define CURL_AT_LEAST_VERSION(x, y, z) (LIBCURL_VERSION_NUM >= CURL_VERSION_BITS(x, y, z))
+#endif
+
 #include <curl/curl.h>
 
 /*
@@ -38,58 +47,58 @@ RCSIDH(other_h, "$Id$")
 
 #define REST_URI_MAX_LEN		2048
 #define REST_BODY_MAX_LEN		8192
-#define REST_BODY_INIT			1024
+#define REST_BODY_ALLOC_CHUNK		1024
 #define REST_BODY_MAX_ATTRS		256
 
 typedef enum {
-	HTTP_METHOD_UNKNOWN = 0,
-	HTTP_METHOD_GET,
-	HTTP_METHOD_POST,
-	HTTP_METHOD_PUT,
-	HTTP_METHOD_PATCH,
-	HTTP_METHOD_DELETE,
-	HTTP_METHOD_CUSTOM		//!< Must always come last, should not be in method table
+	REST_HTTP_METHOD_UNKNOWN = 0,
+	REST_HTTP_METHOD_GET,
+	REST_HTTP_METHOD_POST,
+	REST_HTTP_METHOD_PUT,
+	REST_HTTP_METHOD_PATCH,
+	REST_HTTP_METHOD_DELETE,
+	REST_HTTP_METHOD_CUSTOM		//!< Must always come last, should not be in method table
 } http_method_t;
 
 typedef enum {
-	HTTP_BODY_UNKNOWN = 0,
-	HTTP_BODY_UNSUPPORTED,
-	HTTP_BODY_UNAVAILABLE,
-	HTTP_BODY_INVALID,
-	HTTP_BODY_NONE,
-	HTTP_BODY_CUSTOM_XLAT,
-	HTTP_BODY_CUSTOM_LITERAL,
-	HTTP_BODY_POST,
-	HTTP_BODY_JSON,
-	HTTP_BODY_XML,
-	HTTP_BODY_YAML,
-	HTTP_BODY_HTML,
-	HTTP_BODY_PLAIN,
-	HTTP_BODY_NUM_ENTRIES
+	REST_HTTP_BODY_UNKNOWN = 0,
+	REST_HTTP_BODY_UNSUPPORTED,
+	REST_HTTP_BODY_UNAVAILABLE,
+	REST_HTTP_BODY_INVALID,
+	REST_HTTP_BODY_NONE,
+	REST_HTTP_BODY_CUSTOM_XLAT,
+	REST_HTTP_BODY_CUSTOM_LITERAL,
+	REST_HTTP_BODY_POST,
+	REST_HTTP_BODY_JSON,
+	REST_HTTP_BODY_XML,
+	REST_HTTP_BODY_YAML,
+	REST_HTTP_BODY_HTML,
+	REST_HTTP_BODY_PLAIN,
+	REST_HTTP_BODY_NUM_ENTRIES
 } http_body_type_t;
 
 typedef enum {
-	HTTP_AUTH_UNKNOWN = 0,
-	HTTP_AUTH_NONE,
-	HTTP_AUTH_TLS_SRP,
-	HTTP_AUTH_BASIC,
-	HTTP_AUTH_DIGEST,
-	HTTP_AUTH_DIGEST_IE,
-	HTTP_AUTH_GSSNEGOTIATE,
-	HTTP_AUTH_NTLM,
-	HTTP_AUTH_NTLM_WB,
-	HTTP_AUTH_ANY,
-	HTTP_AUTH_ANY_SAFE,
-	HTTP_AUTH_NUM_ENTRIES
+	REST_HTTP_AUTH_UNKNOWN = 0,
+	REST_HTTP_AUTH_NONE,
+	REST_HTTP_AUTH_TLS_SRP,
+	REST_HTTP_AUTH_BASIC,
+	REST_HTTP_AUTH_DIGEST,
+	REST_HTTP_AUTH_DIGEST_IE,
+	REST_HTTP_AUTH_GSSNEGOTIATE,
+	REST_HTTP_AUTH_NTLM,
+	REST_HTTP_AUTH_NTLM_WB,
+	REST_HTTP_AUTH_ANY,
+	REST_HTTP_AUTH_ANY_SAFE,
+	REST_HTTP_AUTH_NUM_ENTRIES
 } http_auth_type_t;
 
 /*
  *	Must be updated (in rest.c) if additional values are added to
  *	http_body_type_t
  */
-extern const http_body_type_t http_body_type_supported[HTTP_BODY_NUM_ENTRIES];
+extern const http_body_type_t http_body_type_supported[REST_HTTP_BODY_NUM_ENTRIES];
 
-extern const unsigned long http_curl_auth[HTTP_AUTH_NUM_ENTRIES];
+extern const unsigned long http_curl_auth[REST_HTTP_AUTH_NUM_ENTRIES];
 
 extern const FR_NAME_NUMBER http_auth_table[];
 
@@ -120,8 +129,10 @@ typedef struct {
 
 	char const		*data;		//!< Custom body data (optional).
 
-	char const		*auth_str;	//!< The string version of the Auth-Type.
+	bool			auth_is_set;	//!< Whether a value was provided for auth_str.
+
 	http_auth_type_t	auth;		//!< HTTP auth type.
+
 	bool			require_auth;	//!< Whether HTTP-Auth is required or not.
 	char const		*username;	//!< Username used for HTTP-Auth
 	char const		*password;	//!< Password used for HTTP-Auth
@@ -136,8 +147,9 @@ typedef struct {
 	bool			tls_check_cert_cn;
 	bool			tls_extract_cert_attrs;
 
-	struct timeval		timeout_tv;	//!< Timeout timeval.
+	fr_time_delta_t		timeout;	//!< Timeout timeval.
 	uint32_t		chunk;		//!< Max chunk-size (mainly for testing the encoders)
+	size_t			max_body_in;	//!< Maximum size of incoming data.
 } rlm_rest_section_t;
 
 /*
@@ -148,7 +160,7 @@ typedef struct {
 
 	char const		*connect_proxy;	//!< Send request via this proxy.
 
-	int32_t			http_negotiation; //!< What HTTP version to negotiate, and how to
+	int			http_negotiation; //!< What HTTP version to negotiate, and how to
 						///< negotiate it.  One or the CURL_HTTP_VERSION_ macros.
 
 	bool			multiplex;	//!< Whether to perform multiple requests using a single
@@ -163,6 +175,11 @@ typedef struct {
 	rlm_rest_section_t	checksimul;	//!< Configuration specific to simultaneous session
 						//!< checking.
 	rlm_rest_section_t	post_auth;	//!< Configuration specific to Post-auth
+
+#ifndef NDEBUG
+	bool			fail_header_decode;	//!< Force header decoding to fail for debugging purposes.
+	bool			fail_body_decode;	//!< Force body decoding to fail for debugging purposes.
+#endif
 } rlm_rest_t;
 
 /** Thread specific rlm_rest instance data
@@ -212,6 +229,8 @@ typedef enum {
  */
 typedef struct {
 	rlm_rest_t const	*instance;	//!< This instance of rlm_rest.
+	rlm_rest_section_t const *section;	//!< Section configuration.
+
 	REQUEST			*request;	//!< Current request.
 	read_state_t		state;		//!< Encoder state
 
@@ -228,6 +247,8 @@ typedef struct {
  */
 typedef struct {
 	rlm_rest_t const	*instance;	//!< This instance of rlm_rest.
+	rlm_rest_section_t const *section;	//!< Section configuration.
+
 	REQUEST			*request;	//!< Current request.
 	write_state_t		state;		//!< Decoder state.
 
@@ -286,7 +307,7 @@ typedef size_t (*rest_read_t)(void *ptr, size_t size, size_t nmemb,
 			      void *userdata);
 
 
-void *mod_conn_create(TALLOC_CTX *ctx, void *instance, struct timeval const *timeout);
+void *mod_conn_create(TALLOC_CTX *ctx, void *instance, fr_time_delta_t timeout);
 
 /*
  *	Request processing API
@@ -305,6 +326,7 @@ int rest_response_decode(rlm_rest_t const *instance,
 			void *handle);
 
 void rest_response_error(REQUEST *request, rlm_rest_handle_t *handle);
+void rest_response_debug(REQUEST *request, rlm_rest_handle_t *handle);
 
 void rest_request_cleanup(rlm_rest_t const *instance, void *handle);
 
@@ -325,8 +347,8 @@ ssize_t rest_uri_host_unescape(char **out, UNUSED rlm_rest_t const *mod_inst, RE
 /*
  *	Async IO helpers
  */
-void rest_io_module_action(REQUEST *request, void *instance, void *thread, void *rctx, fr_state_signal_t action);
-void rest_io_xlat_action(REQUEST *request, void *instance, void *thread, void *rctx, fr_state_signal_t action);
+void rest_io_module_action(void *instance, void *thread, REQUEST *request, void *rctx, fr_state_signal_t action);
+void rest_io_xlat_action(REQUEST *request, void *xlat_inst, void *xlat_thread_inst, void *rctx, fr_state_signal_t action);
 int rest_io_request_enqueue(rlm_rest_thread_t *thread, REQUEST *request, void *handle);
 int rest_io_init(rlm_rest_thread_t *thread, bool multiplex);
 

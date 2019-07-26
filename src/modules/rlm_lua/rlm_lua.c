@@ -18,19 +18,21 @@
  * @file rlm_lua.c
  * @brief Translates requests between the server an a Lua interpreter.
  *
- * @author Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  *
- * @copyright 2016 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2016 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  * @copyright 2016 The FreeRADIUS Server Project.
  */
 RCSID("$Id$")
+
+#define LOG_PREFIX "rlm_lua (%s) - "
+#define LOG_PREFIX_ARGS inst->xlat_name
 
 #include <freeradius-devel/server/base.h>
 #include <freeradius-devel/server/rad_assert.h>
 #include <freeradius-devel/server/module.h>
 
 #include "lua.h"
-
 /*
  *	A mapping of configuration file names to internal variables.
  *
@@ -50,42 +52,26 @@ static const CONF_PARSER module_config[] = {
 	{ FR_CONF_OFFSET("func_accounting", FR_TYPE_STRING, rlm_lua_t, func_accounting), NULL},
 	{ FR_CONF_OFFSET("func_preacct", FR_TYPE_STRING, rlm_lua_t, func_preacct), NULL},
 #endif
-	{ FR_CONF_OFFSET("func_checksimul", FR_TYPE_STRING, rlm_lua_t, func_checksimul), NULL},
 	{ FR_CONF_OFFSET("func_xlat", FR_TYPE_STRING, rlm_lua_t, func_xlat), NULL},
-#ifdef WITH_PROXY
-	{ FR_CONF_OFFSET("func_pre_proxy", FR_TYPE_STRING, rlm_lua_t, func_pre_proxy), NULL},
-	{ FR_CONF_OFFSET("func_post_proxy", FR_TYPE_STRING, rlm_lua_t, func_post_proxy), NULL},
-#endif
 	{ FR_CONF_OFFSET("func_post_auth", FR_TYPE_STRING, rlm_lua_t, func_post_auth), NULL},
-#ifdef WITH_COA
-	{ FR_CONF_OFFSET("func_recv_coa", FR_TYPE_STRING, rlm_lua_t, func_recv_coa), NULL},
-	{ FR_CONF_OFFSET("func_send_coa", FR_TYPE_STRING, rlm_lua_t, func_send_coa), NULL},
-#endif
 
 	CONF_PARSER_TERMINATOR
 };
 
 #define DO_LUA(_s)\
-static rlm_rcode_t mod_##_s(void *instance, void *thread, REQUEST *request) {\
+static rlm_rcode_t mod_##_s(void *instance, void *thread, REQUEST *request) \
+{\
 	rlm_lua_t const *inst = instance;\
-	if (!inst->func_##_s) {\
-		return RLM_MODULE_NOOP;\
-	}\
-	if (do_lua(inst, thread, request, inst->func_##_s) < 0) {\
-		return RLM_MODULE_FAIL;\
-	}\
-	return RLM_MODULE_OK;\
+	if (!inst->func_##_s) return RLM_MODULE_NOOP;\
+	return fr_lua_run(inst, thread, request, inst->func_##_s);\
 }
 
 DO_LUA(authorize)
 DO_LUA(authenticate)
 DO_LUA(preacct)
 DO_LUA(accounting)
-DO_LUA(pre_proxy)
-DO_LUA(post_proxy)
 DO_LUA(post_auth)
-DO_LUA(recv_coa)
-DO_LUA(send_coa)
+
 
 /** Free any thread specific interpreters
  *
@@ -94,8 +80,10 @@ static int mod_thread_detach(UNUSED fr_event_list_t *el, void *thread)
 {
 	rlm_lua_thread_t *this_thread = thread;
 
-	lua_close(this_thread->interpreter);
-	this_thread->interpreter = NULL;
+	/*
+	 *	May be NULL if fr_lua_init failed
+	 */
+	if (this_thread->interpreter) lua_close(this_thread->interpreter);
 
 	return 0;
 }
@@ -115,7 +103,7 @@ static int mod_thread_instantiate(UNUSED CONF_SECTION const *conf, void *instanc
 {
 	rlm_lua_thread_t *this_thread = thread;
 
-	if (rlm_lua_init(&this_thread->interpreter, instance) < 0) return -1;
+	if (fr_lua_init(&this_thread->interpreter, instance) < 0) return -1;
 
 	return 0;
 }
@@ -127,7 +115,10 @@ static int mod_detach(void *instance)
 {
 	rlm_lua_t *inst = instance;
 
-	lua_close(inst->interpreter);
+	/*
+	 *	May be NULL if fr_lua_init failed
+	 */
+	if (inst->interpreter) lua_close(inst->interpreter);
 
 	return 0;
 }
@@ -142,11 +133,11 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
 	/*
 	 *	Get an instance global interpreter to use with various things...
 	 */
-	if (rlm_lua_init(&inst->interpreter, inst) < 0) return -1;
-	inst->jit = rlm_lua_isjit(inst->interpreter);
+	if (fr_lua_init(&inst->interpreter, inst) < 0) return -1;
+	inst->jit = fr_lua_isjit(inst->interpreter);
 	if (!inst->jit) WARN("Using standard Lua interpreter, performance will be suboptimal");
 
-	DEBUG("rlm_lua (%s): Using %s interpreter", inst->xlat_name, rlm_lua_version(inst->interpreter));
+	DEBUG("Using %s interpreter", fr_lua_version(inst->interpreter));
 
 	return 0;
 }
@@ -160,12 +151,13 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_lua;
-rad_module_t rlm_lua = {
+extern module_t rlm_lua;
+module_t rlm_lua = {
 	.magic			= RLM_MODULE_INIT,
 	.name			= "lua",
 	.type			= RLM_TYPE_THREAD_SAFE,
 	.inst_size		= sizeof(rlm_lua_t),
+
 	.thread_inst_size	= sizeof(rlm_lua_thread_t),
 
 	.config			= module_config,
@@ -180,13 +172,6 @@ rad_module_t rlm_lua = {
 		[MOD_AUTHORIZE]		= mod_authorize,
 		[MOD_PREACCT]		= mod_preacct,
 		[MOD_ACCOUNTING]	= mod_accounting,
-		[MOD_PRE_PROXY]		= mod_pre_proxy,
-		[MOD_POST_PROXY]	= mod_post_proxy,
 		[MOD_POST_AUTH]		= mod_post_auth
-#ifdef WITH_COA
-		,
-		[MOD_RECV_COA]		= mod_recv_coa,
-		[MOD_SEND_COA]		= mod_send_coa
-#endif
 	}
 };

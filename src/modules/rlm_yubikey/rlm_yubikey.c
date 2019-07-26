@@ -19,9 +19,9 @@
  * @file rlm_yubikey.c
  * @brief Authentication for yubikey OTP tokens.
  *
- * @author Arran Cudbard-Bell <a.cudbardb@networkradius.com>
+ * @author Arran Cudbard-Bell (a.cudbardb@networkradius.com)
  * @copyright 2013 The FreeRADIUS server project
- * @copyright 2013 Network RADIUS <info@networkradius.com>
+ * @copyright 2013 Network RADIUS (info@networkradius.com)
  */
 RCSID("$Id$")
 
@@ -288,9 +288,9 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(void *instance, UNUSED void *t
 	ret = otp_string_valid(inst, otp, (inst->id_len + YUBIKEY_TOKEN_LEN));
 	if (ret <= 0) {
 		if (RDEBUG_ENABLED3) {
-			RDMARKER(otp, -ret, "User-Password (aes-block) value contains non modhex chars");
+			RDMARKER(otp, -(ret), "User-Password (aes-block) value contains non modhex chars");
 		} else {
-			RDEBUG("User-Password (aes-block) value contains non modhex chars");
+			RDEBUG2("User-Password (aes-block) value contains non modhex chars");
 		}
 		return RLM_MODULE_NOOP;
 	}
@@ -341,7 +341,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(void *instance, UNUSED void *t
 		fr_pair_value_bstrncpy(vp, passcode, inst->id_len);
 	}
 
-	module_section_type_set(request, attr_auth_type, inst->auth_type);
+	if (!module_section_type_set(request, attr_auth_type, inst->auth_type)) return RLM_MODULE_NOOP;
 
 	return RLM_MODULE_OK;
 }
@@ -425,8 +425,8 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(void *instance, UNUSED void
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_yubikey;
-rad_module_t rlm_yubikey = {
+extern module_t rlm_yubikey;
+module_t rlm_yubikey = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "yubikey",
 	.type		= RLM_TYPE_THREAD_SAFE,

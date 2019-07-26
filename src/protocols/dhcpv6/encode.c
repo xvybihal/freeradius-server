@@ -20,10 +20,10 @@
  * @file protocols/dhcpv6/encode.c
  * @brief Functions to encode DHCP options.
  *
- * @author Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  *
  * @copyright 2018 The freeradius server project
- * @copyright 2018 NetworkRADIUS SARL <info@networkradius.com>
+ * @copyright 2018 NetworkRADIUS SARL (info@networkradius.com)
  */
 #include <stdint.h>
 #include <stddef.h>
@@ -52,12 +52,14 @@ static inline bool is_encodable(fr_dict_attr_t const *root, VALUE_PAIR *vp)
 {
 	if (!vp) return false;
 	if (vp->da->flags.internal) return false;
-	/*
-	 *	Bool attribute presence is 'true' in SIM
-	 *	and absence is 'false'
-	 */
-	if ((vp->da->type == FR_TYPE_BOOL) && (vp->vp_bool == false)) return false;
 	if (!fr_dict_parent_common(root, vp->da, true)) return false;
+
+	/*
+	 *	False bools are represented by the absence of
+	 *	an option, i.e. only bool attributes which are
+	 *	true get encoded.
+	 */
+	if ((vp->da->type == FR_TYPE_BOOL) && !vp->vp_bool) return false;
 
 	return true;
 }
@@ -143,7 +145,7 @@ static ssize_t encode_struct(uint8_t *out, size_t outlen,
 
 	if (tlv_stack[depth]->type != FR_TYPE_STRUCT) {
 		fr_strerror_printf("%s: Expected type \"struct\" got \"%s\"", __FUNCTION__,
-				   fr_int2str(fr_value_box_type_names, tlv_stack[depth]->type, "?Unknown?"));
+				   fr_int2str(fr_value_box_type_table, tlv_stack[depth]->type, "?Unknown?"));
 		return PAIR_ENCODE_ERROR;
 	}
 
@@ -241,7 +243,7 @@ static ssize_t encode_value(uint8_t *out, size_t outlen,
 	switch (da->type) {
 	case FR_TYPE_STRUCTURAL:
 		fr_strerror_printf("%s: Called with structural type %s", __FUNCTION__,
-				   fr_int2str(fr_value_box_type_names, da->type, "?Unknown?"));
+				   fr_int2str(fr_value_box_type_table, da->type, "?Unknown?"));
 		return PAIR_ENCODE_ERROR;
 
 	default:
@@ -428,7 +430,6 @@ static ssize_t encode_value(uint8_t *out, size_t outlen,
 
 	case FR_TYPE_INVALID:
 	case FR_TYPE_EXTENDED:
-	case FR_TYPE_LONG_EXTENDED:
 	case FR_TYPE_COMBO_IP_ADDR:	/* Should have been converted to concrete equivalent */
 	case FR_TYPE_COMBO_IP_PREFIX:	/* Should have been converted to concrete equivalent */
 	case FR_TYPE_EVS:
@@ -437,13 +438,10 @@ static ssize_t encode_value(uint8_t *out, size_t outlen,
 	case FR_TYPE_TLV:
 	case FR_TYPE_STRUCT:
 	case FR_TYPE_SIZE:
-	case FR_TYPE_TIMEVAL:
+	case FR_TYPE_TIME_DELTA:
 	case FR_TYPE_ABINARY:
 	case FR_TYPE_FLOAT32:
 	case FR_TYPE_FLOAT64:
-	case FR_TYPE_DATE_MILLISECONDS:
-	case FR_TYPE_DATE_MICROSECONDS:
-	case FR_TYPE_DATE_NANOSECONDS:
 	case FR_TYPE_GROUP:
 	case FR_TYPE_VALUE_BOX:
 	case FR_TYPE_MAX:
@@ -631,7 +629,7 @@ static ssize_t encode_tlv_hdr(uint8_t *out, size_t outlen,
 
 	if (tlv_stack[depth]->type != FR_TYPE_TLV) {
 		fr_strerror_printf("%s: Expected type \"tlv\" got \"%s\"", __FUNCTION__,
-				   fr_int2str(fr_value_box_type_names, tlv_stack[depth]->type, "?Unknown?"));
+				   fr_int2str(fr_value_box_type_table, tlv_stack[depth]->type, "?Unknown?"));
 		return PAIR_ENCODE_ERROR;
 	}
 
@@ -836,7 +834,7 @@ static ssize_t encode_vsio_hdr(uint8_t *out, size_t outlen,
 	 */
 	if (da->type != FR_TYPE_VSA) {
 		fr_strerror_printf("%s: Expected type \"vsa\" got \"%s\"", __FUNCTION__,
-				   fr_int2str(fr_value_box_type_names, da->type, "?Unknown?"));
+				   fr_int2str(fr_value_box_type_table, da->type, "?Unknown?"));
 		return PAIR_ENCODE_ERROR;
 	}
 
@@ -854,7 +852,7 @@ static ssize_t encode_vsio_hdr(uint8_t *out, size_t outlen,
 
 	if (da->type != FR_TYPE_VENDOR) {
 		fr_strerror_printf("%s: Expected type \"vsa\" got \"%s\"", __FUNCTION__,
-				   fr_int2str(fr_value_box_type_names, da->type, "?Unknown?"));
+				   fr_int2str(fr_value_box_type_table, da->type, "?Unknown?"));
 		return PAIR_ENCODE_ERROR;
 	}
 

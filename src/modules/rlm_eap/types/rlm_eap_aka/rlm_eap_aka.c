@@ -19,10 +19,10 @@
  * @file rlm_eap_aka.c
  * @brief Implements the AKA part of EAP-AKA
  *
- * @author Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  *
  * @copyright 2016 The FreeRADIUS server project
- * @copyright 2016 Network RADIUS SARL <sales@networkradius.com>
+ * @copyright 2016 Network RADIUS SARL (sales@networkradius.com)
  */
 RCSID("$Id$")
 
@@ -30,6 +30,7 @@ RCSID("$Id$")
 #include <freeradius-devel/eap/types.h>
 #include <freeradius-devel/server/rad_assert.h>
 #include <freeradius-devel/sim/base.h>
+#include <freeradius-devel/unlang/compile.h>
 
 #include <freeradius-devel/protocol/eap/aka/freeradius.h>
 #include <freeradius-devel/protocol/eap/aka/rfc4187.h>
@@ -50,13 +51,15 @@ static FR_NAME_NUMBER const aka_state_table[] = {
 	{ NULL }
 };
 
-static rlm_rcode_t mod_process(UNUSED void *instance, eap_session_t *eap_session);
+static int mod_section_compile(eap_aka_actions_t *actions, CONF_SECTION *server_cs);
+static int virtual_server_parse(TALLOC_CTX *ctx, void *out, void *parent,
+				CONF_ITEM *ci, UNUSED CONF_PARSER const *rule);
 
 static CONF_PARSER submodule_config[] = {
 	{ FR_CONF_OFFSET("network_name", FR_TYPE_STRING | FR_TYPE_REQUIRED, rlm_eap_aka_t, network_name ) },
 	{ FR_CONF_OFFSET("request_identity", FR_TYPE_BOOL, rlm_eap_aka_t, request_identity ), .dflt = "no" },
 	{ FR_CONF_OFFSET("protected_success", FR_TYPE_BOOL, rlm_eap_aka_t, protected_success ), .dflt = "no" },
-	{ FR_CONF_OFFSET("virtual_server", FR_TYPE_STRING, rlm_eap_aka_t, virtual_server) },
+	{ FR_CONF_OFFSET("virtual_server", FR_TYPE_VOID, rlm_eap_aka_t, actions), .func = virtual_server_parse },
 	CONF_PARSER_TERMINATOR
 };
 
@@ -68,7 +71,7 @@ extern fr_dict_autoload_t rlm_eap_aka_dict[];
 fr_dict_autoload_t rlm_eap_aka_dict[] = {
 	{ .out = &dict_freeradius, .proto = "freeradius" },
 	{ .out = &dict_radius, .proto = "radius" },
-	{ .out = &dict_eap_aka, .proto = "eap-aka" },
+	{ .out = &dict_eap_aka, .proto = "eap-aka", .base_dir = "eap/aka" },
 	{ NULL }
 };
 
@@ -122,6 +125,19 @@ fr_dict_attr_autoload_t rlm_eap_aka_dict_attr[] = {
 	{ .out = &attr_eap_aka_subtype, .name = "EAP-AKA-Subtype", .type = FR_TYPE_UINT32, .dict = &dict_eap_aka },
 	{ NULL }
 };
+
+static int virtual_server_parse(UNUSED TALLOC_CTX *ctx, void *out, UNUSED void *parent,
+				CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
+{
+	CONF_SECTION	*server_cs;
+
+	if (virtual_server_has_namespace(&server_cs, cf_pair_value(cf_item_to_pair(ci)),
+					 dict_eap_aka, ci) < 0) return -1;
+
+	if (mod_section_compile(out, server_cs) < 0) return -1;
+
+	return 0;
+}
 
 static int eap_aka_compose(eap_session_t *eap_session)
 {
@@ -321,18 +337,18 @@ static int eap_aka_send_challenge(eap_session_t *eap_session)
 	/*
 	 *	Toggle the AMF high bit to indicate we're doing AKA'
 	 */
-	if (eap_aka_session->type == FR_EAP_AKA_PRIME) {
+	if (eap_aka_session->type == FR_EAP_METHOD_AKA_PRIME) {
 		uint8_t	amf_buff[2] = { 0x80, 0x00 };	/* Set the AMF separation bit high */
 
 		MEM(pair_update_control(&vp, attr_sim_amf) >= 0);
-		fr_pair_value_memcpy(vp, amf_buff, sizeof(amf_buff));
+		fr_pair_value_memcpy(vp, amf_buff, sizeof(amf_buff), false);
 	}
 
 	/*
 	 *	Get vectors from attribute or generate
 	 *	them using COMP128-* or Milenage.
 	 */
-	if (fr_sim_vector_umts_from_attrs(eap_session, request->control, &eap_aka_session->keys, &src) != 0) {
+	if (fr_sim_vector_umts_from_attrs(request, request->control, &eap_aka_session->keys, &src) != 0) {
 	    	REDEBUG("Failed retrieving UMTS vectors");
 		return RLM_MODULE_FAIL;
 	}
@@ -340,7 +356,7 @@ static int eap_aka_send_challenge(eap_session_t *eap_session)
 	/*
 	 *	Don't leave the AMF hanging around
 	 */
-	if (eap_aka_session->type == FR_EAP_AKA_PRIME) pair_delete_control(attr_sim_amf);
+	if (eap_aka_session->type == FR_EAP_METHOD_AKA_PRIME) pair_delete_control(attr_sim_amf);
 
 	/*
 	 *	All set, calculate keys!
@@ -388,7 +404,7 @@ static int eap_aka_send_challenge(eap_session_t *eap_session)
 	/*
 	 *	Send the network name and KDF to the peer
 	 */
-	if (eap_aka_session->type == FR_EAP_AKA_PRIME) {
+	if (eap_aka_session->type == FR_EAP_METHOD_AKA_PRIME) {
 		if (!eap_aka_session->keys.network_len) {
 			REDEBUG2("No network name available, can't set EAP-AKA-KDF-Input");
 		failure:
@@ -408,7 +424,7 @@ static int eap_aka_send_challenge(eap_session_t *eap_session)
 	 *	Okay, we got the challenge! Put it into an attribute.
 	 */
 	MEM(vp = fr_pair_afrom_da(packet, attr_eap_aka_rand));
-	fr_pair_value_memcpy(vp, eap_aka_session->keys.umts.vector.rand, SIM_VECTOR_UMTS_RAND_SIZE);
+	fr_pair_value_memcpy(vp, eap_aka_session->keys.umts.vector.rand, SIM_VECTOR_UMTS_RAND_SIZE, false);
 	fr_pair_replace(to_peer, vp);
 
 	/*
@@ -416,7 +432,7 @@ static int eap_aka_send_challenge(eap_session_t *eap_session)
 	 *	whoever has knowledge of the Ki.
 	 */
 	MEM(vp = fr_pair_afrom_da(packet, attr_eap_aka_autn));
-	fr_pair_value_memcpy(vp, eap_aka_session->keys.umts.vector.autn, SIM_VECTOR_UMTS_AUTN_SIZE);
+	fr_pair_value_memcpy(vp, eap_aka_session->keys.umts.vector.autn, SIM_VECTOR_UMTS_AUTN_SIZE, false);
 	fr_pair_replace(to_peer, vp);
 
 	/*
@@ -441,7 +457,7 @@ static int eap_aka_send_challenge(eap_session_t *eap_session)
 		eap_aka_session->checkcode_len = slen;
 
 		MEM(vp = fr_pair_afrom_da(packet, attr_eap_aka_checkcode));
-		fr_pair_value_memcpy(vp, eap_aka_session->checkcode, slen);
+		fr_pair_value_memcpy(vp, eap_aka_session->checkcode, slen, false);
 	/*
 	 *	If we don't have checkcode data, then we exchanged
 	 *	no identity packets, so checkcode is zero.
@@ -795,8 +811,8 @@ static int process_eap_aka_challenge(eap_session_t *eap_session, VALUE_PAIR *vps
 		RDEBUG2("EAP-AKA-MAC matches calculated MAC");
 	} else {
 		REDEBUG("EAP-AKA-MAC does not match calculated MAC");
-		RHEXDUMP_INLINE(L_DBG_LVL_2, mac->vp_octets, SIM_MAC_DIGEST_SIZE, "Received");
-		RHEXDUMP_INLINE(L_DBG_LVL_2, calc_mac, SIM_MAC_DIGEST_SIZE, "Expected");
+		RHEXDUMP_INLINE2(mac->vp_octets, SIM_MAC_DIGEST_SIZE, "Received");
+		RHEXDUMP_INLINE2(calc_mac, SIM_MAC_DIGEST_SIZE, "Expected");
 		return -1;
 	}
 
@@ -814,11 +830,11 @@ static int process_eap_aka_challenge(eap_session_t *eap_session, VALUE_PAIR *vps
 		}
 
 		if (memcmp(checkcode->vp_octets, eap_aka_session->checkcode, eap_aka_session->checkcode_len) == 0) {
-			RDEBUG("EAP-AKA-Checkcode matches calculated checkcode");
+			RDEBUG2("EAP-AKA-Checkcode matches calculated checkcode");
 		} else {
 			REDEBUG("EAP-AKA-Checkcode does not match calculated checkcode");
-			RHEXDUMP_INLINE(L_DBG_LVL_2, checkcode->vp_octets, checkcode->vp_length, "Received");
-			RHEXDUMP_INLINE(L_DBG_LVL_2, eap_aka_session->checkcode,
+			RHEXDUMP_INLINE2(checkcode->vp_octets, checkcode->vp_length, "Received");
+			RHEXDUMP_INLINE2(eap_aka_session->checkcode,
 					eap_aka_session->checkcode_len, "Expected");
 			return -1;
 		}
@@ -843,8 +859,8 @@ static int process_eap_aka_challenge(eap_session_t *eap_session, VALUE_PAIR *vps
 
   	if (memcmp(vp->vp_octets, eap_aka_session->keys.umts.vector.xres, vp->vp_length)) {
     		REDEBUG("EAP-AKA-RES from client does match XRES");
-		RHEXDUMP_INLINE(L_DBG_LVL_2, vp->vp_octets, vp->vp_length, "RES  :");
-		RHEXDUMP_INLINE(L_DBG_LVL_2, eap_aka_session->keys.umts.vector.xres,
+		RHEXDUMP_INLINE2(vp->vp_octets, vp->vp_length, "RES  :");
+		RHEXDUMP_INLINE2(eap_aka_session->keys.umts.vector.xres,
 				eap_aka_session->keys.umts.vector.xres_len, "XRES :");
 		return -1;
 	}
@@ -870,9 +886,9 @@ static int process_eap_aka_challenge(eap_session_t *eap_session, VALUE_PAIR *vps
 /** Process the Peer's response and advantage the state machine
  *
  */
-static rlm_rcode_t mod_process(UNUSED void *instance, eap_session_t *eap_session)
+static rlm_rcode_t mod_process(UNUSED void *instance, UNUSED void *thread, REQUEST *request)
 {
-	REQUEST			*request = eap_session->request;
+	eap_session_t		*eap_session = eap_session_get(request);
 	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
 
 	fr_sim_decode_ctx_t	ctx = {
@@ -1096,11 +1112,12 @@ static rlm_rcode_t mod_process(UNUSED void *instance, eap_session_t *eap_session
 /** Initiate the EAP-SIM session by starting the state machine
  *
  */
-static rlm_rcode_t mod_session_init(void *instance, eap_session_t *eap_session)
+static rlm_rcode_t mod_session_init(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	REQUEST				*request = eap_session->request;
+	rlm_eap_aka_t			*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t			*eap_session = eap_session_get(request);
 	eap_aka_session_t		*eap_aka_session;
-	rlm_eap_aka_t			*inst = instance;
+
 	fr_sim_id_type_t		type;
 	fr_sim_method_hint_t		method;
 
@@ -1138,10 +1155,10 @@ static rlm_rcode_t mod_session_init(void *instance, eap_session_t *eap_session)
 	 *	binds authentication to the network.
 	 */
 	switch (eap_session->type) {
-	case FR_EAP_AKA_PRIME:
+	case FR_EAP_METHOD_AKA_PRIME:
 	default:
 		RDEBUG2("New EAP-AKA' session");
-		eap_aka_session->type = FR_EAP_AKA_PRIME;
+		eap_aka_session->type = FR_EAP_METHOD_AKA_PRIME;
 		eap_aka_session->kdf = FR_EAP_AKA_KDF_VALUE_EAP_AKA_PRIME_WITH_CK_PRIME_IK_PRIME;
 		eap_aka_session->checkcode_md = eap_aka_session->mac_md = EVP_sha256();
 		eap_aka_session->keys.network = (uint8_t *)talloc_bstrndup(eap_aka_session, inst->network_name,
@@ -1159,9 +1176,9 @@ static rlm_rcode_t mod_session_init(void *instance, eap_session_t *eap_session)
 		}
 		break;
 
-	case FR_EAP_AKA:
+	case FR_EAP_METHOD_AKA:
 		RDEBUG2("New EAP-AKA session");
-		eap_aka_session->type = FR_EAP_AKA;
+		eap_aka_session->type = FR_EAP_METHOD_AKA;
 		eap_aka_session->kdf = FR_EAP_AKA_KDF_VALUE_EAP_AKA;	/* Not actually sent */
 		eap_aka_session->checkcode_md = eap_aka_session->mac_md = EVP_sha1();
 		eap_aka_session->send_at_bidding = true;
@@ -1235,7 +1252,7 @@ static rlm_rcode_t mod_session_init(void *instance, eap_session_t *eap_session)
 	return RLM_MODULE_HANDLED;
 }
 
-#define ACTION_SECTION(_out, _verb, _name) \
+#define ACTION_SECTION(_out, _field, _verb, _name) \
 do { \
 	CONF_SECTION *_tmp; \
 	_tmp = cf_section_find(server_cs, _verb, _name); \
@@ -1243,10 +1260,18 @@ do { \
 		if (unlang_compile(_tmp, MOD_AUTHORIZE, NULL) < 0) return -1; \
 		found = true; \
 	} \
-	if (actions) _out = _tmp; \
+	if (_out) _out->_field = _tmp; \
 } while (0)
 
 /** Compile virtual server sections
+ *
+ * Called twice, once when a server with an eap-aka namespace is found, and once
+ * when an EAP-AKA module is instantiated.
+ *
+ * The first time is with actions == NULL and is to compile the sections and
+ * perform validation.
+ * The second time is to write out pointers to the compiled sections which the
+ * EAP-AKA module will use to execute unlang code.
  *
  */
 static int mod_section_compile(eap_aka_actions_t *actions, CONF_SECTION *server_cs)
@@ -1264,57 +1289,57 @@ static int mod_section_compile(eap_aka_actions_t *actions, CONF_SECTION *server_
 	 *	- Start fast re-authentication
 	 *	- Fail...
 	 */
-	ACTION_SECTION(actions->recv_eap_identity_response, "recv", "EAP-Identity-Response");
+	ACTION_SECTION(actions, recv_eap_identity_response, "recv", "EAP-Identity-Response");
 
 	/*
 	 *	Identity negotiation
 	 */
-	ACTION_SECTION(actions->send_identity_request, "send", "Identity-Request");
-	ACTION_SECTION(actions->recv_identity_response, "recv", "Identity-Response");
+	ACTION_SECTION(actions, send_identity_request, "send", "Identity-Request");
+	ACTION_SECTION(actions, recv_identity_response, "recv", "Identity-Response");
 
 	/*
 	 *	Full-Authentication
 	 */
-	ACTION_SECTION(actions->send_challenge_request, "send", "Challenge-Request");
-	ACTION_SECTION(actions->recv_challenge_response, "recv", "Challenge-Response");
+	ACTION_SECTION(actions, send_challenge_request, "send", "Challenge-Request");
+	ACTION_SECTION(actions, recv_challenge_response, "recv", "Challenge-Response");
 
 	/*
 	 *	Fast-Re-Authentication
 	 */
-	ACTION_SECTION(actions->send_fast_reauth_request, "send", "Fast-Reauth-Request");
-	ACTION_SECTION(actions->recv_fast_reauth_response, "recv", "Fast-Reauth-Response");
+	ACTION_SECTION(actions, send_fast_reauth_request, "send", "Fast-Reauth-Request");
+	ACTION_SECTION(actions, recv_fast_reauth_response, "recv", "Fast-Reauth-Response");
 
 	/*
 	 *	Failures originating from the supplicant
 	 */
-	ACTION_SECTION(actions->recv_client_error, "recv", "Client-Error");
-	ACTION_SECTION(actions->recv_authentication_reject, "recv", "Authentication-Reject");
-	ACTION_SECTION(actions->recv_syncronization_failure, "recv", "Syncronization-Failure");
+	ACTION_SECTION(actions, recv_client_error, "recv", "Client-Error");
+	ACTION_SECTION(actions, recv_authentication_reject, "recv", "Authentication-Reject");
+	ACTION_SECTION(actions, recv_syncronization_failure, "recv", "Syncronization-Failure");
 
 	/*
 	 *	Failure originating from the server
 	 */
-	ACTION_SECTION(actions->send_failure_notification, "send", "Failure-Notification");
-	ACTION_SECTION(actions->recv_failure_notification_ack, "recv", "Failure-Notification-ACK");
+	ACTION_SECTION(actions, send_failure_notification, "send", "Failure-Notification");
+	ACTION_SECTION(actions, recv_failure_notification_ack, "recv", "Failure-Notification-ACK");
 
 	/*
 	 *	Protected success indication
 	 */
-	ACTION_SECTION(actions->send_success_notification, "send", "Success-Notification");
-	ACTION_SECTION(actions->recv_success_notification_ack, "recv", "Success-Notification-ACK");
+	ACTION_SECTION(actions, send_success_notification, "send", "Success-Notification");
+	ACTION_SECTION(actions, recv_success_notification_ack, "recv", "Success-Notification-ACK");
 
 	/*
 	 *	Final EAP-Success and EAP-Failure messages
 	 */
-	ACTION_SECTION(actions->send_eap_success, "send", "EAP-Success");
-	ACTION_SECTION(actions->send_eap_failure, "send", "EAP-Failure");
+	ACTION_SECTION(actions, send_eap_success, "send", "EAP-Success");
+	ACTION_SECTION(actions, send_eap_failure, "send", "EAP-Failure");
 
 	/*
 	 *	Fast-Reauth vectors
 	 */
-	ACTION_SECTION(actions->load_session, "load", "session");
-	ACTION_SECTION(actions->store_session, "store", "session");
-	ACTION_SECTION(actions->clear_session, "clear", "session");
+	ACTION_SECTION(actions, load_session, "load", "session");
+	ACTION_SECTION(actions, store_session, "store", "session");
+	ACTION_SECTION(actions, clear_session, "clear", "session");
 
 	/*
 	 *	Warn if we couldn't find any actions.
@@ -1362,8 +1387,9 @@ rlm_eap_submodule_t rlm_eap_aka = {
 	.name		= "eap_aka",
 	.magic		= RLM_MODULE_INIT,
 
-	.provides	= { FR_EAP_AKA, FR_EAP_AKA_PRIME },
+	.provides	= { FR_EAP_METHOD_AKA, FR_EAP_METHOD_AKA_PRIME },
 	.inst_size	= sizeof(rlm_eap_aka_t),
+	.inst_type	= "rlm_eap_aka_t",
 	.config		= submodule_config,
 
 	.onload		= mod_load,

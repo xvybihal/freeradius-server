@@ -17,7 +17,7 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2016  Alan DeKok <aland@freeradius.org>
+ * @copyright 2016 Alan DeKok (aland@freeradius.org)
  */
 
 RCSID("$Id$")
@@ -90,10 +90,10 @@ static void  alloc_blocks(fr_ring_buffer_t *rb, uint32_t *seed, UNUSED int *star
 		array[index] = hash;
 		p = fr_ring_buffer_reserve(rb, 2048);
 
-		if (fr_cond_assert(!p)) exit(EXIT_FAILURE);
+		if (!fr_cond_assert(p != NULL)) exit(EXIT_FAILURE);
 
 		data[index] = fr_ring_buffer_alloc(rb, hash);
-		if (fr_cond_assert(data[index] != p)) exit(EXIT_FAILURE);
+		if (!fr_cond_assert(data[index] == p)) exit(EXIT_FAILURE);
 
 		if (debug_lvl > 1) printf("%08x\t", hash);
 
@@ -136,21 +136,25 @@ static void NEVER_RETURNS usage(void)
 	fprintf(stderr, "usage: ring_buffer_test [OPTS]\n");
 	fprintf(stderr, "  -x                     Debugging mode.\n");
 	fprintf(stderr, "  -s <string>            Set random seed to <string>.\n");
+	fprintf(stderr, "  -l <lenght>            Set the interation number to <length>.\n");
 
-	exit(EXIT_FAILURE);
+	exit(EXIT_SUCCESS);
 }
 
 int main(int argc, char *argv[])
 {
 	int c;
 
-	int i, start, end;
+	int i, start, end, length = 1000;
 	fr_ring_buffer_t *rb;
 	uint32_t	seed;
 
 	TALLOC_CTX	*autofree = talloc_autofree_context();
 
-	while ((c = getopt(argc, argv, "hs:x")) != -1) switch (c) {
+	while ((c = getopt(argc, argv, "hl:s:x")) != -1) switch (c) {
+		case 'l':
+			length = strtol(optarg, NULL, 10);
+			break;
 		case 's':
 			seed_string = optarg;
 			seed_string_len = strlen(optarg);
@@ -187,7 +191,7 @@ int main(int argc, char *argv[])
 	/*
 	 *	Do 1000 rounds of alloc / free.
 	 */
-	for (i = 0; i < 1000; i++) {
+	for (i = 0; i < length; i++) {
 		if (debug_lvl) printf("Loop %d (used %zu) \n", i, used);
 		alloc_blocks(rb, &seed, &start, &end);
 

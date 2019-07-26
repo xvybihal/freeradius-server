@@ -21,7 +21,7 @@
  * @file lib/server/cf_util.h
  * @brief API to create and manipulate internal format configurations.
  *
- * @copyright 2017  The FreeRADIUS server project
+ * @copyright 2017 The FreeRADIUS server project
  */
 RCSIDH(conf_file_h, "$Id$")
 
@@ -47,6 +47,7 @@ typedef struct cf_data CONF_DATA;	//!< #CONF_ITEM used to associate arbitrary da
 
 #include <freeradius-devel/util/rbtree.h>
 #include <freeradius-devel/util/token.h>
+#include <freeradius-devel/util/log.h>
 
 #define FR_TIMEVAL_TO_MS(_x) (((_x)->tv_usec / 1000) + ((_x)->tv_sec * (uint64_t)1000))
 #define FR_TIMESPEC_TO_MS(_x) (((_x)->tv_usec / 1000000) + ((_x)->tv_sec * (uint64_t)1000))
@@ -157,6 +158,7 @@ CONF_PAIR	*cf_pair_alloc(CONF_SECTION *parent, char const *attr, char const *val
 CONF_PAIR	*cf_pair_dup(CONF_SECTION *parent, CONF_PAIR *cp);
 int		cf_pair_replace(CONF_SECTION *cs, CONF_PAIR *cp, char const *value);
 void		cf_pair_add(CONF_SECTION *parent, CONF_PAIR *cp);
+void		cf_pair_mark_parsed(CONF_PAIR *cp);
 CONF_PAIR	*cf_pair_next(CONF_SECTION const *cs, CONF_PAIR const *prev);
 CONF_PAIR	*cf_pair_find(CONF_SECTION const *cs, char const *name);
 CONF_PAIR	*cf_pair_find_next(CONF_SECTION const *cs, CONF_PAIR const *prev, char const *name);
@@ -184,7 +186,7 @@ CONF_DATA 	*_cf_data_find_in_parent(CONF_ITEM const *ci, char const *type, char 
 
 void		*cf_data_value(CONF_DATA const *cd);
 
-#define		cf_data_add(_cf, _data, _name, _free) _cf_data_add(CF_TO_ITEM(_cf), _data, _name, _free, __FILE__, __LINE__)
+#define		cf_data_add(_cf, _data, _name, _free) _cf_data_add(CF_TO_ITEM(_cf), (void const *) _data, _name, _free, __FILE__, __LINE__)
 CONF_DATA const *_cf_data_add(CONF_ITEM *ci, void const *data, char const *name, bool free, char const *filename, int lineno);
 
 #define		cf_data_add_static(_cf, _data, _type, _name) _cf_data_add_static(CF_TO_ITEM(_cf), _data, #_type, _name, __FILE__, __LINE__)
@@ -204,26 +206,26 @@ int		cf_pair_in_table(int32_t *out, FR_NAME_NUMBER const *table, CONF_PAIR *cp);
 /*
  *	Error logging
  */
-#define		cf_log_err(_cf, _fmt, ...) _cf_log_err(CF_TO_ITEM(_cf), _fmt, ## __VA_ARGS__)
-void		_cf_log_err(CONF_ITEM const *ci, char const *fmt, ...) CC_HINT(format (printf, 2, 3));
 
-#define		cf_log_perr(_cf, _fmt, ...) _cf_log_perr(CF_TO_ITEM(_cf), _fmt, ## __VA_ARGS__)
-void		_cf_log_perr(CONF_ITEM const *ci, char const *fmt, ...)	CC_HINT(format (printf, 2, 3));
+#define		cf_log_err(_cf, _fmt, ...)	_cf_log(L_ERR, CF_TO_ITEM(_cf), __FILE__, __LINE__, _fmt, ## __VA_ARGS__)
+#define		cf_log_warn(_cf, _fmt, ...)	_cf_log(L_WARN, CF_TO_ITEM(_cf),  __FILE__, __LINE__, _fmt, ## __VA_ARGS__)
+#define		cf_log_info(_cf, _fmt, ...)	_cf_log(L_INFO, CF_TO_ITEM(_cf),  __FILE__, __LINE__, _fmt, ## __VA_ARGS__)
+#define		cf_log_debug(_cf, _fmt, ...)	_cf_log(L_DBG, CF_TO_ITEM(_cf),  __FILE__, __LINE__, _fmt, ## __VA_ARGS__)
+void		_cf_vlog(fr_log_type_t type, CONF_ITEM const *ci, char const *file, int line, char const *fmt, va_list ap) CC_HINT(format (printf, 5, 0));
+void		_cf_log(fr_log_type_t type, CONF_ITEM const *ci, char const *file, int line, char const *fmt, ...) CC_HINT(format (printf, 5, 6));
 
-#define		cf_log_warn(_cf, _fmt, ...) _cf_log_warn(CF_TO_ITEM(_cf), _fmt, ## __VA_ARGS__)
-void		_cf_log_warn(CONF_ITEM const *ci, char const *fmt, ...)	CC_HINT(format (printf, 2, 3));
+#define		cf_log_perr(_cf, _fmt, ...) _cf_log_perr(L_ERR, CF_TO_ITEM(_cf),  __FILE__, __LINE__, _fmt, ## __VA_ARGS__)
+void		_cf_log_perr(fr_log_type_t type, CONF_ITEM const *ci, char const *file, int line, char const *fmt, ...) CC_HINT(format (printf, 5, 6));
 
-#define		cf_log_info(_cf, _fmt, ...) _cf_log_info(CF_TO_ITEM(_cf), _fmt, ## __VA_ARGS__)
-void		_cf_log_info(CONF_ITEM const *ci, char const *fmt, ...)	CC_HINT(format (printf, 2, 3));
+#define		cf_log_debug_prefix(_cf, _fmt, ...) _cf_log_with_filename(L_DBG, CF_TO_ITEM(_cf),  __FILE__, __LINE__, _fmt, ## __VA_ARGS__)
+void		_cf_log_with_filename(fr_log_type_t type, CONF_ITEM const *ci, char const *file, int line, char const *fmt, ...) CC_HINT(format (printf, 5, 6));
 
-#define		cf_log_debug(_cf, _fmt, ...) _cf_log_debug(CF_TO_ITEM(_cf), _fmt, ## __VA_ARGS__)
-void		_cf_log_debug(CONF_ITEM const *ci, char const *fmt, ...) CC_HINT(format (printf, 2, 3));
-
-#define		cf_log_debug_prefix(_cf, _fmt, ...) _cf_log_debug_prefix(CF_TO_ITEM(_cf), _fmt, ## __VA_ARGS__)
-void		_cf_log_debug_prefix(CONF_ITEM const *ci, char const *fmt, ...) CC_HINT(format (printf, 2, 3));
-
-void		cf_log_err_by_name(CONF_SECTION const *parent,
-				   char const *name, char const *fmt, ...) CC_HINT(format (printf, 3, 4));
+#define		cf_log_err_by_child(_parent, _child, _fmt, ...) _cf_log_by_child(L_ERR, _parent, _child, __FILE__, __LINE__, _fmt, ## __VA_ARGS__)
+#define		cf_log_warn_by_child(_parent, _child, _fmt, ...) _cf_log_by_child(L_WARN, _parent, _child, __FILE__, __LINE__, _fmt, ## __VA_ARGS__)
+#define		cf_log_info_by_child(_parent, _child, _fmt, ...) _cf_log_by_child(L_INFO, _parent, _child, __FILE__, __LINE__, _fmt, ## __VA_ARGS__)
+#define		cf_log_debug_by_child(_parent, _child, _fmt, ...) _cf_log_by_child(L_DBG, _parent, _child, __FILE__, __LINE__, _fmt, ## __VA_ARGS__)
+void		_cf_log_by_child(fr_log_type_t type, CONF_SECTION const *parent, char const *child,
+				   char const *file, int line, char const *fmt, ...) CC_HINT(format (printf, 6, 7));
 
 #define		cf_debug(_cf) _cf_debug(CF_TO_ITEM(_cf))
 void		_cf_debug(CONF_ITEM const *ci);

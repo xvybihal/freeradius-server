@@ -18,13 +18,12 @@
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
  * @copyright 2017 The FreeRADIUS server project
- * @copyright 2017 Network RADIUS SARL <info@networkradius.com>
+ * @copyright 2017 Network RADIUS SARL (info@networkradius.com)
  */
 #include <freeradius-devel/server/base.h>
 #include <freeradius-devel/server/module.h>
 #include <freeradius-devel/unlang/base.h>
 #include <freeradius-devel/server/protocol.h>
-#include <freeradius-devel/server/process.h>
 #include <freeradius-devel/server/state.h>
 #include <freeradius-devel/server/rad_assert.h>
 
@@ -217,7 +216,7 @@ static void state_add(REQUEST *request, RADIUS_PACKET *packet)
 	memcpy(&buf[sizeof(buf) - sizeof(session_id)], &session_id, sizeof(session_id));
 
 	MEM(vp = fr_pair_afrom_da(packet, attr_state));
-	fr_pair_value_memcpy(vp, (uint8_t const *)buf, sizeof(buf));
+	fr_pair_value_memcpy(vp, (uint8_t const *)buf, sizeof(buf), true);
 	fr_pair_add(&packet->vps, vp);
 }
 
@@ -271,13 +270,13 @@ static void tacacs_running(REQUEST *request, fr_state_signal_t action)
 		}
 
 		RDEBUG("Running 'recv %s' from file %s", cf_section_name2(unlang), cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_REJECT, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_REJECT, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_RECV;
 		/* FALL-THROUGH */
 
 	case REQUEST_RECV:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) {
 stop_processing:
@@ -370,13 +369,13 @@ stop_processing:
 		}
 
 		RDEBUG("Running 'process %s' from file %s", cf_section_name2(unlang), cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOTFOUND, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOTFOUND, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_PROCESS;
 		/* FALL-THROUGH */
 
 	case REQUEST_PROCESS:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) goto stop_processing;
 
@@ -420,13 +419,13 @@ setup_send:
 		if (!unlang) goto send_reply;
 
 		RDEBUG("Running 'send %s' from file %s", cf_section_name2(unlang), cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_SEND;
 		/* FALL-THROUGH */
 
 	case REQUEST_SEND:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) goto stop_processing;
 
@@ -435,7 +434,7 @@ setup_send:
 		rad_assert(request->log.unlang_indent == 0);
 
 send_reply:
-		gettimeofday(&request->reply->timestamp, NULL);
+		request->reply->timestamp = fr_time();
 
 		if (tacacs_type(request->packet) == TAC_PLUS_AUTHEN) {
 			vp = fr_pair_find_by_da(request->reply->vps, attr_tacacs_authentication_status, TAG_ANY);
@@ -578,7 +577,7 @@ static int tacacs_socket_recv(rad_listen_t *listener)
 		DEBUG("Client has closed connection");
 
 		listener->status = RAD_LISTEN_STATUS_EOL;
-		radius_update_listener(listener);
+		//radius_update_listener(listener);
 
 		return 0;
 	}
@@ -599,7 +598,7 @@ static int tacacs_socket_recv(rad_listen_t *listener)
 static int tacacs_socket_error(rad_listen_t *listener, UNUSED int fd)
 {
 	listener->status = RAD_LISTEN_STATUS_EOL;
-	radius_update_listener(listener);
+	//radius_update_listener(listener);
 
 	return 1;
 }

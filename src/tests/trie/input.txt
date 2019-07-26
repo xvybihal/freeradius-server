@@ -25,6 +25,29 @@ lcp	a	1	A	1	0	1
 
 lcp	aaa	24	aab	24	4	18
 
+lcp	13	16	40	16	6	1
+
+
+
+#
+#  Note that we can't ask for more than 16 bits,
+#  and we can't ask for bits that go over 3 bytes.
+#  The code will assert.
+#
+chunk	a	0 8	0061
+chunk	a	0 7	0030
+chunk	a	0 6	0018
+chunk	aa	1 8	00c2
+chunk	aa	0 16	6161
+chunk	aaa	8 8	0061
+chunk	aaa	7 2	0002
+chunk	aaa	1 15	6161
+chunk	aaa	2 14	2161
+chunk	aaa	3 13	0161
+chunk	aaa	4 11	00b0
+chunk	aaa	5 10	00b0
+chunk	aaa	6 9	00b0
+
 #
 #  Insert a path and user data
 #  Look up the key, and ensure that the user data matches
@@ -43,8 +66,8 @@ path	bbbb	1	bbbb=1
 #  But doing so makes things easier.
 #
 insert	aaa	1
-print	aaa=1
 lookup	aaa	1
+print	aaa=1
 remove	aaa	1
 print	{}
 
@@ -83,8 +106,14 @@ print	{}
 
 
 insert	aaab	1
+verify
+print	aaab=1
 insert	aaac	2
+verify
+print	aaab=1,aaac=2
 insert	b	3
+verify
+print	aaab=1,aaac=2,b=3
 insert	c	4
 print	aaab=1,aaac=2,b=3,c=4
 remove	c	4
@@ -112,18 +141,20 @@ insert	aaabb	3
 remove	aaabb	3
 insert	aaabb	3
 verify
+print	a=1,aaabb=3,ab=2
 
 insert	aabcd	4
 remove	aabcd	4
 insert	aabcd	4
 verify
+print	a=1,aaabb=3,aabcd=4,ab=2
 
 insert	ad	5
 remove	ad	5
 insert	ad	5
 verify
-
 print	a=1,aaabb=3,aabcd=4,ab=2,ad=5
+
 insert	abd	6
 match	abd	6
 print	a=1,aaabb=3,aabcd=4,ab=2,abd=6,ad=5
@@ -226,3 +257,4 @@ print	{}
 insert	a	1
 insert	ab	2
 print	a=1,ab=2
+clear

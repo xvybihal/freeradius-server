@@ -20,7 +20,7 @@
  * @brief Filter the contents of a list, allowing only certain attributes.
  *
  * @copyright (C) 2001,2006 The FreeRADIUS server project
- * @copyright (C) 2001 Chris Parker <cparker@starnetusa.net>
+ * @copyright (C) 2001 Chris Parker (cparker@starnetusa.net)
  */
 RCSID("$Id$")
 
@@ -352,8 +352,8 @@ RLM_AF_FUNC(send_coa, reply)
 #endif
 
 /* globally exported name */
-extern rad_module_t rlm_attr_filter;
-rad_module_t rlm_attr_filter = {
+extern module_t rlm_attr_filter;
+module_t rlm_attr_filter = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "attr_filter",
 	.inst_size	= sizeof(rlm_attr_filter_t),

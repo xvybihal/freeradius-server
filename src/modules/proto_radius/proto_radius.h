@@ -21,7 +21,7 @@
  * @file proto_radius.h
  * @brief Structures for the RADIUS protocol
  *
- * @copyright 2018 Alan DeKok <aland@freeradius.org>
+ * @copyright 2018 Alan DeKok (aland@freeradius.org)
  */
 #include <freeradius-devel/io/master.h>
 
@@ -32,16 +32,16 @@
 typedef struct {
 	fr_io_instance_t		io;				//!< wrapper for IO abstraction
 
-	dl_instance_t			**type_submodule;		//!< Instance of the various types
-	dl_instance_t			*type_submodule_by_code[FR_MAX_PACKET_CODE];	//!< Lookup process entry point by code.
+	dl_module_inst_t			**type_submodule;		//!< Instance of the various types
+	dl_module_inst_t			*type_submodule_by_code[FR_RADIUS_MAX_PACKET_CODE];	//!< Lookup process entry point by code.
 
 	uint32_t			max_packet_size;		//!< for message ring buffer.
 	uint32_t			num_messages;			//!< for message ring buffer.
 
 	bool				tunnel_password_zeros;		//!< check for trailing zeroes in Tunnel-Password.
 
-	bool				code_allowed[FR_CODE_MAX + 1];	//!< Allowed packet codes.
+	bool				code_allowed[FR_CODE_RADIUS_MAX + 1];	//!< Allowed packet codes.
 
-	uint32_t			priorities[FR_MAX_PACKET_CODE];	//!< priorities for individual packets
+	uint32_t			priorities[FR_RADIUS_MAX_PACKET_CODE];	//!< priorities for individual packets
 } proto_radius_t;
 

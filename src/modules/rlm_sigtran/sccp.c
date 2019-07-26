@@ -1,5 +1,5 @@
 /*
- * @copyright (c) 2016, Network RADIUS SARL <license@networkradius.com>
+ * @copyright (c) 2016, Network RADIUS SARL (license@networkradius.com)
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -32,7 +32,7 @@
  *
  * @author Arran Cudbard-Bell
  *
- * @copyright 2016 Network RADIUS SARL <license@networkradius.com>
+ * @copyright 2016 Network RADIUS SARL (license@networkradius.com)
  */
 #define LOG_PREFIX "rlm_sigtran - osmocom thread - "
 
@@ -188,13 +188,6 @@ int sigtran_tcap_outgoing(UNUSED struct msgb *msg_in, void *ctx, sigtran_transac
 		ERROR("Failed inserting transaction, maybe at txn limit?");
 
 		msgb_free(msg);
-
-		txn->response.type = SIGTRAN_RESPONSE_FAIL;
-
-		if (sigtran_event_submit(ofd, txn) < 0) {
-			ERROR("Failed informing event client of result: %s", fr_syserror(errno));
-			return -1;
-		}
 		return -1;
 	}
 
@@ -285,6 +278,7 @@ static int sigtran_tcap_incoming(struct msgb *msg, UNUSED unsigned int length, U
 			return -1; \
 		} \
 		vec->_x = talloc_memdup(vec, p + 1, p[0]); \
+		talloc_set_type(vec->_x, uint8_t); \
 		p += p[0] + 1; \
 	} while (0)
 

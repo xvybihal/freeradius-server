@@ -18,7 +18,7 @@
  *
  * @file src/lib/util/log.c
  *
- * @copyright 2003,2006  The FreeRADIUS server project
+ * @copyright 2003,2006 The FreeRADIUS server project
  */
 RCSID("$Id$")
 
@@ -28,6 +28,8 @@ RCSID("$Id$")
 #include <freeradius-devel/util/print.h>
 #include <freeradius-devel/util/strerror.h>
 #include <freeradius-devel/util/syserror.h>
+#include <freeradius-devel/util/thread_local.h>
+#include <freeradius-devel/util/value.h>
 
 #include <fcntl.h>
 #ifdef HAVE_FEATURES_H
@@ -42,6 +44,9 @@ RCSID("$Id$")
 
 FILE	*fr_log_fp = NULL;
 int	fr_debug_lvl = 0;
+
+fr_thread_local_setup(TALLOC_CTX *, fr_vlog_pool)
+static uint32_t location_indent = 30;
 
 /** Canonicalize error strings, removing tabs, and generate spaces for error marker
  *
@@ -62,12 +67,12 @@ int	fr_debug_lvl = 0;
  * @todo merge with above function (log_request_marker)
  *
  * @param sp Where to write a dynamically allocated buffer of spaces used to indent the error text.
- * @param text Where to write the canonicalized version of msg (the error text).
+ * @param text Where to write the canonicalized version of fmt (the error text).
  * @param ctx to allocate the spaces and text buffers in.
  * @param slen of error marker. Expects negative integer value, as returned by parse functions.
- * @param msg to canonicalize.
+ * @param fmt to canonicalize.
  */
-void fr_canonicalize_error(TALLOC_CTX *ctx, char **sp, char **text, ssize_t slen, char const *msg)
+void fr_canonicalize_error(TALLOC_CTX *ctx, char **sp, char **text, ssize_t slen, char const *fmt)
 {
 	size_t offset, skip = 0;
 	char *spbuf, *p;
@@ -82,11 +87,11 @@ void fr_canonicalize_error(TALLOC_CTX *ctx, char **sp, char **text, ssize_t slen
 	if (offset > 45) {
 		skip = offset - 40;
 		offset -= skip;
-		value = talloc_strdup(ctx, msg + skip);
-		memcpy(value, "...", 3);
+		value = talloc_strdup(ctx, fmt + skip);
+		memcpy(value, "...", 4);
 
 	} else {
-		value = talloc_strdup(ctx, msg);
+		value = talloc_strdup(ctx, fmt);
 	}
 
 	spbuf = talloc_array(ctx, char, offset + 1);
@@ -116,11 +121,8 @@ void fr_canonicalize_error(TALLOC_CTX *ctx, char **sp, char **text, ssize_t slen
  */
 const FR_NAME_NUMBER fr_log_levels[] = {
 	{ "Debug : ",		L_DBG		},
-	{ "Auth  : ",		L_AUTH		},
-	{ "Proxy : ",		L_PROXY		},
 	{ "Info  : ",		L_INFO		},
 	{ "Warn  : ",		L_WARN		},
-	{ "Acct  : ",		L_ACCT		},
 	{ "Error : ",		L_ERR		},
 	{ "WARN  : ",		L_DBG_WARN	},
 	{ "ERROR : ",		L_DBG_ERR	},
@@ -148,11 +150,8 @@ const FR_NAME_NUMBER fr_log_levels[] = {
 /** Maps log categories to VT100 style/colour escape sequences
  */
 static const FR_NAME_NUMBER colours[] = {
-	{ "",			L_DBG		},
-	{ VTC_BOLD,		L_AUTH		},
-	{ VTC_BOLD,		L_PROXY		},
+	{ NULL,			L_DBG		},
 	{ VTC_BOLD,		L_INFO		},
-	{ VTC_BOLD,		L_ACCT		},
 	{ VTC_RED,		L_ERR		},
 	{ VTC_BOLD VTC_YELLOW,	L_WARN		},
 	{ VTC_BOLD VTC_RED,	L_DBG_ERR	},
@@ -173,20 +172,40 @@ fr_log_t default_log = {
 	.timestamp = L_TIMESTAMP_AUTO
 };
 
+/** Cleanup the memory pool used by vlog_request
+ *
+ */
+static void _fr_vlog_pool_free(void *arg)
+{
+	talloc_free(arg);
+	fr_vlog_pool = NULL;
+}
+
 /** Send a server log message to its destination
  *
- * @param log	destination.
- * @param type	of log message.
- * @param msg	with printf style substitution tokens.
- * @param ap	Substitution arguments.
+ * @param[in] log	destination.
+ * @param[in] type	of log message.
+ * @param[in] file	src file the log message was generated in.
+ * @param[in] line	number the log message was generated on.
+ * @param[in] fmt	with printf style substitution tokens.
+ * @param[in] ap	Substitution arguments.
  */
-int fr_vlog(fr_log_t const *log, fr_log_type_t type, char const *msg, va_list ap)
+int fr_vlog(fr_log_t const *log, fr_log_type_t type, char const *file, int line, char const *fmt, va_list ap)
 {
-	uint8_t		*p;
-	char		buffer[10240];	/* The largest config item size, then extra for prefixes and suffixes */
-	char		*unsan;
-	size_t		len;
 	int		colourise = log->colourise;
+	char		*buffer;
+	TALLOC_CTX	*pool;
+	int		ret = 0;
+	char const	*fmt_colour = "";
+	char const	*fmt_location = "";
+	char		fmt_time[50];
+	char const	*fmt_facility = "";
+	char const	*fmt_type = "";
+	char		*fmt_msg;
+
+	static char const *spaces = "                                    ";	/* 40 */
+
+	fmt_time[0] = '\0';
 
 	/*
 	 *	If we don't want any messages, then
@@ -194,24 +213,50 @@ int fr_vlog(fr_log_t const *log, fr_log_type_t type, char const *msg, va_list ap
 	 */
 	if (log->dst == L_DST_NULL) return 0;
 
-	buffer[0] = '\0';
-	len = 0;
+	/*
+	 *	Allocate a thread local, 4k pool so we don't
+	 *      need to keep allocating memory on the heap.
+	 */
+	pool = fr_vlog_pool;
+	if (!pool) {
+		pool = talloc_pool(NULL, 4096);
+		if (!pool) {
+			fr_perror("Failed allocating memory for vlog_request_pool");
+			return -1;
+		}
+		fr_thread_local_set_destructor(fr_vlog_pool, _fr_vlog_pool_free, pool);
+	}
 
 	/*
 	 *	Set colourisation
 	 */
 	if (colourise) {
-		len += strlcpy(buffer + len, fr_int2str(colours, type, ""), sizeof(buffer) - len) ;
-		if (len == 0) {
-			colourise = false;
-		}
+		fmt_colour = fr_int2str(colours, type, NULL);
+		if (!fmt_colour) colourise = false;
 	}
 
 	/*
-	 *	Mark the point where we treat the buffer as unsanitized.
+	 *	Print src file/line
 	 */
-	unsan = buffer + len;
+	if (log->line_number) {
+		size_t	len;
+		int	pad = 0;
+		char	*str;
 
+		str = talloc_asprintf(pool, "%s:%i", file, line);
+		len = talloc_array_length(str) - 1;
+
+		/*
+		 *	Only increase the indent
+		 */
+		if (len > location_indent) {
+			location_indent = len;
+		} else {
+			pad = location_indent - len;
+		}
+
+		fmt_location = talloc_asprintf_append_buffer(str, "%.*s : ", pad, spaces);
+	}
 	/*
 	 *	Determine if we need to add a timestamp to the start of the message
 	 */
@@ -231,20 +276,25 @@ int fr_vlog(fr_log_t const *log, fr_log_type_t type, char const *msg, va_list ap
 	case L_TIMESTAMP_ON:
 	{
 		time_t timeval;
+		size_t len;
 
 		timeval = time(NULL);
 #ifdef HAVE_GMTIME_R
 		if (log->dates_utc) {
 			struct tm utc;
 			gmtime_r(&timeval, &utc);
-			ASCTIME_R(&utc, buffer + len, sizeof(buffer) - len - 1);
+			ASCTIME_R(&utc, fmt_time, sizeof(fmt_time));
 		} else
 #endif
 		{
-			CTIME_R(&timeval, buffer + len, sizeof(buffer) - len - 1);
+			CTIME_R(&timeval, fmt_time, sizeof(fmt_time));
 		}
-		len = strlen(buffer);
-		len += strlcpy(buffer + len, ": ", sizeof(buffer) - len - 1);
+
+		/*
+		 *	ctime adds '\n'
+		 */
+		len = strlen(fmt_time);
+		if ((len > 0) && (fmt_time[len - 1] == '\n')) fmt_time[len - 1] = '\0';
 	}
 		break;
 	}
@@ -259,21 +309,16 @@ int fr_vlog(fr_log_t const *log, fr_log_type_t type, char const *msg, va_list ap
 		 *	Only print the 'facility' if we're not colourising the log messages
 		 *	and this isn't syslog.
 		 */
-		if (!log->colourise) {
-			len += strlcpy(buffer + len, fr_int2str(fr_log_levels, type, ": "), sizeof(buffer) - len);
-		}
+		if (!log->colourise) fmt_facility = fr_int2str(fr_log_levels, type, ": ");
 
 		/*
 		 *	Add an additional prefix to highlight that this is a bad message
 		 *	the user should pay attention to.
 		 */
-		if (len < sizeof(buffer)) switch (type) {
+		switch (type) {
 		case L_DBG_WARN:
-			len += strlcpy(buffer + len, "WARNING: ", sizeof(buffer) - len);
-			break;
-
 		case L_DBG_ERR:
-			len += strlcpy(buffer + len, "ERROR: ", sizeof(buffer) - len);
+			fmt_type = fr_int2str(fr_log_levels, type, NULL);
 			break;
 
 		default:
@@ -281,62 +326,51 @@ int fr_vlog(fr_log_t const *log, fr_log_type_t type, char const *msg, va_list ap
 		}
 	}
 
-	if (len < sizeof(buffer)) {
-		char *tmp;
+	/*
+	 *	Sanitize output.
+	 *
+	 *	Most strings should be escaped before they get here.
+	 */
+	{
+		char	*p, *end;
+
+		p = fmt_msg = fr_vasprintf(pool, fmt, ap);
+		end = p + talloc_array_length(fmt_msg) - 1;
 
 		/*
-		 *	Fixme - All this code should be reworked to use a dynamic buffer
+		 *	Filter out control chars and non UTF8 chars
 		 */
-		tmp = fr_vasprintf(NULL, msg, ap);
-		len += strlcpy(buffer + len, tmp, sizeof(buffer) - len);
-		talloc_free(tmp);
-	}
+		for (p = fmt_msg; p < end; p++) {
+			int clen;
 
-	/*
-	 *	Filter out control chars and non UTF8 chars
-	 */
-	for (p = (unsigned char *)unsan; *p != '\0'; p++) {
-		int clen;
+			switch (*p) {
+			case '\r':
+			case '\n':
+				*p = ' ';
+				break;
 
-		switch (*p) {
-		case '\r':
-		case '\n':
-			*p = ' ';
-			break;
-
-		case '\t':
-			continue;
-
-		default:
-			clen = fr_utf8_char(p, -1);
-			if (!clen) {
-				*p = '?';
+			case '\t':
 				continue;
+
+			default:
+				clen = fr_utf8_char((uint8_t *)p, -1);
+				if (!clen) {
+					*p = '?';
+					continue;
+				}
+				p += (clen - 1);
+				break;
 			}
-			p += (clen - 1);
-			break;
 		}
-	}
-
-	/*
-	 *	Reset colourisation if we applied it
-	 */
-	if (colourise && (len < sizeof(buffer))) {
-		len += strlcpy(buffer + len, VTC_RESET, sizeof(buffer) - len);
-	}
-
-	if (len < (sizeof(buffer) - 2)) {
-		buffer[len]	= '\n';
-		buffer[len + 1] = '\0';
-	} else {
-		buffer[sizeof(buffer) - 2] = '\n';
-		buffer[sizeof(buffer) - 1] = '\0';
 	}
 
 	switch (log->dst) {
 
 #ifdef HAVE_SYSLOG_H
 	case L_DST_SYSLOG:
+	{
+		int syslog_priority;
+
 		switch (type) {
 		case L_DBG:
 		case L_DBG_INFO:
@@ -344,52 +378,83 @@ int fr_vlog(fr_log_t const *log, fr_log_type_t type, char const *msg, va_list ap
 		case L_DBG_ERR:
 		case L_DBG_ERR_REQ:
 		case L_DBG_WARN_REQ:
-			type = LOG_DEBUG;
-			break;
-
-		case L_AUTH:
-		case L_PROXY:
-		case L_ACCT:
-			type = LOG_NOTICE;
+			syslog_priority= LOG_DEBUG;
 			break;
 
 		case L_INFO:
-			type = LOG_INFO;
+			syslog_priority = LOG_INFO;
 			break;
 
 		case L_WARN:
-			type = LOG_WARNING;
+			syslog_priority = LOG_WARNING;
 			break;
 
 		case L_ERR:
-			type = LOG_ERR;
+			syslog_priority = LOG_ERR;
 			break;
 		}
-		syslog(type, "%s", buffer);
+		syslog(syslog_priority,
+		       "%s"	/* time */
+		       "%s"	/* time sep */
+		       "%s",	/* message */
+		       fmt_time,
+		       fmt_time[0] ? ": " : "",
+		       fmt_msg);
+	}
 		break;
 #endif
 
 	case L_DST_FILES:
 	case L_DST_STDOUT:
 	case L_DST_STDERR:
-		return write(log->fd, buffer, strlen(buffer));
+	{
+		size_t len, wrote;
+
+		buffer = talloc_asprintf(pool,
+					 "%s"	/* colourise */
+					 "%s"	/* location */
+					 "%s"	/* time */
+					 "%s"	/* time sep */
+					 "%s"	/* facility */
+					 "%s"	/* message type */
+					 "%s"	/* message */
+					 "%s"	/* colourise reset */
+					 "\n",
+					 colourise ? fmt_colour : "",
+					 fmt_location,
+				 	 fmt_time,
+				 	 fmt_time[0] ? ": " : "",
+				 	 fmt_facility,
+				 	 fmt_type,
+				 	 fmt_msg,
+				 	 colourise ? VTC_RESET : "");
+
+		len = talloc_array_length(buffer) - 1;
+		wrote = write(log->fd, buffer, len);
+		if (wrote < len) ret = -1;
+	}
+		break;
 
 	default:
 	case L_DST_NULL:	/* should have been caught above */
 		break;
 	}
 
-	return 0;
+	talloc_free_children(pool);	/* clears all temporary allocations */
+
+	return ret;
 }
 
 /** Send a server log message to its destination
  *
  * @param log	destination.
  * @param type	of log message.
- * @param msg	with printf style substitution tokens.
+ * @param file	where the log message originated
+ * @param line	where the log message originated
+ * @param fmt	with printf style substitution tokens.
  * @param ...	Substitution arguments.
  */
-int fr_log(fr_log_t const *log, fr_log_type_t type, char const *msg, ...)
+int fr_log(fr_log_t const *log, fr_log_type_t type, char const *file, int line, char const *fmt, ...)
 {
 	va_list ap;
 	int ret = 0;
@@ -399,8 +464,8 @@ int fr_log(fr_log_t const *log, fr_log_type_t type, char const *msg, ...)
 	 */
 	if (!(((type & L_DBG) == 0) || (fr_debug_lvl > 0))) return 0;
 
-	va_start(ap, msg);
-	ret = fr_vlog(log, type, msg, ap);
+	va_start(ap, fmt);
+	ret = fr_vlog(log, type, file, line, fmt, ap);
 	va_end(ap);
 
 	return ret;
@@ -408,15 +473,17 @@ int fr_log(fr_log_t const *log, fr_log_type_t type, char const *msg, ...)
 
 /** Drain any outstanding messages from the fr_strerror buffers
  *
- * This function drains any messages from fr_strerror buffer adding a prefix (msg)
+ * This function drains any messages from fr_strerror buffer adding a prefix (fmt)
  * to the first message.
  *
- * @param log	destination.
- * @param type	of log message.
- * @param msg	with printf style substitution tokens.
- * @param ...	Substitution arguments.
+ * @param[in] log	destination.
+ * @param[in] type	of log message.
+ * @param[in] file	src file the log message was generated in.
+ * @param[in] line	number the log message was generated on.
+ * @param[in] fmt	with printf style substitution tokens.
+ * @param[in] ap	Substitution arguments.
  */
-int fr_log_perror(fr_log_t const *log, fr_log_type_t type, char const *msg, ...)
+int fr_vlog_perror(fr_log_t const *log, fr_log_type_t type, char const *file, int line, char const *fmt, va_list ap)
 {
 	char const *strerror;
 	int ret;
@@ -428,45 +495,100 @@ int fr_log_perror(fr_log_t const *log, fr_log_type_t type, char const *msg, ...)
 
 	strerror = fr_strerror_pop();
 	if (!strerror) {
-		va_list ap;
-		if (!msg) return 0;	/* NOOP */
+		va_list aq;
+		if (!fmt) return 0;	/* NOOP */
 
-		va_start(ap, msg);
-		ret = fr_vlog(log, type, msg, ap);
-		va_end(ap);
+		va_copy(aq, ap);
+		ret = fr_vlog(log, type, file, line, fmt, aq);
+		va_end(aq);
 
 		return ret;		/* DONE */
 	}
 
 	/*
-	 *	Concatenate msg with fr_strerror()
+	 *	Concatenate fmt with fr_strerror()
 	 */
-	if (msg) {
-		va_list ap;
+	if (fmt) {
+		va_list aq;
 		char *tmp;
 
-		va_start(ap, msg);
-		tmp = talloc_vasprintf(NULL, msg, ap);
-		va_end(ap);
+		va_copy(aq, ap);
+		tmp = talloc_vasprintf(NULL, fmt, ap);
+		va_end(aq);
 
 		if (!tmp) return -1;
 
-		fr_log(log, type, "%s: %s", tmp, strerror);
+		fr_log(log, type, file, line, "%s: %s", tmp, strerror);
 		talloc_free(tmp);
 	} else {
-		fr_log(log, type, "%s", strerror);
+		fr_log(log, type, file, line, "%s", strerror);
 	}
 
 	/*
 	 *	Only the first message gets the prefix
 	 */
 	while ((strerror = fr_strerror_pop())) {
-		ret = fr_log(log, type, "%s", strerror);
+		ret = fr_log(log, type, file, line, "%s", strerror);
 		if (ret < 0) return ret;
 	}
 
 	return 0;
 }
+
+/** Drain any outstanding messages from the fr_strerror buffers
+ *
+ * This function drains any messages from fr_strerror buffer adding a prefix (fmt)
+ * to the first message.
+ *
+ * @param[in] log	destination.
+ * @param[in] type	of log message.
+ * @param[in] file	src file the log message was generated in.
+ * @param[in] line	number the log message was generated on.
+ * @param[in] fmt	with printf style substitution tokens.
+ * @param[in] ...	Substitution arguments.
+ */
+int fr_log_perror(fr_log_t const *log, fr_log_type_t type, char const *file, int line, char const *fmt, ...)
+{
+	int	ret;
+	va_list ap;
+
+	va_start(ap, fmt);
+	ret = fr_vlog_perror(log, type, file, line, fmt, ap);
+	va_end(ap);
+
+	return ret;
+}
+
+DIAG_OFF(format-nonliteral)
+void fr_log_hex(fr_log_t const *log, fr_log_type_t type, char const *file, int line,
+		uint8_t const *data, size_t data_len, char const *fmt, ...)
+{
+	size_t	i, len;
+	char	*prefix = NULL;
+
+	if (fmt) {
+		va_list ap;
+
+		va_start(ap, fmt);
+		prefix = talloc_asprintf(NULL, fmt, ap);
+		va_end(ap);
+	}
+
+	for (i = 0; i < data_len; i += 0x10) {
+		len = 0x10;
+		if ((i + len) > data_len) len = data_len - i;
+
+		if (fmt) {
+			fr_log(log, type, file, line, "%pV%04x: %pV",
+			       fr_box_strvalue_buffer(prefix), (int)i, fr_box_octets(data + i, len));
+		} else {
+			fr_log(log, type, file, line, "%04x: %pV", (int)i, fr_box_octets(data + i, len));
+		}
+	}
+
+	if (fmt) talloc_free(prefix);
+}
+DIAG_ON(format-nonliteral)
 
 static int stderr_fd = -1;		//!< The original unmolested stderr file descriptor
 static int stdout_fd = -1;		//!< The original unmolested stdout file descriptor
@@ -618,20 +740,4 @@ bool fr_rate_limit_enabled(void)
 	if (rate_limit || (fr_debug_lvl < 1)) return true;
 
 	return false;
-}
-
-void fr_printf_log(char const *fmt, ...)
-{
-	va_list ap;
-
-	va_start(ap, fmt);
-	if ((fr_debug_lvl == 0) || !fr_log_fp) {
-		va_end(ap);
-		return;
-	}
-
-	vfprintf(fr_log_fp, fmt, ap);
-	va_end(ap);
-
-	return;
 }

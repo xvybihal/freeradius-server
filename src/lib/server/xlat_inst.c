@@ -20,8 +20,8 @@
  * @file xlat_inst.c
  * @brief Create instance data for xlat function calls.
  *
- * @copyright 2018  The FreeRADIUS server project
- * @copyright 2018  Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2018 The FreeRADIUS server project
+ * @copyright 2018 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -86,7 +86,7 @@ static int _xlat_thread_inst_detach(xlat_thread_inst_t *thread_inst)
 	rad_assert(thread_inst->node->type == XLAT_FUNC);
 
 	if (thread_inst->node->xlat->thread_detach) {
-		(void) thread_inst->node->xlat->thread_detach(thread_inst->data, thread_inst->node->xlat->uctx);
+		(void) thread_inst->node->xlat->thread_detach(thread_inst->data, thread_inst->node->xlat->thread_uctx);
 	}
 
 	return 0;
@@ -270,7 +270,8 @@ static int _xlat_instantiate_ephemeral_walker(xlat_exp_t *node, UNUSED void *uct
 	if (!node->thread_inst) goto error;
 
 	if (node->xlat->thread_instantiate &&
-	    node->xlat->thread_instantiate(node->inst, node->thread_inst->data, node, node->xlat->uctx) < 0) goto error;
+	    node->xlat->thread_instantiate(node->inst, node->thread_inst->data,
+	    				   node, node->xlat->thread_uctx) < 0) goto error;
 
 	/*
 	 *	Mark this up as an ephemeral node, so the destructors
@@ -295,12 +296,12 @@ int xlat_instantiate_ephemeral(xlat_exp_t *root)
 /** Walker callback for xlat_inst_tree
  *
  */
-static int _xlat_thread_instantiate(void *ctx, void *data)
+static int _xlat_thread_instantiate(void *data, void *uctx)
 {
 	xlat_thread_inst_t	*thread_inst;
 	xlat_inst_t		*inst = talloc_get_type_abort(data, xlat_inst_t);
 
-	thread_inst = xlat_thread_inst_alloc(ctx, data);
+	thread_inst = xlat_thread_inst_alloc(uctx, data);
 	if (!thread_inst) return -1;
 
 	DEBUG3("Instantiating xlat \"%s\" node %p, instance %p, new thread instance %p",
@@ -310,7 +311,7 @@ static int _xlat_thread_instantiate(void *ctx, void *data)
 		int ret;
 
 		ret = inst->node->xlat->thread_instantiate(inst->data, thread_inst->data,
-							   inst->node, inst->node->xlat->uctx);
+							   inst->node, inst->node->xlat->thread_uctx);
 		if (ret < 0) {
 			talloc_free(thread_inst);
 			return -1;
@@ -381,10 +382,10 @@ int xlat_thread_instantiate(TALLOC_CTX *ctx)
 
 /** Walk over #xlat_exp_t that require instantiation
  *
- * @param[in] ctx	UNUSED.
+ * @param[in] uctx	UNUSED.
  * @param[in] data	node to perform
  */
-static int _xlat_instantiate_walker(UNUSED void *ctx, void *data)
+static int _xlat_instantiate_walker(void *data, UNUSED void *uctx)
 {
 	xlat_inst_t *inst = talloc_get_type_abort(data, xlat_inst_t);
 

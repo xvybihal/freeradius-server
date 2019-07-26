@@ -21,7 +21,7 @@
  * @brief Alternative mechanism to send/recv DHCP packets using libpcap.
  *
  * @copyright 2008,2017 The FreeRADIUS server project
- * @copyright 2008 Alan DeKok <aland@deployingradius.com>
+ * @copyright 2008 Alan DeKok (aland@deployingradius.com)
  */
 
 #ifdef HAVE_LIBPCAP
@@ -220,7 +220,7 @@ RADIUS_PACKET *fr_dhcpv4_pcap_recv(fr_pcap_t *pcap)
 	packet->dst_ipaddr = dst_ipaddr;
 
 	packet->data = talloc_memdup(packet, p, packet->data_len);
-	packet->timestamp = header->ts;
+	packet->timestamp = fr_time_from_timeval(&header->ts);
 	packet->if_index = pcap->if_index;
 	return packet;
 }

@@ -30,7 +30,7 @@
  * This structure is exported by I/O modules e.g. proto_radius_udp.
  */
 typedef struct {
-	RAD_MODULE_COMMON;				//!< Common fields to all loadable modules.
+	DL_MODULE_COMMON;				//!< Common fields to all loadable modules.
 
 	fr_app_bootstrap_t		bootstrap;
 	fr_app_instantiate_t		instantiate;
@@ -63,6 +63,12 @@ typedef struct {
 
 	fr_io_nak_t			nak;		//!< Function to send a NAK.
 
+	/*
+	 *	@todo - this should compare two sets of track
+	 *	information, not packets.  We also want a function
+	 *	that converts a packet to a tracking structure.
+	 *	Either in a buffer, or in a newly-allocated memory.
+	 */
 	fr_io_data_cmp_t		compare;	//!< compare two packets
 
 	fr_io_connection_set_t		connection_set;	//!< set src/dst IP/port of a connection
@@ -74,9 +80,13 @@ typedef struct {
 } fr_app_io_t;
 
 /*
- *	A common function to get a socket name.
+ *	A common function to get a humanly readable socket name.
  */
 char const *fr_app_io_socket_name(TALLOC_CTX *ctx, fr_app_io_t const *app_io,
 				  fr_ipaddr_t const *src_ipaddr, int src_port,
 				  fr_ipaddr_t const *dst_ipaddr, int dst_port,
 				  char const *interface);
+/*
+ *	A common function to get a machine readable socket name
+ */
+fr_socket_addr_t *fr_app_io_socket_addr(TALLOC_CTX *ctx, int proto, fr_ipaddr_t const *ipaddr, int port);

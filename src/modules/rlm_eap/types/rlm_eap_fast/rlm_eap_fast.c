@@ -19,9 +19,9 @@
  * @file rlm_eap_fast.c
  * @brief contains the interfaces that are called from eap
  *
- * @author Alexander Clouter <alex@digriz.org.uk>
+ * @author Alexander Clouter (alex@digriz.org.uk)
  *
- * @copyright 2016 Alan DeKok <aland@freeradius.org>
+ * @copyright 2016 Alan DeKok (aland@freeradius.org)
  * @copyright 2016 The FreeRADIUS server project
  */
 RCSID("$Id$")
@@ -185,13 +185,13 @@ static int mod_instantiate(void *instance, CONF_SECTION *cs)
 	rlm_eap_fast_t		*inst = talloc_get_type_abort(instance, rlm_eap_fast_t);
 
 	if (!virtual_server_find(inst->virtual_server)) {
-		cf_log_err_by_name(cs, "virtual_server", "Unknown virtual server '%s'", inst->virtual_server);
+		cf_log_err_by_child(cs, "virtual_server", "Unknown virtual server '%s'", inst->virtual_server);
 		return -1;
 	}
 
 	inst->default_provisioning_method = eap_name2type(inst->default_provisioning_method_name);
 	if (!inst->default_provisioning_method) {
-		cf_log_err_by_name(cs, "default_provisioning_eap_type", "Unknown EAP type %s",
+		cf_log_err_by_child(cs, "default_provisioning_eap_type", "Unknown EAP type %s",
 				   inst->default_provisioning_method_name);
 		return -1;
 	}
@@ -203,12 +203,12 @@ static int mod_instantiate(void *instance, CONF_SECTION *cs)
 	inst->tls_conf = eap_tls_conf_parse(cs, "tls");
 
 	if (!inst->tls_conf) {
-		cf_log_err_by_name(cs, "tls", "Failed initializing SSL context");
+		cf_log_err_by_child(cs, "tls", "Failed initializing SSL context");
 		return -1;
 	}
 
 	if (talloc_array_length(inst->pac_opaque_key) - 1 != 32) {
-		cf_log_err_by_name(cs, "pac_opaque_key", "Must be 32 bytes long");
+		cf_log_err_by_child(cs, "pac_opaque_key", "Must be 32 bytes long");
 		return -1;
 	}
 
@@ -217,12 +217,12 @@ static int mod_instantiate(void *instance, CONF_SECTION *cs)
 	 *	disable TLSv1.2 later.
 	 */
 	if (inst->tls_conf->tls_min_version > (float) 1.1) {
-		cf_log_err_by_name(cs, "tls_min_version", "require tls_min_version <= 1.1");
+		cf_log_err_by_child(cs, "tls_min_version", "require tls_min_version <= 1.1");
 		return -1;
 	}
 
 	if (!inst->pac_lifetime) {
-		cf_log_err_by_name(cs, "pac_lifetime", "must be non-zero");
+		cf_log_err_by_child(cs, "pac_lifetime", "must be non-zero");
 		return -1;
 	}
 
@@ -273,7 +273,7 @@ static void eap_fast_session_ticket(tls_session_t *tls_session, const SSL *s,
 }
 
 // hostap:src/crypto/tls_openssl.c:tls_sess_sec_cb()
-#if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 static int _session_secret(SSL *s, void *secret, int *secret_len,
 			   UNUSED STACK_OF(SSL_CIPHER) *peer_ciphers,
 			   UNUSED SSL_CIPHER **cipher, void *arg)
@@ -295,7 +295,7 @@ static int _session_secret(SSL *s, void *secret, int *secret_len,
 
 	if (!t->pac.key) return 0;
 
-	RDEBUG("processing PAC-Opaque");
+	RDEBUG2("processing PAC-Opaque");
 
 	eap_fast_session_ticket(tls_session, s, secret, secret_len);
 
@@ -315,8 +315,8 @@ static int _session_secret(SSL *s, void *secret, int *secret_len,
  */
 static int _session_ticket(SSL *s, uint8_t const *data, int len, void *arg)
 {
-	tls_session_t		*tls_session = arg;
-	REQUEST			*request = (REQUEST *)SSL_get_ex_data(s, FR_TLS_EX_INDEX_REQUEST);
+	tls_session_t		*tls_session = talloc_get_type_abort(arg, tls_session_t);
+	REQUEST			*request = talloc_get_type_abort(SSL_get_ex_data(s, FR_TLS_EX_INDEX_REQUEST), REQUEST);
 	eap_fast_tunnel_t	*t;
 	VALUE_PAIR		*fast_vps = NULL, *vp;
 	fr_cursor_t		cursor;
@@ -330,8 +330,8 @@ static int _session_ticket(SSL *s, uint8_t const *data, int len, void *arg)
 
 	t = talloc_get_type_abort(tls_session->opaque, eap_fast_tunnel_t);
 
-	RDEBUG("PAC provided via ClientHello SessionTicket extension");
-	RHEXDUMP(L_DBG_LVL_MAX, data, len, "PAC-Opaque");
+	RDEBUG2("PAC provided via ClientHello SessionTicket extension");
+	RHEXDUMP3(data, len, "PAC-Opaque");
 
 	if ((ntohs(opaque->hdr.type) & EAP_FAST_TLV_TYPE) != attr_eap_fast_pac_opaque_tlv->attr) {
 		errmsg = "PAC is not of type Opaque";
@@ -378,7 +378,7 @@ error:
 		goto error;
 	}
 
-	RHEXDUMP(L_DBG_LVL_MAX, (uint8_t const *)&opaque_plaintext, plen, "PAC-Opaque plaintext data section");
+	RHEXDUMP3((uint8_t const *)&opaque_plaintext, plen, "PAC-Opaque plaintext data section");
 
 	fr_cursor_init(&cursor, &fast_vps);
 	if (eap_fast_decode_pair(tls_session, &cursor, attr_eap_fast_pac_opaque_tlv, (uint8_t *)&opaque_plaintext, plen, NULL) < 0) {
@@ -451,23 +451,20 @@ error:
 /*
  *	Do authentication, by letting EAP-TLS do most of the work.
  */
-static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
+static rlm_rcode_t mod_process(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	int rcode;
-	eap_tls_status_t status;
-	rlm_eap_fast_t *inst			= (rlm_eap_fast_t *)instance;
-	eap_tls_session_t *eap_tls_session	= talloc_get_type_abort(eap_session->opaque, eap_tls_session_t);
-	tls_session_t *tls_session		= eap_tls_session->tls_session;
-	eap_fast_tunnel_t *t			= (eap_fast_tunnel_t *) tls_session->opaque;
-	REQUEST *request			= eap_session->request;
+	eap_tls_status_t	status;
 
-	RDEBUG2("Authenticate");
+	rlm_eap_fast_t		*inst = talloc_get_type_abort(instance, rlm_eap_fast_t);
+	eap_session_t		*eap_session = eap_session_get(request);
+	eap_tls_session_t	*eap_tls_session = talloc_get_type_abort(eap_session->opaque, eap_tls_session_t);
+	tls_session_t		*tls_session = eap_tls_session->tls_session;
 
 	/*
 	 *	We need FAST data associated with the session, so
 	 *	allocate it here, if it wasn't already alloacted.
 	 */
-	if (!t) tls_session->opaque = eap_fast_alloc(tls_session, inst);
+	if (!tls_session->opaque) tls_session->opaque = eap_fast_alloc(tls_session, inst);
 
 	/*
 	 *	Process TLS layer until done.
@@ -489,7 +486,7 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 	 */
 	case EAP_TLS_ESTABLISHED:
 		tls_session_send(request, tls_session);
-		rad_assert(t != NULL);
+		rad_assert(tls_session->opaque != NULL);
 		break;
 
 	/*
@@ -523,9 +520,7 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 	/*
 	 *	Process the FAST portion of the request.
 	 */
-	rcode = eap_fast_process(eap_session, tls_session);
-
-	switch (rcode) {
+	switch (eap_fast_process(eap_session, tls_session)) {
 	case FR_CODE_ACCESS_REJECT:
 		eap_tls_fail(eap_session);
 		return RLM_MODULE_FAIL;
@@ -571,17 +566,15 @@ static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
 /*
  *	Send an initial eap-tls request to the peer, using the libeap functions.
  */
-static rlm_rcode_t mod_session_init(void *type_arg, eap_session_t *eap_session)
+static rlm_rcode_t mod_session_init(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	int			rcode;
+	rlm_eap_fast_t		*inst = talloc_get_type_abort(instance, rlm_eap_fast_t);
+	eap_session_t		*eap_session = eap_session_get(request);
 	eap_tls_session_t 	*eap_tls_session;
 	tls_session_t		*tls_session;
-	rlm_eap_fast_t		*inst;
+
 	VALUE_PAIR		*vp;
 	bool			client_cert;
-	REQUEST			*request = eap_session->request;
-
-	inst = type_arg;
 
 	eap_session->tls = true;
 
@@ -602,7 +595,7 @@ static rlm_rcode_t mod_session_init(void *type_arg, eap_session_t *eap_session)
 	tls_session = eap_tls_session->tls_session;
 
 	if (inst->cipher_list) {
-		RDEBUG("Over-riding main cipher list with '%s'", inst->cipher_list);
+		RDEBUG2("Over-riding main cipher list with '%s'", inst->cipher_list);
 
 		if (!SSL_set_cipher_list(tls_session->ssl, inst->cipher_list)) {
 			REDEBUG("Failed over-riding cipher list to '%s'.  EAP-FAST will likely not work",
@@ -630,11 +623,10 @@ static rlm_rcode_t mod_session_init(void *type_arg, eap_session_t *eap_session)
 	 *	TLS session initialization is over.  Now handle TLS
 	 *	related handshaking or application data.
 	 */
-	rcode = eap_tls_compose(eap_session, EAP_TLS_START_SEND,
-				SET_START(eap_tls_session->base_flags) | EAP_FAST_VERSION,
-				&tls_session->clean_in, tls_session->clean_in.used,
-				tls_session->clean_in.used);
-	if (rcode < 0) {
+	if (eap_tls_compose(eap_session, EAP_TLS_START_SEND,
+			    SET_START(eap_tls_session->base_flags) | EAP_FAST_VERSION,
+			    &tls_session->clean_in, tls_session->clean_in.used,
+			    tls_session->clean_in.used) < 0) {
 		talloc_free(tls_session);
 		return RLM_MODULE_FAIL;
 	}
@@ -660,7 +652,7 @@ rlm_eap_submodule_t rlm_eap_fast = {
 	.name		= "eap_fast",
 	.magic		= RLM_MODULE_INIT,
 
-	.provides	= { FR_EAP_FAST },
+	.provides	= { FR_EAP_METHOD_FAST },
 	.inst_size	= sizeof(rlm_eap_fast_t),
 	.config		= submodule_config,
 	.instantiate	= mod_instantiate,	/* Create new submodule instance */

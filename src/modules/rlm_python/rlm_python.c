@@ -21,9 +21,9 @@
  *
  * @note Rewritten by Paul P. Komkoff Jr <i@stingr.net>.
  *
- * @copyright 2000,2006,2015-2016  The FreeRADIUS server project
- * @copyright 2002  Miguel A.L. Paraz <mparaz@mparaz.com>
- * @copyright 2002  Imperium Technology, Inc.
+ * @copyright 2000,2006,2015-2016 The FreeRADIUS server project
+ * @copyright 2002 Miguel A.L. Paraz (mparaz@mparaz.com)
+ * @copyright 2002 Imperium Technology, Inc.
  */
 RCSID("$Id$")
 
@@ -143,12 +143,9 @@ static struct {
 
 	A(L_DBG)
 	A(L_WARN)
-	A(L_AUTH)
 	A(L_INFO)
 	A(L_ERR)
-	A(L_PROXY)
 	A(L_WARN)
-	A(L_ACCT)
 	A(L_DBG_WARN)
 	A(L_DBG_ERR)
 	A(L_DBG_WARN_REQ)
@@ -185,7 +182,7 @@ static PyObject *mod_log(UNUSED PyObject *module, PyObject *args)
 		return NULL;
 	}
 
-	fr_log(&default_log, status, "%s", msg);
+	fr_log(&default_log, status, __FILE__, __LINE__, "%s", msg);
 	Py_INCREF(Py_None);
 
 	return Py_None;
@@ -232,7 +229,7 @@ static void mod_vptuple(TALLOC_CTX *ctx, REQUEST *request, VALUE_PAIR **vps, PyO
 	int	     	tuplesize;
 	vp_tmpl_t       *dst;
 	VALUE_PAIR      *vp;
-	REQUEST         *current = request;
+	REQUEST	*current = request;
 
 	/*
 	 *	If the Python function gave us None for the tuple,
@@ -301,7 +298,7 @@ static void mod_vptuple(TALLOC_CTX *ctx, REQUEST *request, VALUE_PAIR **vps, PyO
 			}
 		}
 
-		if (tmpl_afrom_attr_str(ctx, &dst, s1,
+		if (tmpl_afrom_attr_str(ctx, NULL, &dst, s1,
 					&(vp_tmpl_rules_t){
 						.dict_def = request->dict,
 						.list_def = PAIR_LIST_REPLY
@@ -416,23 +413,11 @@ static int mod_populate_vptuple(PyObject *pp, VALUE_PAIR *vp)
 		value = PyFloat_FromDouble(vp->vp_float64);
 		break;
 
-	case FR_TYPE_DATE_MILLISECONDS:
-		value = PyLong_FromLongLong(vp->vp_date_milliseconds);
-		break;
-
-	case FR_TYPE_DATE_MICROSECONDS:
-		value = PyLong_FromLongLong(vp->vp_date_microseconds);
-		break;
-
-	case FR_TYPE_DATE_NANOSECONDS:
-		value = PyLong_FromLongLong(vp->vp_date_nanoseconds);
-		break;
-
 	case FR_TYPE_SIZE:
 		value = PyLong_FromUnsignedLongLong((unsigned long long)vp->vp_size);
 		break;
 
-	case FR_TYPE_TIMEVAL:
+	case FR_TYPE_TIME_DELTA:
 	case FR_TYPE_IPV4_ADDR:
 	case FR_TYPE_DATE:
 	case FR_TYPE_ABINARY:
@@ -670,7 +655,7 @@ static int python_function_load(python_func_def_t *def)
 
 	error:
 		python_error_log();
-		ERROR("%s - Failed to import python function '%s.%s'", funcname, def->module_name, def->function_name);
+		ERROR("%s - Failed importing python function '%s.%s'", funcname, def->module_name, def->function_name);
 		Py_XDECREF(def->function);
 		def->function = NULL;
 		Py_XDECREF(def->module);
@@ -940,14 +925,22 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
 static int mod_detach(void *instance)
 {
 	rlm_python_t *inst = instance;
-	int	     ret;
+	int	     ret = 0;
+
+	/*
+	 *      If we don't have a sub_interpreter
+	 *      we didn't get far enough into
+	 *      instantiation to generate things
+	 *      we need to clean up...
+	 */
+	if (!inst->sub_interpreter) return 0;
 
 	/*
 	 *	Call module destructor
 	 */
 	PyEval_RestoreThread(inst->sub_interpreter);
 
-	ret = do_python_single(NULL, inst->detach.function, "detach");
+	if (inst->detach.function) ret = do_python_single(NULL, inst->detach.function, "detach");
 
 #define PYTHON_FUNC_DESTROY(_x) python_function_destroy(&inst->_x)
 	PYTHON_FUNC_DESTROY(instantiate);
@@ -1076,8 +1069,8 @@ static void mod_unload(void)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_python;
-rad_module_t rlm_python = {
+extern module_t rlm_python;
+module_t rlm_python = {
 	.magic			= RLM_MODULE_INIT,
 	.name			= "python",
 	.type			= RLM_TYPE_THREAD_SAFE,

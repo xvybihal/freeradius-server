@@ -19,9 +19,9 @@
  * @file rlm_sql.c
  * @brief Implements FreeTDS rlm_sql driver.
  *
- * @copyright 2013  Arran Cudbard-Bell <a.cudbardb@freeradius.org>
- * @copyright 2000,2006  The FreeRADIUS server project
- * @copyright 2000  Mattias Sjostrom <mattias@nogui.se>
+ * @copyright 2013 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
+ * @copyright 2000,2006 The FreeRADIUS server project
+ * @copyright 2000 Mattias Sjostrom (mattias@nogui.se)
  */
 
 RCSID("$Id$")
@@ -676,10 +676,10 @@ static int _sql_socket_destructor(rlm_sql_freetds_conn_t *conn)
 	return RLM_SQL_OK;
 }
 
-static sql_rcode_t sql_socket_init(rlm_sql_handle_t *handle, rlm_sql_config_t *config, struct timeval const *timeout)
+static sql_rcode_t sql_socket_init(rlm_sql_handle_t *handle, rlm_sql_config_t *config, fr_time_delta_t timeout)
 {
 	rlm_sql_freetds_conn_t *conn;
-	unsigned int timeout_ms = FR_TIMEVAL_TO_MS(timeout);
+	unsigned int timeout_ms = fr_time_delta_to_msec(timeout);
 
 	MEM(conn = handle->conn = talloc_zero(handle, rlm_sql_freetds_conn_t));
 	talloc_set_destructor(conn, _sql_socket_destructor);

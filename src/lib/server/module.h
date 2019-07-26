@@ -29,9 +29,9 @@ RCSIDH(modules_h, "$Id$")
 extern "C" {
 #endif
 
-typedef struct rad_module_s rad_module_t;
+typedef struct rad_module_s module_t;
+typedef struct rad_module_method_names_s module_method_names_t;
 typedef struct module_instance_s module_instance_t;
-typedef struct section_type_value_s section_type_value_t;
 typedef struct module_thread_instance_s  module_thread_instance_t;
 
 #ifdef __cplusplus
@@ -40,15 +40,12 @@ typedef struct module_thread_instance_s  module_thread_instance_t;
 
 #include <freeradius-devel/server/cf_parse.h>
 #include <freeradius-devel/server/components.h>
-#include <freeradius-devel/server/dl.h>
+#include <freeradius-devel/server/dl_module.h>
 #include <freeradius-devel/server/exfile.h>
 #include <freeradius-devel/server/pool.h>
 #include <freeradius-devel/server/rcode.h>
 
 #include <freeradius-devel/io/schedule.h>
-
-#include <freeradius-devel/unlang/base.h>
-
 #include <freeradius-devel/features.h>
 
 #ifdef __cplusplus
@@ -57,22 +54,11 @@ extern "C" {
 
 extern const FR_NAME_NUMBER mod_rcode_table[];
 
-/** Map a section name, to a section typename, to an attribute number
- *
- * Used by module.c to define the mappings between names, types and control
- * attributes.
- */
-struct section_type_value_s {
-	char const      *section;		//!< Section name e.g. "Authorize".
-	char const      *typename;		//!< Type name e.g. "Auth-Type".
-	int		attr;			//!< Attribute number.
-};
-
-/** Mappings between section names, typenames and control attributes
+/** Mappings between section names, and control attributes
  *
  * Defined in module.c.
  */
-extern const section_type_value_t section_type_value[];
+extern const char *section_type_value[MOD_COUNT];
 
 #define RLM_TYPE_THREAD_SAFE	(0 << 0) 	//!< Module is threadsafe.
 #define RLM_TYPE_THREAD_UNSAFE	(1 << 0) 	//!< Module is not threadsafe.
@@ -123,7 +109,7 @@ typedef int (*module_instantiate_t)(void *instance, CONF_SECTION *mod_cs);
  *	- 0 on success.
  *	- -1 if instantiation failed.
  */
-typedef int (*module_thread_t)(CONF_SECTION const *mod_cs, void *instance, fr_event_list_t *el, void *thread);
+typedef int (*module_thread_instantiate_t)(CONF_SECTION const *mod_cs, void *instance, fr_event_list_t *el, void *thread);
 
 /** Module thread destruction callback
  *
@@ -136,66 +122,46 @@ typedef int (*module_thread_t)(CONF_SECTION const *mod_cs, void *instance, fr_ev
  */
 typedef int (*module_thread_detach_t)(fr_event_list_t *el, void *thread);
 
+#define FR_MODULE_COMMON \
+	struct { \
+		module_instantiate_t		bootstrap;		\
+		module_instantiate_t		instantiate;		\
+	}
 
-/** A callback when the the timeout occurs
+/** Common fields for the interface struct modules export
  *
- * Used when a module needs wait for an event.
- * Typically the callback is set, and then the module returns unlang_module_yield().
- *
- * @note The callback is automatically removed on unlang_resumable(), i.e. if an event
- *	on a registered FD occurs before the timeout event fires.
- *
- * @param[in] request		the request.
- * @param[in] instance		the module instance.
- * @param[in] thread		data specific to this module instance.
- * @param[in] rctx		a local context for the callback.
- * @param[in] fired		the time the timeout event actually fired.
  */
-typedef	void (*fr_unlang_module_timeout_t)(REQUEST *request, void *instance, void *thread, void *rctx,
-					   struct timeval *fired);
+#define FR_MODULE_THREADED_COMMON \
+	struct { \
+		module_thread_instantiate_t	thread_instantiate;	\
+		module_thread_detach_t		thread_detach;		\
+		char const			*thread_inst_type;	\
+		size_t				thread_inst_size;	\
+	}
 
-/** A callback when the FD is ready for reading
+/** Common fields for submodules
  *
- * Used when a module needs to read from an FD.  Typically the callback is set, and then the
- * module returns unlang_module_yield().
- *
- * @note The callback is automatically removed on unlang_resumable(), so
- *
- * @param[in] request		the current request.
- * @param[in] instance		the module instance.
- * @param[in] thread		data specific to this module instance.
- * @param[in] rctx		a local context for the callback.
- * @param[in] fd		the file descriptor.
+ * This should either be the first field in the structure exported from
+ * the submodule or the submodule should export an identical set of fields
+ * in the same order, preferably using the macros above.
  */
-typedef void (*fr_unlang_module_fd_event_t)(REQUEST *request, void *instance, void *thread, void *rctx, int fd);
+struct rad_submodule_s {
+	DL_MODULE_COMMON;					//!< Common fields for all loadable modules.
+	FR_MODULE_COMMON;					//!< Common fields for all instantiated modules.
+	FR_MODULE_THREADED_COMMON;				//!< Common fields for threaded modules.
+};
 
-/** A callback for when the request is resumed.
+/** Named methods exported by a module
  *
- * The resumed request cannot call the normal "authorize", etc. method.  It needs a separate callback.
- *
- * @param[in] request		the current request.
- * @param[in] instance		The module instance.
- * @param[in] thread		data specific to this module instance.
- * @param[in] rctx		a local context for the callback.
- * @return a normal rlm_rcode_t.
  */
-typedef rlm_rcode_t (*fr_unlang_module_resume_t)(REQUEST *request, void *instance, void *thread, void *rctx);
+struct rad_module_method_names_s {
+	char const	*name1;
+	char const	*name2;
+	module_method_t	method;
+};
 
-/** A callback when the request gets a fr_state_signal_t.
- *
- * A module may call unlang_yeild(), but still need to do something on FR_SIGNAL_DUP.  If so, it's
- * set here.
- *
- * @note The callback is automatically removed on unlang_resumable().
- *
- * @param[in] request		The current request.
- * @param[in] instance		The module instance.
- * @param[in] thread		data specific to this module instance.
- * @param[in] rctx		Resume ctx for the callback.
- * @param[in] action		which is signalling the request.
- */
-typedef void (*fr_unlang_module_signal_t)(REQUEST *request, void *instance, void *thread,
-					  void *rctx, fr_state_signal_t action);
+#define MODULE_NAME_TERMINATOR { .name1 = NULL }
+
 
 /** Struct exported by a rlm_* module
  *
@@ -203,19 +169,15 @@ typedef void (*fr_unlang_module_signal_t)(REQUEST *request, void *instance, void
  * within the module to different sections.
  */
 struct rad_module_s {
-	RAD_MODULE_COMMON;
+	DL_MODULE_COMMON;					//!< Common fields for all loadable modules.
+	FR_MODULE_COMMON;					//!< Common fields for all instantiated modules.
+	FR_MODULE_THREADED_COMMON;				//!< Common fields for threaded modules.
 
-	int			type;			//!< Type flags that control calling conventions for modules.
-
-	module_instantiate_t	bootstrap;		//!< Callback to register dynamic attrs, xlats, etc.
-	module_instantiate_t	instantiate;		//!< Callback to configure a new module instance.
-
-	module_thread_t		thread_instantiate;	//!< Callback to configure a module's instance for
-							//!< a new worker thread.
-	module_thread_detach_t	thread_detach;		//!< Destroy thread specific data.
-	size_t			thread_inst_size;	//!< Size of data to allocate to the thread instance.
-
-	module_method_t		methods[MOD_COUNT];	//!< Pointers to the various section callbacks.
+	int				type;			//!< Type flags that control calling conventions
+								//!< for modules.
+	module_method_t			methods[MOD_COUNT];	//!< Pointers to the various section callbacks.
+	module_method_names_t const	*method_names;		//!< named methods
+	fr_dict_t			**dict;			//!< pointer to local fr_dict_t*
 };
 
 /** Per instance data
@@ -227,12 +189,13 @@ struct rad_module_s {
 struct module_instance_s {
 	char const			*name;		//!< Instance name e.g. user_database.
 
-	dl_instance_t			*dl_inst;	//!< Structure containing the module's instance data,
+	dl_module_inst_t			*dl_inst;	//!< Structure containing the module's instance data,
 							//!< configuration, and dl handle.
 
-	rad_module_t const		*module;	//!< Public module structure.  Cached for convenience.
+	module_t const			*module;	//!< Public module structure.  Cached for convenience.
 
-	pthread_mutex_t			*mutex;
+	pthread_mutex_t			*mutex;		//!< To prevent multiple threads entering a thread unsafe
+							///< module.
 
 	size_t				number;		//!< unique module number
 	bool				instantiated;	//!< Whether the module has been instantiated yet.
@@ -242,6 +205,8 @@ struct module_instance_s {
 
 	rlm_rcode_t			code;		//!< Code module will return when 'force' has
 							//!< has been set to true.
+	bool				in_name_tree;	//!< Whether this is in the name lookup tree.
+	bool				in_data_tree;	//!< Whether this is in the data lookup tree.
 };
 
 /** Per thread per instance data
@@ -253,7 +218,7 @@ struct module_thread_instance_s {
 
 	fr_event_list_t			*el;		//!< Event list associated with this thread.
 
-	rad_module_t const		*module;	//!< Public module structure.  Cached for convenience,
+	module_t const			*module;	//!< Public module structure.  Cached for convenience,
 							///< and to prevent use-after-free if the global data
 							///< is freed before the thread instance data.
 
@@ -264,86 +229,86 @@ struct module_thread_instance_s {
 	uint64_t			active_callers; //! number of active callers.  i.e. number of current yields
 };
 
-/*
- *	Share connection pool instances between modules
+/** Map string values to module state method
+ *
+ */
+typedef struct {
+	char const			*name;		//!< String identifier for state.
+	module_method_t			func;		//!< State function.
+} module_state_func_table_t;
+
+/** @name Convenience wrappers around other internal APIs to make them easier to instantiate with modules
+ *
+ * @{
  */
 fr_pool_t	*module_connection_pool_init(CONF_SECTION *module,
-						     void *opaque,
-						     fr_pool_connection_create_t c,
-						     fr_pool_connection_alive_t a,
-						     char const *log_prefix,
-						     char const *trigger_prefix,
-						     VALUE_PAIR *trigger_args);
-exfile_t *module_exfile_init(TALLOC_CTX *ctx,
-			     CONF_SECTION *module,
-			     uint32_t max_entries,
-			     uint32_t max_idle,
-			     bool locking,
-			     char const *trigger_prefix,
-			     VALUE_PAIR *trigger_args);
-/*
- *	Create free and destroy module instances
+					     void *opaque,
+					     fr_pool_connection_create_t c,
+					     fr_pool_connection_alive_t a,
+					     char const *log_prefix,
+					     char const *trigger_prefix,
+					     VALUE_PAIR *trigger_args);
+exfile_t	*module_exfile_init(TALLOC_CTX *ctx,
+			     	    CONF_SECTION *module,
+				    uint32_t max_entries,
+				    uint32_t max_idle,
+				    bool locking,
+				    char const *trigger_prefix,
+				    VALUE_PAIR *trigger_args);
+/** @{ */
+
+/** @name Helper functions
+ *
+ * @{
  */
-module_thread_instance_t *module_thread_instance_find(module_instance_t *mi);
-void		*module_thread_instance_by_data(void *mod_data);
-int		modules_thread_instantiate(TALLOC_CTX *ctx, CONF_SECTION *root, fr_event_list_t *el) CC_HINT(nonnull);
-int		modules_instantiate(CONF_SECTION *root) CC_HINT(nonnull);
-int		modules_bootstrap(CONF_SECTION *root) CC_HINT(nonnull);
-int		modules_free(void);
+module_method_t	module_state_str_to_method(module_state_func_table_t const *table,
+					   char const *name, module_method_t def);
+
+char const	*module_state_method_to_str(module_state_func_table_t const *table,
+					    module_method_t method, char const *def);
+
 bool		module_section_type_set(REQUEST *request, fr_dict_attr_t const *type_da, fr_dict_enum_t const *enumv);
+
 int		module_instance_read_only(TALLOC_CTX *ctx, char const *name);
 
-/*
- *	Call various module sections
+/** @{ */
+
+/** @name Module and module thread lookup
+ *
+ * @{
  */
-rlm_rcode_t	process_authenticate(int type, REQUEST *request);
+module_instance_t	*module_by_name(module_instance_t const *parent, char const *asked_name);
 
-#ifdef WITH_COA
-#  define MODULE_NULL_COA_FUNCS ,NULL,NULL
-#else
-#  define MODULE_NULL_COA_FUNCS
-#endif
+module_instance_t	*module_by_name_and_method(module_method_t *method, rlm_components_t *component,
+						   char const **name1, char const **name2,
+						   char const *asked_name);
 
-extern const CONF_PARSER virtual_servers_config[];
-extern const CONF_PARSER virtual_servers_on_read_config[];
+module_instance_t	*module_by_data(void const *data);
 
-typedef int (*fr_virtual_server_compile_t)(CONF_SECTION *server);
+module_thread_instance_t *module_thread(module_instance_t *mi);
 
-int		virtual_server_section_attribute_define(CONF_SECTION *server_cs, char const *subcs_name,
-							fr_dict_attr_t const *da);
-int		virtual_servers_open(fr_schedule_t *sc);
-int		virtual_servers_instantiate(void);
-int		virtual_servers_bootstrap(CONF_SECTION *config);
-CONF_SECTION	*virtual_server_find(char const *name);
-int		virtual_server_namespace_register(char const *namespace, fr_virtual_server_compile_t func);
+module_thread_instance_t *module_thread_by_data(void const *data);
+/** @} */
 
-void		fr_request_async_bootstrap(REQUEST *request, fr_event_list_t *el); /* for unit_test_module */
-
-/*
- *	unlang_module.c
+/** @name Module and module thread initialisation and instantiation
+ *
+ * @{
  */
-int		unlang_event_module_timeout_add(REQUEST *request, fr_unlang_module_timeout_t callback,
-						void const *ctx, struct timeval *timeout);
+void		module_free(module_instance_t *mi);
 
-int 		unlang_event_fd_add(REQUEST *request,
-				    fr_unlang_module_fd_event_t read,
-				    fr_unlang_module_fd_event_t write,
-				    fr_unlang_module_fd_event_t error,
-				    void const *ctx, int fd);
+int		modules_init(void);
 
-int		unlang_event_timeout_delete(REQUEST *request, void const *ctx);
+void		modules_free(void);
 
-int		unlang_event_fd_delete(REQUEST *request, void const *ctx, int fd);
+int		modules_thread_instantiate(TALLOC_CTX *ctx, fr_event_list_t *el) CC_HINT(nonnull);
 
-rlm_rcode_t	unlang_module_push_xlat(TALLOC_CTX *ctx, fr_value_box_t **out,
-					REQUEST *request, xlat_exp_t const *xlat,
-					fr_unlang_module_resume_t callback,
-					fr_unlang_module_signal_t signal_callback, void *uctx);
+int		modules_instantiate(void) CC_HINT(nonnull);
 
-rlm_rcode_t	unlang_module_yield(REQUEST *request, fr_unlang_module_resume_t callback,
-				    fr_unlang_module_signal_t signal_callback, void *ctx);
+module_instance_t *module_bootstrap(module_instance_t const *parent, CONF_SECTION *cs) CC_HINT(nonnull(2));
 
-void		unlang_module_init(void);
+int		modules_bootstrap(CONF_SECTION *root) CC_HINT(nonnull);
+/** @} */
+
 #ifdef __cplusplus
 }
 #endif

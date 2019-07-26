@@ -19,6 +19,7 @@
 #include <freeradius-devel/server/map.h>
 #include <freeradius-devel/server/module.h>
 #include <freeradius-devel/util/dlist.h>
+#include <freeradius-devel/unlang/module.h>
 
 /*
  * $Id$
@@ -26,7 +27,7 @@
  * @file rlm_radius.h
  * @brief Structures for the RADIUS client packets
  *
- * @copyright 2017 Alan DeKok <aland@freeradius.org>
+ * @copyright 2017 Alan DeKok (aland@freeradius.org)
  */
 
 typedef struct rlm_radius_t rlm_radius_t;
@@ -45,12 +46,12 @@ typedef int (*fr_radius_io_instantiate_t)(rlm_radius_t *inst, void *io_instance,
  * This structure is exported by client I/O modules e.g. rlm_radius_udp.
  */
 typedef struct {
-	RAD_MODULE_COMMON;				//!< Common fields to all loadable modules.
+	DL_MODULE_COMMON;				//!< Common fields to all loadable modules.
 
 	fr_app_bootstrap_t		bootstrap;
 	fr_radius_io_instantiate_t	instantiate;
 
-	module_thread_t			thread_instantiate;	//!< Callback to configure a module's instance for
+	module_thread_instantiate_t			thread_instantiate;	//!< Callback to configure a module's instance for
 								//!< a new worker thread.
 	module_thread_detach_t		thread_detach;		//!< Destroy thread specific data.
 	size_t				thread_inst_size;	//!< Size of data to allocate to the thread instance.
@@ -77,16 +78,16 @@ typedef struct {
 struct rlm_radius_t {
 	char const		*name;		//!< Module instance name.
 
-	struct timeval		connection_timeout;
-	struct timeval		reconnection_delay;
-	struct timeval		idle_timeout;
-	struct timeval		zombie_period;
+	fr_time_delta_t		connection_timeout;
+	fr_time_delta_t		reconnection_delay;
+	fr_time_delta_t		idle_timeout;
+	fr_time_delta_t		zombie_period;
 
 	bool			replicate;	//!< are we ignoring responses?
 	bool			synchronous;	//!< are we doing synchronous proxying?
 	bool			no_connection_fail; //!< are we failing immediately on no connection?
 
-	dl_instance_t		*io_submodule;	//!< As provided by the transport_parse
+	dl_module_inst_t		*io_submodule;	//!< As provided by the transport_parse
 	fr_radius_client_io_t const *io;	//!< Easy access to the IO handle
 	void			*io_instance;	//!< Easy access to the IO instance
 	CONF_SECTION		*io_conf;	//!< Easy access to the IO config section
@@ -100,8 +101,8 @@ struct rlm_radius_t {
 	uint32_t		status_check;  	//!< code of status-check type
 	vp_map_t		*status_check_map;	//!< attributes for the status-server checks
 
-	int			allowed[FR_MAX_PACKET_CODE];
-	rlm_radius_retry_t	retry[FR_MAX_PACKET_CODE];
+	int			allowed[FR_RADIUS_MAX_PACKET_CODE];
+	rlm_radius_retry_t	retry[FR_RADIUS_MAX_PACKET_CODE];
 };
 
 

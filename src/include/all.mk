@@ -38,16 +38,16 @@ src/include/autoconf.sed: src/include/autoconf.h
 #
 
 # Find the RFC dictionaries, and add them to the list to be converted
-DICT := $(shell find share/dictionary -type f -name *dictionary.rfc*)
+DICT := $(wildcard $(addsuffix /dictionary.rfc*,$(addprefix share/dictionary/,$(PROTOCOLS))))
 
-# Find internal dictionaries and add them to the list to be converted
-DICT += $(shell find share/dictionary -type f -name *dictionary.freeradius*)
+# Find internal dictionaries and add them to the list to be converte
+DICT += $(wildcard $(addsuffix /dictionary.freeradius*,$(addprefix share/dictionary/,$(PROTOCOLS))))
 
 # These contain the protocol number definitions
-DICT += $(shell find share/dictionary -type f -name *dictionary)
+DICT += $(wildcard $(addsuffix /dictionary,$(addprefix share/dictionary/,$(PROTOCOLS))))
 
 # Add in protocol specific dictionaries (should be done in proto_* modules?)
-DICT += share/dictionary/vqp/dictionary.vqp
+DICT += share/dictionary/vmps/dictionary.vmps
 
 NORMALIZE	:= tr -- '[:lower:]/+.-' '[:upper:]____' | sed 's/241_//;'
 HEADER		:= "/* AUTO_GENERATED FILE.  DO NOT EDIT */"
@@ -127,7 +127,7 @@ $(SRC_INCLUDE_DIR):
 #  it already created, and fails...
 #
 ${SRC_INCLUDE_DIR}/%.h: src/include/%.h | $(SRC_INCLUDE_DIR)
-	${Q}echo INSTALL $(notdir $<)
+	${Q}echo INSTALL $(subst src/include,freeradius-server,$<)
 	${Q}$(INSTALL) -d -m 755 `echo $(dir $@) | sed 's/\/$$//'`
 # Expression must deal with indentation after the hash and copy it to the substitution string.
 # Hash not anchored to allow substitution in function documentation.

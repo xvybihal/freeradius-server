@@ -20,9 +20,9 @@
  * @file src/lib/server/auth.c
  * @brief The old authentication state machine.
  *
- * @copyright 2000,2006  The FreeRADIUS server project
- * @copyright 2000  Miquel van Smoorenburg <miquels@cistron.nl>
- * @copyright 2000  Jeff Carneal <jeff@apex.net>
+ * @copyright 2000,2006 The FreeRADIUS server project
+ * @copyright 2000 Miquel van Smoorenburg (miquels@cistron.nl)
+ * @copyright 2000 Jeff Carneal (jeff@apex.net)
  */
 RCSID("$Id$")
 
@@ -159,7 +159,7 @@ runit:
 	}
 
 	RDEBUG("server %s {", cf_section_name2(request->server_cs));
-	final = request->async->process(request->async->process_inst, request, FR_IO_ACTION_RUN);
+	final = request->async->process(request->async->process_inst, request);
 	RDEBUG("} # server %s", cf_section_name2(request->server_cs));
 
 	fr_cond_assert(final == FR_IO_REPLY);
@@ -191,7 +191,7 @@ void common_packet_debug(REQUEST *request, RADIUS_PACKET *packet, bool received)
 	if (!RDEBUG_ENABLED) return;
 
 
-	log_request(L_DBG, L_DBG_LVL_1, request, "%s code %u Id %i from %s%s%s:%i to %s%s%s:%i "
+	log_request(L_DBG, L_DBG_LVL_1, request, __FILE__, __LINE__, "%s code %u Id %i from %s%s%s:%i to %s%s%s:%i "
 #if defined(WITH_UDPFROMTO) && defined(WITH_IFINDEX_NAME_RESOLUTION)
 		       "%s%s%s"
 #endif

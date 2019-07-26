@@ -20,7 +20,7 @@
  * @file protocols/radius/base.c
  * @brief Functions to send/receive radius packets.
  *
- * @copyright 2000-2003,2006  The FreeRADIUS server project
+ * @copyright 2000-2003,2006 The FreeRADIUS server project
  */
 
 RCSID("$Id$")
@@ -108,7 +108,6 @@ size_t const fr_radius_attr_sizes[FR_TYPE_MAX + 1][2] = {
 	[FR_TYPE_STRUCT]		= {1, ~0},
 
 	[FR_TYPE_EXTENDED]		= {2, ~0},
-	[FR_TYPE_LONG_EXTENDED]		= {3, ~0},
 
 	[FR_TYPE_VSA]			= {4, ~0},
 	[FR_TYPE_EVS]			= {6, ~0},
@@ -133,7 +132,7 @@ FR_NAME_NUMBER const fr_request_types[] = {
 	{ NULL, 0}
 };
 
-char const *fr_packet_codes[FR_MAX_PACKET_CODE] = {
+char const *fr_packet_codes[FR_RADIUS_MAX_PACKET_CODE] = {
 	"",					//!< 0
 	"Access-Request",
 	"Access-Accept",
@@ -189,7 +188,7 @@ char const *fr_packet_codes[FR_MAX_PACKET_CODE] = {
 	"Protocol-Error",
 };
 
-bool const fr_request_packets[FR_CODE_MAX + 1] = {
+bool const fr_request_packets[FR_RADIUS_MAX_PACKET_CODE + 1] = {
 	[FR_CODE_ACCESS_REQUEST] = true,
 	[FR_CODE_ACCOUNTING_REQUEST] = true,
 	[FR_CODE_STATUS_SERVER] = true,
@@ -528,7 +527,7 @@ bool fr_radius_ok(uint8_t const *packet, size_t *packet_len_p,
 	 *	Code of 16 or greate is not understood.
 	 */
 	if ((packet[0] == 0) ||
-	    (packet[0] >= FR_MAX_PACKET_CODE)) {
+	    (packet[0] >= FR_RADIUS_MAX_PACKET_CODE)) {
 		FR_DEBUG_STRERROR_PRINTF("unknown packet code %d", packet[0]);
 		failure = DECODE_FAIL_UNKNOWN_PACKET_CODE;
 		goto finish;
@@ -1087,20 +1086,6 @@ ssize_t	fr_radius_decode(TALLOC_CTX *ctx, uint8_t *packet, size_t packet_len, ui
 	return packet_len;
 }
 
-static void print_hex_data(uint8_t const *ptr, int attrlen, int depth)
-{
-	int i;
-	static char const tabs[] = "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t";
-
-	for (i = 0; i < attrlen; i++) {
-		if ((i > 0) && ((i & 0x0f) == 0x00))
-			fprintf(fr_log_fp, "%.*s", depth, tabs);
-		fprintf(fr_log_fp, "%02x ", ptr[i]);
-		if ((i & 0x0f) == 0x0f) fprintf(fr_log_fp, "\n");
-	}
-	if ((i & 0x0f) != 0) fprintf(fr_log_fp, "\n");
-}
-
 int fr_radius_init(void)
 {
 	if (instance_count > 0) {
@@ -1125,58 +1110,3 @@ void fr_radius_free(void)
 
 	fr_dict_autofree(libfreeradius_radius_dict);
 }
-
-/** Print a raw RADIUS packet as hex.
- *
- */
-void fr_radius_print_hex(FILE *fp, uint8_t const *packet, size_t packet_len)
-{
-	int i;
-	uint8_t const *attr, *end;
-
-	if ((packet[0] > 0) && (packet[0] < FR_MAX_PACKET_CODE)) {
-		fprintf(fp, "  Code:\t\t%s\n", fr_packet_codes[packet[0]]);
-	} else {
-		fprintf(fp, "  Code:\t\t%u\n", packet[0]);
-	}
-
-	fprintf(fp, "  Id:\t\t%u\n", packet[1]);
-	fprintf(fp, "  Length:\t%u\n", ((packet[2] << 8) |
-				   (packet[3])));
-	fprintf(fp, "  Vector:\t");
-
-	for (i = 4; i < 20; i++) {
-		fprintf(fp, "%02x", packet[i]);
-	}
-	fprintf(fp, "\n");
-
-	if (packet_len <= 20) return;
-
-	for (attr = packet + 20, end = packet + packet_len;
-	     attr < end;
-	     attr += attr[1]) {
-		int offset;
-		unsigned int vendor = 0;
-
-		fprintf(fp, "\t\t");
-
-		fprintf(fp, "%02x  %02x  ", attr[0], attr[1]);
-
-#ifndef NDEBUG
-		if (attr[1] < 2) break; /* Coverity */
-#endif
-
-		if ((attr[0] == FR_VENDOR_SPECIFIC) &&
-		    (attr[1] > 6)) {
-			vendor = (attr[2] << 25) | (attr[3] << 16) | (attr[4] << 8) | attr[5];
-			fprintf(fp, "%02x%02x%02x%02x (%u)  ",
-				attr[2], attr[3], attr[4], attr[5], vendor);
-			offset = 6;
-		} else {
-			offset = 2;
-		}
-
-		print_hex_data(attr + offset, attr[1] - offset, 3);
-	}
-}
-

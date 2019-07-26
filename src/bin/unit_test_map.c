@@ -17,7 +17,7 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2015  Alan DeKok <aland@freeradius.org>
+ * @copyright 2015 Alan DeKok (aland@freeradius.org)
  */
 
 RCSID("$Id$")
@@ -38,6 +38,12 @@ RCSID("$Id$")
 
 #include <freeradius-devel/server/log.h>
 
+#define EXIT_WITH_FAILURE \
+do { \
+	ret = EXIT_FAILURE; \
+	goto cleanup; \
+} while (0)
+
 static fr_dict_t *dict_freeradius;
 static fr_dict_t *dict_radius;
 
@@ -48,29 +54,18 @@ fr_dict_autoload_t unit_test_module_dict[] = {
 	{ NULL }
 };
 
-module_instance_t *module_find_with_method(UNUSED rlm_components_t *method,
-					   UNUSED CONF_SECTION *modules, UNUSED char const *name)
+
+static void NEVER_RETURNS usage(char *argv[])
 {
-	return NULL;
-}
+	fprintf(stderr, "usage: %s [OPTS] filename ...\n", argv[0]);
+	fprintf(stderr, "  -d <raddb>         Set user dictionary directory (defaults to " RADDBDIR ").\n");
+	fprintf(stderr, "  -D <dictdir>       Set main dictionary directory (defaults to " DICTDIR ").\n");
+	fprintf(stderr, "  -O <output_dir>    Set output directory\n");
+	fprintf(stderr, "  -x                 Debugging mode.\n");
+	fprintf(stderr, "  -M                 Show program version information.\n");
+	fprintf(stderr, "  -r <receipt_file>  Create the <receipt_file> as a 'success' exit.\n");
 
-module_thread_instance_t *module_thread_instance_find(UNUSED module_instance_t *mi)
-{
-	return NULL;
-}
-
-/* Linker hacks */
-
-static void NEVER_RETURNS usage(void)
-{
-	fprintf(stderr, "usage: unit_test_map [OPTS] filename ...\n");
-	fprintf(stderr, "  -d <raddb>             Set user dictionary directory (defaults to " RADDBDIR ").\n");
-	fprintf(stderr, "  -D <dictdir>           Set main dictionary directory (defaults to " DICTDIR ").\n");
-	fprintf(stderr, "  -O <output_dir>	  Set output directory\n");
-	fprintf(stderr, "  -x                     Debugging mode.\n");
-	fprintf(stderr, "  -M                     Show program version information.\n");
-
-	exit(EXIT_FAILURE);
+	exit(EXIT_SUCCESS);
 }
 
 static int process_file(char const *filename)
@@ -91,12 +86,12 @@ static int process_file(char const *filename)
 	config = main_config_alloc(NULL);
 	if (!config) {
 		fprintf(stderr, "Failed allocating main config");
-		exit(EXIT_FAILURE);
+		return EXIT_FAILURE;
 	}
 	config->root_cs = cf_section_alloc(config, NULL, "main", NULL);
 	if ((cf_file_read(config->root_cs, filename) < 0) || (cf_section_pass2(config->root_cs) < 0)) {
 		fprintf(stderr, "unit_test_map: Failed parsing %s\n", filename);
-		exit(EXIT_FAILURE);
+		return EXIT_FAILURE;
 	}
 
 	main_config_name_set_default(config, "unit_test_map", false);
@@ -107,7 +102,7 @@ static int process_file(char const *filename)
 	cs = cf_section_find(config->root_cs, "update", CF_IDENT_ANY);
 	if (!cs) {
 		talloc_free(config->root_cs);
-		return -1;
+		return EXIT_FAILURE;
 	}
 
 	/*
@@ -116,11 +111,11 @@ static int process_file(char const *filename)
 	rcode = map_afrom_cs(cs, &head, cs, &parse_rules, &parse_rules, unlang_fixup_update, NULL, 128);
 	if (rcode < 0) {
 		cf_log_err(cs, "map_afrom_cs failed: %s", fr_strerror());
-		return -1; /* message already printed */
+		return EXIT_FAILURE; /* message already printed */
 	}
 	if (!head) {
 		cf_log_err(cs, "'update' sections cannot be empty");
-		return -1;
+		return EXIT_FAILURE;
 	}
 
 	buffer[0] = '\t';
@@ -146,15 +141,16 @@ static int process_file(char const *filename)
 	talloc_free(config->root_cs);
 	talloc_free(config);
 
-	return 0;
+	return EXIT_SUCCESS;
 }
 
 int main(int argc, char *argv[])
 {
-	int			c, rcode = 0;
+	int			c, ret = EXIT_SUCCESS;
 	char const		*raddb_dir = RADDBDIR;
 	char const		*dict_dir = DICTDIR;
 	fr_dict_t		*dict = NULL;
+	char const		*receipt_file = NULL;
 
 	TALLOC_CTX		*autofree = talloc_autofree_context();
 
@@ -165,7 +161,7 @@ int main(int argc, char *argv[])
 	}
 #endif
 
-	while ((c = getopt(argc, argv, "d:D:xMh")) != -1) switch (c) {
+	while ((c = getopt(argc, argv, "d:D:xMhr:")) != -1) switch (c) {
 		case 'd':
 			raddb_dir = optarg;
 			break;
@@ -183,32 +179,38 @@ int main(int argc, char *argv[])
 			talloc_enable_leak_report();
 			break;
 
+		case 'r':
+			receipt_file = optarg;
+			break;
+
 		case 'h':
 		default:
-			usage();
+			usage(argv);
 	}
 	argc -= (optind - 1);
 	argv += (optind - 1);
+
+	if (receipt_file && (fr_file_unlink(receipt_file) < 0)) {
+		fr_perror("unit_test_map");
+		EXIT_WITH_FAILURE;
+	}
 
 	/*
 	 *	Mismatch between the binary and the libraries it depends on
 	 */
 	if (fr_check_lib_magic(RADIUSD_MAGIC_NUMBER) < 0) {
 		fr_perror("unit_test_map");
-		rcode = EXIT_FAILURE;
-		goto done;
+		EXIT_WITH_FAILURE;
 	}
 
 	if (fr_dict_global_init(autofree, dict_dir) < 0) {
 		fr_perror("unit_test_map");
-		rcode = EXIT_FAILURE;
-		goto done;
+		EXIT_WITH_FAILURE;
 	}
 
 	if (fr_dict_internal_afrom_file(&dict, FR_DICTIONARY_INTERNAL_DIR) < 0) {
 		fr_perror("unit_test_map");
-		rcode = EXIT_FAILURE;
-		goto done;
+		EXIT_WITH_FAILURE;
 	}
 
 	/*
@@ -217,26 +219,24 @@ int main(int argc, char *argv[])
 	if (fr_dict_read(dict, raddb_dir, FR_DICTIONARY_FILE) == -1) {
 		fr_strerror_printf_push("Failed to initialize the dictionaries");
 		fr_perror("unit_test_map");
-		rcode = EXIT_FAILURE;
-		goto done;
+		EXIT_WITH_FAILURE;
 	}
 
 	if (fr_dict_autoload(unit_test_module_dict) < 0) {
 		fr_perror("unit_test_map");
-		rcode = EXIT_FAILURE;
-		goto done;
+		EXIT_WITH_FAILURE;
 	}
 
 	if (argc < 2) {
-		rcode = process_file("-");
+		ret = process_file("-");
 
 	} else {
-		rcode = process_file(argv[1]);
+		ret = process_file(argv[1]);
 	}
 
-	if (rcode < 0) rcode = 1; /* internal to Unix process return code */
+	if (ret < 0) ret = 1; /* internal to Unix process return code */
 
-done:
+cleanup:
 	/*
 	 *	Try really hard to free any allocated
 	 *	memory, so we get clean talloc reports.
@@ -252,5 +252,10 @@ done:
 
 	fr_strerror_free();
 
-	return rcode;
+	if (receipt_file && (ret == EXIT_SUCCESS) && (fr_file_touch(receipt_file, 0644) < 0)) {
+		fr_perror("unit_test_map");
+		ret = EXIT_FAILURE;
+	}
+
+	return ret;
 }

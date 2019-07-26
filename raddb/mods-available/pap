@@ -1,10 +1,10 @@
 #  -*- text -*-
 #
-#  :toc:
 #
 #  $Id$
 
 #######################################################################
+#
 #  = PAP Module
 #
 #  The `pap` module accepts a large number of formats for the _known good_ (reference)

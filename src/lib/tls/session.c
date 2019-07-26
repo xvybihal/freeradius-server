@@ -20,8 +20,8 @@
  * @file tls/session.c
  * @brief Initialise OpenSSL sessions, and read/write data to/from them.
  *
- * @copyright 2001 hereUare Communications, Inc. <raghud@hereuare.com>
- * @copyright 2003  Alan DeKok <aland@freeradius.org>
+ * @copyright 2001 hereUare Communications, Inc. (raghud@hereuare.com)
+ * @copyright 2003 Alan DeKok (aland@freeradius.org)
  * @copyright 2006-2016 The FreeRADIUS server project
  */
 
@@ -668,7 +668,7 @@ static void session_msg_log(REQUEST *request, tls_session_t *tls_session, uint8_
 
 	if ((size_t)tls_session->info.content_type == SSL3_RT_HANDSHAKE) {
 		if (tls_session->info.record_len > 0) {
-			if (((size_t)tls_session->info.handshake_type >= NUM_ELEMENTS(tls_handshake_type_str)) ||
+			if ((tls_session->info.handshake_type >= (uint8_t)NUM_ELEMENTS(tls_handshake_type_str)) ||
 			    !tls_handshake_type_str[tls_session->info.handshake_type]) {
 				sprintf(unknown_handshake_type,
 					"unknown_handshake_type_0x%04x", tls_session->info.handshake_type);
@@ -694,18 +694,10 @@ static void session_msg_log(REQUEST *request, tls_session_t *tls_session, uint8_
 	 *	Print out information about the record and print the
 	 *	data at higher debug levels.
 	 */
-	if (request) {
-		if (RDEBUG_ENABLED3) {
-			RHEXDUMP(L_DBG_LVL_3, data, data_len, "%s", tls_session->info.info_description);
-		} else {
-			RDEBUG2("%s", tls_session->info.info_description);
-		}
+	if (RDEBUG_ENABLED3) {
+		RHEXDUMP3(data, data_len, "%s", tls_session->info.info_description);
 	} else {
-		if (DEBUG_ENABLED3) {
-			HEXDUMP(L_DBG_LVL_3, data, data_len, "%s", tls_session->info.info_description);
-		} else {
-			DEBUG3("%s", tls_session->info.info_description);
-		}
+		RDEBUG2("%s", tls_session->info.info_description);
 	}
 }
 
@@ -1039,7 +1031,7 @@ int tls_session_pairs_from_x509_cert(fr_cursor_t *cursor, TALLOC_CTX *ctx,
 	 *	Only add extensions for the actual client certificate
 	 */
 	if (attr_index == 0) {
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L && !defined(LIBRESSL_VERSION_NUMBER)
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
 		ext_list = X509_get0_extensions(cert);
 #else
 		ext_list = cert->cert_info->extensions;
@@ -1194,9 +1186,12 @@ int tls_session_recv(REQUEST *request, tls_session_t *session)
 	session->clean_out.used = ret;
 	ret = 0;
 
-	RDEBUG2("Decrypted TLS application data (%zu bytes)", session->clean_out.used);
-	log_request_hex(L_DBG, L_DBG_LVL_3, request, session->clean_out.data, session->clean_out.used);
-
+	if (RDEBUG_ENABLED3) {
+		RHEXDUMP3(session->clean_out.data, session->clean_out.used,
+			 "Decrypted TLS application data (%zu bytes)", session->clean_out.used);
+	} else {
+		RDEBUG2("Decrypted TLS application data (%zu bytes)", session->clean_out.used);
+	}
 finish:
 	tls_session_request_unbind(session->ssl);
 
@@ -1238,8 +1233,12 @@ int tls_session_send(REQUEST *request, tls_session_t *session)
 	 *	contain the data to send to the client.
 	 */
 	if (session->clean_in.used > 0) {
-		RDEBUG2("TLS application data to encrypt (%zu bytes)", session->clean_in.used);
-		log_request_hex(L_DBG, L_DBG_LVL_3, request, session->clean_in.data, session->clean_in.used);
+		if (RDEBUG_ENABLED3) {
+			RHEXDUMP3(session->clean_in.data, session->clean_in.used,
+				 "TLS application data to encrypt (%zu bytes)", session->clean_in.used);
+		} else {
+			RDEBUG2("TLS application data to encrypt (%zu bytes)", session->clean_in.used);
+		}
 
 		ret = SSL_write(session->ssl, session->clean_in.data, session->clean_in.used);
 		record_to_buff(&session->clean_in, NULL, ret);

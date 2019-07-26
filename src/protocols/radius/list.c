@@ -20,7 +20,7 @@
  * @file protocols/radius/list.c
  * @brief Functions to deal with outgoing lists / sets of packets.
  *
- * @copyright 2000-2017  The FreeRADIUS server project
+ * @copyright 2000-2017 The FreeRADIUS server project
  */
 
 RCSID("$Id$")
@@ -699,11 +699,11 @@ bool fr_packet_list_id_free(fr_packet_list_t *pl,
  *	1  means delete current node and stop
  *	2  means delete current node and continue
  */
-int fr_packet_list_walk(fr_packet_list_t *pl, void *ctx, rb_walker_t callback)
+int fr_packet_list_walk(fr_packet_list_t *pl, rb_walker_t callback, void *uctx)
 {
 	if (!pl || !callback) return 0;
 
-	return rbtree_walk(pl->tree, RBTREE_DELETE_ORDER, callback, ctx);
+	return rbtree_walk(pl->tree, RBTREE_DELETE_ORDER, callback, uctx);
 }
 
 int fr_packet_list_fd_set(fr_packet_list_t *pl, fd_set *set)
@@ -791,7 +791,7 @@ uint32_t fr_packet_list_num_outgoing(fr_packet_list_t *pl)
 /*
  *	Debug the packet if requested.
  */
-void fr_packet_header_print(FILE *fp, RADIUS_PACKET *packet, bool received)
+void fr_packet_header_log(fr_log_t const *log, RADIUS_PACKET *packet, bool received)
 {
 	char src_ipaddr[FR_IPADDR_STRLEN];
 	char dst_ipaddr[FR_IPADDR_STRLEN];
@@ -799,7 +799,7 @@ void fr_packet_header_print(FILE *fp, RADIUS_PACKET *packet, bool received)
 	char if_name[IFNAMSIZ];
 #endif
 
-	if (!fp) return;
+	if (!log) return;
 	if (!packet) return;
 
 	/*
@@ -809,7 +809,8 @@ void fr_packet_header_print(FILE *fp, RADIUS_PACKET *packet, bool received)
 	 *	This really belongs in a utility library
 	 */
 	if (is_radius_code(packet->code)) {
-		fprintf(fp, "%s %s Id %i from %s%s%s:%i to %s%s%s:%i "
+		fr_log(log, L_DBG, __FILE__, __LINE__,
+		       "%s %s Id %i from %s%s%s:%i to %s%s%s:%i "
 #if defined(WITH_UDPFROMTO) && defined(WITH_IFINDEX_NAME_RESOLUTION)
 		       "%s%s%s"
 #endif
@@ -832,7 +833,8 @@ void fr_packet_header_print(FILE *fp, RADIUS_PACKET *packet, bool received)
 #endif
 			packet->data_len);
 	} else {
-		fprintf(fp, "%s code %u Id %i from %s%s%s:%i to %s%s%s:%i "
+		fr_log(log, L_DBG, __FILE__, __LINE__,
+		       "%s code %u Id %i from %s%s%s:%i to %s%s%s:%i "
 #if defined(WITH_UDPFROMTO) && defined(WITH_IFINDEX_NAME_RESOLUTION)
 		       "%s%s%s"
 #endif

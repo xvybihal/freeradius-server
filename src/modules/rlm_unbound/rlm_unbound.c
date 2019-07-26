@@ -20,7 +20,7 @@
  * @brief DNS services via libunbound.
  *
  * @copyright 2013 The FreeRADIUS server project
- * @copyright 2013 Brian S. Julin <bjulin@clarku.edu>
+ * @copyright 2013 Brian S. Julin (bjulin@clarku.edu)
  */
 RCSID("$Id$")
 
@@ -30,7 +30,14 @@ RCSID("$Id$")
 #include <freeradius-devel/server/module.h>
 #include <freeradius-devel/server/log.h>
 #include <fcntl.h>
+
+#ifdef HAVE_WDOCUMENTATION
+DIAG_OFF(documentation)
+#endif
 #include <unbound.h>
+#ifdef HAVE_WDOCUMENTATION
+DIAG_ON(documentation)
+#endif
 
 typedef struct {
 	struct ub_ctx	*ub;   /* This must come first.  Do not move */
@@ -180,7 +187,7 @@ static int ub_common_wait(rlm_unbound_t const *inst, REQUEST *request,
 	if ((void const *)*ub == (void const *)inst) {
 		int res;
 
-		RDEBUG("%s - DNS took too long", name);
+		REDEBUG2("%s - DNS took too long", name);
 
 		res = ub_cancel(inst->ub, async_id);
 		if (res) {
@@ -200,19 +207,19 @@ static int ub_common_fail(REQUEST *request, char const *name, struct ub_result *
 	}
 
 	if (ub->nxdomain) {
-		RDEBUG("%s - NXDOMAIN", name);
+		RDEBUG2("%s - NXDOMAIN", name);
 		return -1;
 	}
 
 	if (!ub->havedata) {
-		RDEBUG("%s - Empty result", name);
+		RDEBUG2("%s - Empty result", name);
 		return -1;
 	}
 
 	return 0;
 }
 
-static ssize_t xlat_a(UNUSED TALLOC_CTX *ctx, char **out, size_t outlen,
+static ssize_t xlat_a(TALLOC_CTX *ctx, char **out, size_t outlen,
 		      void const *mod_inst, UNUSED void const *xlat_inst,
 		      REQUEST *request, char const *fmt)
 {
@@ -227,7 +234,7 @@ static ssize_t xlat_a(UNUSED TALLOC_CTX *ctx, char **out, size_t outlen,
 	/* Used and thus impossible value from heap to designate incomplete */
 	memcpy(ubres, &mod_inst, sizeof(*ubres));
 
-	fmt2 = talloc_typed_strdup(inst, fmt);
+	fmt2 = talloc_typed_strdup(ctx, fmt);
 	ub_resolve_async(inst->ub, fmt2, 1, 1, ubres, link_ubres, &async_id);
 	talloc_free(fmt2);
 
@@ -259,7 +266,7 @@ static ssize_t xlat_a(UNUSED TALLOC_CTX *ctx, char **out, size_t outlen,
 	return -1;
 }
 
-static ssize_t xlat_aaaa(UNUSED TALLOC_CTX *ctx, char **out, size_t outlen,
+static ssize_t xlat_aaaa(TALLOC_CTX *ctx, char **out, size_t outlen,
 			 void const *mod_inst, UNUSED void const *xlat_inst,
 			 REQUEST *request, char const *fmt)
 {
@@ -274,7 +281,7 @@ static ssize_t xlat_aaaa(UNUSED TALLOC_CTX *ctx, char **out, size_t outlen,
 	/* Used and thus impossible value from heap to designate incomplete */
 	memcpy(ubres, &mod_inst, sizeof(*ubres));
 
-	fmt2 = talloc_typed_strdup(inst, fmt);
+	fmt2 = talloc_typed_strdup(ctx, fmt);
 	ub_resolve_async(inst->ub, fmt2, 28, 1, ubres, link_ubres, &async_id);
 	talloc_free(fmt2);
 
@@ -304,7 +311,7 @@ error0:
 	return -1;
 }
 
-static ssize_t xlat_ptr(UNUSED TALLOC_CTX *ctx, char **out, size_t outlen,
+static ssize_t xlat_ptr(TALLOC_CTX *ctx, char **out, size_t outlen,
 			void const *mod_inst, UNUSED void const *xlat_inst,
 			REQUEST *request, char const *fmt)
 {
@@ -319,7 +326,7 @@ static ssize_t xlat_ptr(UNUSED TALLOC_CTX *ctx, char **out, size_t outlen,
 	/* Used and thus impossible value from heap to designate incomplete */
 	memcpy(ubres, &mod_inst, sizeof(*ubres));
 
-	fmt2 = talloc_typed_strdup(inst, fmt);
+	fmt2 = talloc_typed_strdup(ctx, fmt);
 	ub_resolve_async(inst->ub, fmt2, 12, 1, ubres, link_ubres, &async_id);
 	talloc_free(fmt2);
 
@@ -409,7 +416,7 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
 	/*
 	 *	@todo - move this to the thread-instantiate function
 	 */
-	inst->el = fr_global_event_list();
+	inst->el = main_loop_event_list();
 	inst->log_pipe_stream[0] = NULL;
 	inst->log_pipe_stream[1] = NULL;
 	inst->log_fd = -1;
@@ -700,8 +707,8 @@ static int mod_detach(void *instance)
 	return 0;
 }
 
-extern rad_module_t rlm_unbound;
-rad_module_t rlm_unbound = {
+extern module_t rlm_unbound;
+module_t rlm_unbound = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "unbound",
 	.type		= RLM_TYPE_THREAD_SAFE,

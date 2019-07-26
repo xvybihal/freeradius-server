@@ -22,9 +22,9 @@
  * The development of the EAP/SIM support was funded by Internet Foundation
  * Austria (http://www.nic.at/ipa).
  *
- * @copyright 2003  Michael Richardson <mcr@sandelman.ottawa.on.ca>
- * @copyright 2003-2016  The FreeRADIUS server project
- * @copyright 2016 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2003 Michael Richardson (mcr@sandelman.ottawa.on.ca)
+ * @copyright 2003-2016 The FreeRADIUS server project
+ * @copyright 2016 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -66,7 +66,7 @@ extern fr_dict_autoload_t rlm_eap_sim_dict[];
 fr_dict_autoload_t rlm_eap_sim_dict[] = {
 	{ .out = &dict_freeradius, .proto = "freeradius" },
 	{ .out = &dict_radius, .proto = "radius" },
-	{ .out = &dict_eap_sim, .proto = "eap-sim" },
+	{ .out = &dict_eap_sim, .proto = "eap-sim", .base_dir = "eap/sim" },
 	{ NULL }
 };
 
@@ -176,7 +176,7 @@ static int eap_sim_compose(eap_session_t *eap_session, uint8_t const *hmac_extra
 	RDEBUG2("Encoding EAP-SIM attributes");
 	log_request_pair_list(L_DBG_LVL_2, request, head, NULL);
 
-	eap_session->this_round->request->type.num = FR_EAP_SIM;
+	eap_session->this_round->request->type.num = FR_EAP_METHOD_SIM;
 	eap_session->this_round->request->id = eap_sim_session->sim_id++ & 0xff;
 	eap_session->this_round->set_request_id = true;
 
@@ -315,15 +315,15 @@ static int eap_sim_send_challenge(eap_session_t *eap_session)
 	 *	Okay, we got the challenges! Put them into attributes.
 	 */
 	MEM(vp = fr_pair_afrom_da(packet, attr_eap_sim_rand));
-	fr_pair_value_memcpy(vp, eap_sim_session->keys.gsm.vector[0].rand, SIM_VECTOR_GSM_RAND_SIZE);
+	fr_pair_value_memcpy(vp, eap_sim_session->keys.gsm.vector[0].rand, SIM_VECTOR_GSM_RAND_SIZE, false);
 	fr_pair_add(to_peer, vp);
 
 	MEM(vp = fr_pair_afrom_da(packet, attr_eap_sim_rand));
-	fr_pair_value_memcpy(vp, eap_sim_session->keys.gsm.vector[1].rand, SIM_VECTOR_GSM_RAND_SIZE);
+	fr_pair_value_memcpy(vp, eap_sim_session->keys.gsm.vector[1].rand, SIM_VECTOR_GSM_RAND_SIZE, false);
 	fr_pair_add(to_peer, vp);
 
 	MEM(vp = fr_pair_afrom_da(packet, attr_eap_sim_rand));
-	fr_pair_value_memcpy(vp, eap_sim_session->keys.gsm.vector[2].rand, SIM_VECTOR_GSM_RAND_SIZE);
+	fr_pair_value_memcpy(vp, eap_sim_session->keys.gsm.vector[2].rand, SIM_VECTOR_GSM_RAND_SIZE, false);
 	fr_pair_add(to_peer, vp);
 
 	/*
@@ -410,7 +410,7 @@ static int eap_sim_send_reauthentication(eap_session_t *eap_session)
 	/*
 	 *	All set, calculate keys!
 	 */
-	fr_sim_crypto_keys_init_kdf_0_reauth(&eap_sim_session->keys, mk->vp_octets, counter->vp_uint16);
+	fr_sim_crypto_keys_init_reauth(&eap_sim_session->keys, mk->vp_octets, counter->vp_uint16);
 	fr_sim_crypto_kdf_0_reauth(&eap_sim_session->keys);
 	if (RDEBUG_ENABLED3) fr_sim_crypto_keys_log(request, &eap_sim_session->keys);
 
@@ -428,7 +428,8 @@ static int eap_sim_send_reauthentication(eap_session_t *eap_session)
 	 *	Add nonce_s
 	 */
 	MEM(vp = fr_pair_afrom_da(packet, attr_eap_sim_nonce_s));
-	fr_pair_value_memcpy(vp, eap_sim_session->keys.reauth.nonce_s, sizeof(eap_sim_session->keys.reauth.nonce_s));
+	fr_pair_value_memcpy(vp, eap_sim_session->keys.reauth.nonce_s,
+			     sizeof(eap_sim_session->keys.reauth.nonce_s), false);
 	fr_pair_replace(to_peer, vp);
 
 	/*
@@ -839,8 +840,8 @@ static int process_eap_sim_challenge(eap_session_t *eap_session, VALUE_PAIR *vps
 		RDEBUG2("EAP-SIM-MAC matches calculated MAC");
 	} else {
 		REDEBUG("EAP-SIM-MAC does not match calculated MAC");
-		RHEXDUMP_INLINE(L_DBG_LVL_2, mac->vp_octets, SIM_MAC_DIGEST_SIZE, "Received");
-		RHEXDUMP_INLINE(L_DBG_LVL_2, calc_mac, SIM_MAC_DIGEST_SIZE, "Expected");
+		RHEXDUMP_INLINE2(mac->vp_octets, SIM_MAC_DIGEST_SIZE, "Received");
+		RHEXDUMP_INLINE2(calc_mac, SIM_MAC_DIGEST_SIZE, "Expected");
 		return -1;
 	}
 
@@ -864,13 +865,12 @@ static int process_eap_sim_challenge(eap_session_t *eap_session, VALUE_PAIR *vps
 /** Authenticate a previously sent challenge
  *
  */
-static rlm_rcode_t mod_process(UNUSED void *instance, eap_session_t *eap_session)
+static rlm_rcode_t mod_process(UNUSED void *instance, UNUSED void *thread, REQUEST *request)
 {
-	REQUEST			*request = eap_session->request;
+	eap_session_t		*eap_session = eap_session_get(request);
 	eap_sim_session_t	*eap_sim_session = talloc_get_type_abort(eap_session->opaque, eap_sim_session_t);
-	fr_sim_decode_ctx_t	ctx = {
-					.keys = &eap_sim_session->keys,
-				};
+
+	fr_sim_decode_ctx_t	ctx = { .keys = &eap_sim_session->keys };
 	VALUE_PAIR		*subtype_vp, *from_peer, *vp;
 	fr_cursor_t		cursor;
 
@@ -1068,11 +1068,12 @@ static rlm_rcode_t mod_process(UNUSED void *instance, eap_session_t *eap_session
  *	Initiate the EAP-SIM session by starting the state machine
  *      and initiating the state.
  */
-static rlm_rcode_t mod_session_init(void *instance, eap_session_t *eap_session)
+static rlm_rcode_t mod_session_init(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	REQUEST				*request = eap_session->request;
+	rlm_eap_sim_t			*inst = talloc_get_type_abort(instance, rlm_eap_sim_t);
+	eap_session_t			*eap_session = eap_session_get(request);
 	eap_sim_session_t		*eap_sim_session;
-	rlm_eap_sim_t			*inst = instance;
+
 	fr_sim_id_type_t		type;
 	fr_sim_method_hint_t		method;
 
@@ -1172,7 +1173,7 @@ rlm_eap_submodule_t rlm_eap_sim = {
 	.name		= "eap_sim",
 	.magic		= RLM_MODULE_INIT,
 
-	.provides	= { FR_EAP_SIM },
+	.provides	= { FR_EAP_METHOD_SIM },
 	.inst_size	= sizeof(rlm_eap_sim_t),
 	.config		= submodule_config,
 

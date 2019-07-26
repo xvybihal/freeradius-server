@@ -21,7 +21,7 @@
  * @brief Internal implementation of radmin
  *
  * @copyright 2018 The FreeRADIUS server project
- * @copyright 2018 Alan DeKok <aland@freeradius.org>
+ * @copyright 2018 Alan DeKok (aland@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -414,11 +414,11 @@ static void *fr_radmin(UNUSED void *input_ctx)
 /** radmin functions, tables, and callbacks
  *
  */
-static struct timeval start_time;
+static fr_time_delta_t start_time;
 
 static int cmd_exit(UNUSED FILE *fp, UNUSED FILE *fp_err, UNUSED void *ctx, UNUSED fr_cmd_info_t const *info)
 {
-	radius_signal_self(RADIUS_SIGNAL_SELF_TERM);
+	main_loop_signal_self(RADIUS_SIGNAL_SELF_TERM);
 	stop = true;
 
 	return 0;
@@ -446,20 +446,17 @@ static int cmd_help(FILE *fp, UNUSED FILE *fp_err, UNUSED void *ctx, fr_cmd_info
 
 static int cmd_terminate(UNUSED FILE *fp, UNUSED FILE *fp_err, UNUSED void *ctx, UNUSED fr_cmd_info_t const *info)
 {
-	radius_signal_self(RADIUS_SIGNAL_SELF_TERM);
+	main_loop_signal_self(RADIUS_SIGNAL_SELF_TERM);
 	return 0;
 }
 
 static int cmd_uptime(FILE *fp, UNUSED FILE *fp_err, UNUSED void *ctx, UNUSED fr_cmd_info_t const *info)
 {
-	struct timeval now;
+	fr_time_delta_t uptime;
 
-	gettimeofday(&now, NULL);
-	fr_timeval_subtract(&now, &now, &start_time);
+	uptime = fr_time() - start_time;
 
-	fprintf(fp, "Uptime: %u.%06u seconds\n",
-		(unsigned int) now.tv_sec,
-		(unsigned int) now.tv_usec);
+	fr_fprintf(fp, "Uptime: %pVs seconds\n", fr_box_time_delta(uptime));
 
 	return 0;
 }
@@ -499,7 +496,7 @@ static int cmd_set_debug_level(UNUSED FILE *fp, FILE *fp_err, UNUSED void *ctx, 
 		return -1;
 	}
 
-	rad_debug_lvl = fr_debug_lvl = level;
+	rad_debug_lvl = req_debug_lvl = fr_debug_lvl = level;
 	return 0;
 }
 
@@ -942,7 +939,7 @@ int fr_radmin_start(main_config_t *config, bool cli)
 	radmin_ctx = talloc_init("radmin");
 	if (!radmin_ctx) return -1;
 
-	gettimeofday(&start_time, NULL);
+	start_time = fr_time();
 
 #ifdef USE_READLINE
 	memcpy(&rl_readline_name, &config->name, sizeof(rl_readline_name)); /* const issues on OSX */

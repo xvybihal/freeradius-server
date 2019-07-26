@@ -29,7 +29,7 @@
 #define us(x) (uint8_t) x
 
 FR_NAME_NUMBER const sim_id_request_table[] = {
-	{ "Id-Any-Req",		SIM_ANY_ID_REQ			},
+	{ "Any-Id-Req",		SIM_ANY_ID_REQ			},
 	{ "Permanent-Id-Req",	SIM_PERMANENT_ID_REQ		},
 	{ "FullAuth-Id-Req",	SIM_FULLAUTH_ID_REQ		},
 	{ NULL }
@@ -96,7 +96,7 @@ ssize_t fr_sim_3gpp_root_nai_domain_mcc_mnc(uint16_t *mnc, uint16_t *mcc,
 	char *q;
 	unsigned long num;
 
-	if (((p + 8) < end) || (memcmp(p, "wlan.mnc", 8) != 0)) return -1;
+	if (((p + 8) < end) || (CRYPTO_memcmp(p, "wlan.mnc", 8) != 0)) return -1;
 	p += 8;
 
 	if (((p + 3) < end)) {
@@ -111,7 +111,7 @@ ssize_t fr_sim_3gpp_root_nai_domain_mcc_mnc(uint16_t *mnc, uint16_t *mcc,
 	*mnc = (uint16_t)num;
 	p = q + 1;
 
-	if (((p + 3) < end) || (memcmp(p, "mcc", 3) != 0)) {
+	if (((p + 3) < end) || (CRYPTO_memcmp(p, "mcc", 3) != 0)) {
 		fr_strerror_printf("Missing MCC component");
 		return (domain - p);
 	}
@@ -123,7 +123,7 @@ ssize_t fr_sim_3gpp_root_nai_domain_mcc_mnc(uint16_t *mnc, uint16_t *mcc,
 	*mcc = (uint16_t)num;
 
 	p = q + 1;
-	if (((p + 15) < end) || (memcmp(p, "3gppnetwork.org", 15) != 0)) {
+	if (((p + 15) < end) || (CRYPTO_memcmp(p, "3gppnetwork.org", 15) != 0)) {
 		fr_strerror_printf("Missing 3gppnetwork.org suffix");
 		return (domain - p);
 	}
@@ -140,6 +140,8 @@ ssize_t fr_sim_3gpp_root_nai_domain_mcc_mnc(uint16_t *mnc, uint16_t *mcc,
  /** Determine what type of ID was provided in the initial identity response
   *
   * @param[out] hint	Whether this is a hint to do EAP-SIM or EAP-AKA[']:
+  *	- SIM_METHOD_HINT_AKA_PRIME	this ID was generated during an EAP-AKA' exchange
+  *					or the supplicant hints it wants to perform EAP-AKA'.
   *	- SIM_METHOD_HINT_AKA		this ID was generated during an EAP-AKA exchange
   *					or the supplicant hints it wants to perform EAP-AKA.
   *	- SIM_METHOD_HINT_SIM		this IS was generated during an EAP-SIM exchange
@@ -272,7 +274,7 @@ bad_format:
 	default:
 		*hint = SIM_METHOD_HINT_UNKNOWN;
 		*type = SIM_ID_TYPE_UNKNOWN;
-		fr_strerror_printf_push("Unrecognised tag '%c'", id[0]);
+		fr_strerror_printf_push("Unrecognised tag '%pV'", fr_box_strvalue_len(id, 1)); /* Have to box, may be \000 */
 		return -1;
 	}
 }
@@ -319,6 +321,11 @@ int fr_sim_id_3gpp_pseudonym_encrypt(char out[SIM_3GPP_PSEUDONYM_LEN + 1],
 		fr_strerror_printf("Invalid tag value, expected value between 0-63, got %u", tag);
 		return -1;
 	}
+
+	/*
+	 *	Technically the IMSI number is between 14-15, but this
+	 *	encryption scheme only works for 15 char IMSIs.
+	 */
 	if (unlikely(imsi_len != SIM_IMSI_MAX_LEN)) {
 		fr_strerror_printf("Invalid ID len, expected length of 15, got %zu", imsi_len);
 		return -1;
@@ -596,8 +603,6 @@ void test_encrypt_decypt_key0(void)
 	char		encrypted_id[SIM_3GPP_PSEUDONYM_LEN + 1];
 	char		decrypted_id[sizeof(id)];
 
-	fr_log_fp = stdout;
-
 	TEST_CHECK(fr_sim_id_3gpp_pseudonym_encrypt(encrypted_id, id, sizeof(id) - 1, 6, 0, (uint8_t const *)key) == 0);
 	while ((log = fr_strerror_pop())) printf("%s\n", log);
 
@@ -622,8 +627,6 @@ void test_encrypt_decypt_key1(void)
 
 	char		encrypted_id[SIM_3GPP_PSEUDONYM_LEN + 1];
 	char		decrypted_id[sizeof(id)];
-
-	fr_log_fp = stdout;
 
 	TEST_CHECK(fr_sim_id_3gpp_pseudonym_encrypt(encrypted_id, id, sizeof(id) - 1, 11, 1, (uint8_t const *)key) == 0);
 	while ((log = fr_strerror_pop())) printf("%s\n", log);
@@ -667,8 +670,6 @@ void test_encrypt_decypt_key16(void)
 
 	char		encrypted_id[SIM_3GPP_PSEUDONYM_LEN + 1];
 	char		decrypted_id[sizeof(id)];
-
-	fr_log_fp = stdout;
 
 	TEST_CHECK(fr_sim_id_3gpp_pseudonym_encrypt(encrypted_id, id, sizeof(id) - 1,
 						    9, 15, (uint8_t const *)keys[15]) == 0);

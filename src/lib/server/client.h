@@ -21,7 +21,7 @@
  * @file lib/server/client.h
  * @brief API to add client definitions to the server, both on startup and at runtime.
  *
- * @author Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  * @copyright 2015 The FreeRADIUS server project
  */
 RCSIDH(clients_h, "$Id$")
@@ -65,7 +65,7 @@ typedef struct rad_client_list RADCLIENT_LIST;
  */
 typedef int (*client_value_cb_t)(char **out, CONF_PAIR const *cp, void *data);
 
-#include <freeradius-devel/io/time.h>
+#include <freeradius-devel/util/time.h>
 #include <freeradius-devel/server/request.h>
 #include <freeradius-devel/server/socket.h>
 #include <freeradius-devel/server/stats.h>
@@ -113,7 +113,7 @@ struct rad_client {
 #  endif
 #endif
 
-	struct timeval		response_window;	//!< How long the client has to respond.
+	fr_time_delta_t		response_window;	//!< How long the client has to respond.
 
 	int			proto;			//!< Protocol number.
 	fr_socket_limit_t	limit;			//!< Connections per client (TCP clients only).
@@ -123,7 +123,7 @@ RADCLIENT_LIST	*client_list_init(CONF_SECTION *cs);
 
 void		client_list_free(void);
 
-RADCLIENT_LIST	*client_list_parse_section(CONF_SECTION *section, bool tls_required);
+RADCLIENT_LIST	*client_list_parse_section(CONF_SECTION *section, int proto, bool tls_required);
 
 void		client_free(RADCLIENT *client);
 

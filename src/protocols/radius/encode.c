@@ -20,7 +20,7 @@
  * @file protocols/radius/encode.c
  * @brief Functions to encode RADIUS attributes
  *
- * @copyright 2000-2003,2006-2015  The FreeRADIUS server project
+ * @copyright 2000-2003,2006-2015 The FreeRADIUS server project
  */
 RCSID("$Id$")
 
@@ -489,7 +489,7 @@ static ssize_t encode_tlv_hdr(uint8_t *out, size_t outlen,
 
 	if (tlv_stack[depth]->type != FR_TYPE_TLV) {
 		fr_strerror_printf("%s: Expected type \"tlv\" got \"%s\"", __FUNCTION__,
-				   fr_int2str(fr_value_box_type_names, tlv_stack[depth]->type, "?Unknown?"));
+				   fr_int2str(fr_value_box_type_table, tlv_stack[depth]->type, "?Unknown?"));
 		return -1;
 	}
 
@@ -604,7 +604,7 @@ static ssize_t encode_value(uint8_t *out, size_t outlen,
 	switch (da->type) {
 	case FR_TYPE_STRUCTURAL:
 		fr_strerror_printf("%s: Called with structural type %s", __FUNCTION__,
-				   fr_int2str(fr_value_box_type_names, tlv_stack[depth]->type, "?Unknown?"));
+				   fr_int2str(fr_value_box_type_table, tlv_stack[depth]->type, "?Unknown?"));
 		return -1;
 
 	default:
@@ -684,7 +684,6 @@ static ssize_t encode_value(uint8_t *out, size_t outlen,
 
 	case FR_TYPE_INVALID:
 	case FR_TYPE_EXTENDED:
-	case FR_TYPE_LONG_EXTENDED:
 	case FR_TYPE_COMBO_IP_ADDR:	/* Should have been converted to concrete equivalent */
 	case FR_TYPE_COMBO_IP_PREFIX:	/* Should have been converted to concrete equivalent */
 	case FR_TYPE_EVS:
@@ -693,12 +692,9 @@ static ssize_t encode_value(uint8_t *out, size_t outlen,
 	case FR_TYPE_TLV:
 	case FR_TYPE_STRUCT:
 	case FR_TYPE_SIZE:
-	case FR_TYPE_TIMEVAL:
+	case FR_TYPE_TIME_DELTA:
 	case FR_TYPE_FLOAT32:
 	case FR_TYPE_FLOAT64:
-	case FR_TYPE_DATE_MILLISECONDS:
-	case FR_TYPE_DATE_MICROSECONDS:
-	case FR_TYPE_DATE_NANOSECONDS:
 	case FR_TYPE_GROUP:
 	case FR_TYPE_VALUE_BOX:
 	case FR_TYPE_MAX:
@@ -781,7 +777,7 @@ static ssize_t encode_value(uint8_t *out, size_t outlen,
 		break;
 	} /* switch over encryption flags */
 
-	FR_PROTO_HEX_DUMP(out, len, "value %s", fr_int2str(fr_value_box_type_names, vp->vp_type, "<UNKNOWN>"));
+	FR_PROTO_HEX_DUMP(out, len, "value %s", fr_int2str(fr_value_box_type_table, vp->vp_type, "<UNKNOWN>"));
 
 	/*
 	 *	Rebuilds the TLV stack for encoding the next attribute
@@ -858,6 +854,7 @@ static int encode_extended_hdr(uint8_t *out, size_t outlen,
 	fr_type_t		attr_type;
 #ifndef NDEBUG
 	fr_type_t		vsa_type;
+	int			jump = 3;
 #endif
 	uint8_t			*start = out;
 	VALUE_PAIR const	*vp = fr_cursor_current(cursor);
@@ -871,6 +868,9 @@ static int encode_extended_hdr(uint8_t *out, size_t outlen,
 	attr_type = tlv_stack[0]->type;
 #ifndef NDEBUG
 	vsa_type = tlv_stack[1]->type;
+	if (fr_debug_lvl > 3) {
+		jump += tlv_stack[0]->flags.extra;
+	}
 #endif
 
 	/*
@@ -878,31 +878,21 @@ static int encode_extended_hdr(uint8_t *out, size_t outlen,
 	 */
 	switch (attr_type) {
 	case FR_TYPE_EXTENDED:
-		if (outlen < 3) return 0;
+		if (outlen < (size_t) (3 + tlv_stack[0]->flags.extra)) return 0;
 
 		/*
 		 *	Encode which extended attribute it is.
 		 */
 		out[0] = tlv_stack[depth++]->attr & 0xff;
-		out[1] = 3;
+		out[1] = 3 + tlv_stack[0]->flags.extra;
 		out[2] = tlv_stack[depth]->attr & 0xff;
-		break;
 
-	case FR_TYPE_LONG_EXTENDED:
-		if (outlen < 4) return 0;
-
-		/*
-		 *	Encode which extended attribute it is.
-		 */
-		out[0] = tlv_stack[depth++]->attr & 0xff;
-		out[1] = 4;
-		out[2] = tlv_stack[depth]->attr & 0xff;
-		out[3] = 0;	/* flags start off at zero */
+		if (tlv_stack[0]->flags.extra) out[3] = 0;	/* flags start off at zero */
 		break;
 
 	default:
 		fr_strerror_printf("%s : Called for non-extended attribute type %s",
-				   __FUNCTION__, fr_int2str(fr_value_box_type_names,
+				   __FUNCTION__, fr_int2str(fr_value_box_type_table,
 				   tlv_stack[depth]->type, "?Unknown?"));
 		return -1;
 	}
@@ -937,7 +927,7 @@ static int encode_extended_hdr(uint8_t *out, size_t outlen,
 	 *	"outlen" can be larger than 255 here, but only for the
 	 *	"long" extended type.
 	 */
-	if ((attr_type == FR_TYPE_EXTENDED) && (outlen > 255)) outlen = 255;
+	if ((attr_type == FR_TYPE_EXTENDED) && !tlv_stack[0]->flags.extra && (outlen > 255)) outlen = 255;
 
 	if (tlv_stack[depth]->type == FR_TYPE_TLV) {
 		len = encode_tlv_hdr_internal(out + out[1], outlen - out[1], tlv_stack, depth, cursor, encoder_ctx);
@@ -959,10 +949,7 @@ static int encode_extended_hdr(uint8_t *out, size_t outlen,
 	out[1] += len;
 
 #ifndef NDEBUG
-	if ((fr_debug_lvl > 3) && fr_log_fp) {
-		int jump = 3;
-
-		if (attr_type != FR_TYPE_EXTENDED) jump = 4;
+	if (fr_debug_lvl > 3) {
 		if (vsa_type == FR_TYPE_EVS) jump += 5;
 
 		FR_PROTO_HEX_DUMP(out, jump, "header extended");
@@ -1048,7 +1035,7 @@ static ssize_t encode_rfc_hdr_internal(uint8_t *out, size_t outlen,
 	switch (tlv_stack[depth]->type) {
 	default:
 		fr_strerror_printf("%s: Called with structural type %s", __FUNCTION__,
-				   fr_int2str(fr_value_box_type_names, tlv_stack[depth]->type, "?Unknown?"));
+				   fr_int2str(fr_value_box_type_table, tlv_stack[depth]->type, "?Unknown?"));
 		return -1;
 
 	case FR_TYPE_STRUCT:
@@ -1271,7 +1258,7 @@ static int encode_vsa_hdr(uint8_t *out, size_t outlen,
 
 	if (da->type != FR_TYPE_VSA) {
 		fr_strerror_printf("%s: Expected type \"vsa\" got \"%s\"", __FUNCTION__,
-				   fr_int2str(fr_value_box_type_names, da->type, "?Unknown?"));
+				   fr_int2str(fr_value_box_type_table, da->type, "?Unknown?"));
 		return -1;
 	}
 
@@ -1301,7 +1288,7 @@ static int encode_vsa_hdr(uint8_t *out, size_t outlen,
 
 	if (da->type != FR_TYPE_VENDOR) {
 		fr_strerror_printf("%s: Expected type \"vsa\" got \"%s\"", __FUNCTION__,
-				   fr_int2str(fr_value_box_type_names, da->type, "?Unknown?"));
+				   fr_int2str(fr_value_box_type_table, da->type, "?Unknown?"));
 		return -1;
 	}
 
@@ -1337,7 +1324,7 @@ static int encode_rfc_hdr(uint8_t *out, size_t outlen, fr_dict_attr_t const **tl
 	switch (tlv_stack[depth]->type) {
 	case FR_TYPE_STRUCTURAL:
 		fr_strerror_printf("%s: Expected leaf type got \"%s\"", __FUNCTION__,
-				   fr_int2str(fr_value_box_type_names, tlv_stack[depth]->type, "?Unknown?"));
+				   fr_int2str(fr_value_box_type_table, tlv_stack[depth]->type, "?Unknown?"));
 		return -1;
 
 	default:
@@ -1501,18 +1488,9 @@ ssize_t fr_radius_encode_pair(uint8_t *out, size_t outlen, fr_cursor_t *cursor, 
 		ret = encode_extended_hdr(out, attr_len, tlv_stack, 0, cursor, encoder_ctx);
 		break;
 
-	case FR_TYPE_LONG_EXTENDED:
-		/*
-		 *	These attributes can be longer than 253
-		 *	octets.  We therefore fragment the data across
-		 *	multiple attributes.
-		 */
-		ret = encode_extended_hdr(out, outlen, tlv_stack, 0, cursor, encoder_ctx);
-		break;
-
 	case FR_TYPE_INVALID:
 	case FR_TYPE_VENDOR:
-	case FR_TYPE_TIMEVAL:
+	case FR_TYPE_TIME_DELTA:
 	case FR_TYPE_FLOAT64:
 	case FR_TYPE_EVS:
 	case FR_TYPE_MAX:

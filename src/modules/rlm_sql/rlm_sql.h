@@ -20,17 +20,12 @@
  * @file rlm_sql.h
  * @brief Prototypes and functions for the SQL module
  *
- * @copyright 2012-2014  Arran Cudbard-Bell <a.cudbardb@freeradius.org>
- * @copyright 2000,2006  The FreeRADIUS server project
- * @copyright 2000  Mike Machado <mike@innercite.com>
- * @copyright 2000  Alan DeKok <aland@freeradius.org>
+ * @copyright 2012-2014 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
+ * @copyright 2000,2006 The FreeRADIUS server project
+ * @copyright 2000 Mike Machado (mike@innercite.com)
+ * @copyright 2000 Alan DeKok (aland@freeradius.org)
  */
 RCSIDH(rlm_sql_h, "$Id$")
-
-#ifndef LOG_PREFIX
-#  define LOG_PREFIX "rlm_sql (%s) - "
-#  define LOG_PREFIX_ARGS inst->name
-#endif
 
 #include <freeradius-devel/server/base.h>
 #include <freeradius-devel/server/pool.h>
@@ -41,7 +36,9 @@ RCSIDH(rlm_sql_h, "$Id$")
 #define FR_ITEM_REPLY 1
 
 
-/* SQL Errors */
+/** Action to take at end of an SQL query
+ *
+ */
 typedef enum {
 	RLM_SQL_QUERY_INVALID = -3,	//!< Query syntax error.
 	RLM_SQL_ERROR = -2,		//!< General connection/server error.
@@ -57,13 +54,19 @@ typedef enum {
 	FALL_THROUGH_DEFAULT,
 } sql_fall_through_t;
 
-
 typedef char **rlm_sql_row_t;
 
 typedef struct {
-	fr_log_type_t	type;		//!< Type of log entry L_ERR, L_WARN, L_INFO, L_DBG etc..
-	char const	*msg;		//!< Log message.
+	fr_log_type_t		type;				//!< Type of log entry L_ERR, L_WARN, L_INFO,
+								///< L_DBG etc.
+	char const		*msg;				//!< Log message.
 } sql_log_entry_t;
+
+typedef struct {
+	char const		*sql_state;			//!< 2-5 char error code.
+	char const		*meaning;			//!< Verbose description.
+	sql_rcode_t 		rcode;				//!< What should happen if we receive this error.
+} sql_state_entry_t;
 
 /*
  * Sections where we dynamically resolve the config entry to use,
@@ -147,7 +150,9 @@ typedef struct {
 								//!< when log strings need to be copied.
 } rlm_sql_handle_t;
 
+extern const FR_NAME_NUMBER sql_rcode_description_table[];
 extern const FR_NAME_NUMBER sql_rcode_table[];
+
 /*
  *	Capabilities flags for drivers
  */
@@ -178,13 +183,13 @@ typedef size_t (*sql_error_t)(TALLOC_CTX *ctx, sql_log_entry_t out[], size_t out
 			      rlm_sql_config_t *config);
 
 typedef struct {
-	RAD_MODULE_COMMON;				//!< Common fields to all loadable modules.
+	DL_MODULE_COMMON;				//!< Common fields to all loadable modules.
 
 	int		flags;
 
 	sql_rcode_t (*mod_instantiate)(rlm_sql_config_t const *config, void *instance, CONF_SECTION *cs);
 	sql_rcode_t (*sql_socket_init)(rlm_sql_handle_t *handle, rlm_sql_config_t *config,
-				       struct timeval const *timeout);
+				       fr_time_delta_t timeout);
 
 	sql_rcode_t (*sql_query)(rlm_sql_handle_t *handle, rlm_sql_config_t *config, char const *query);
 	sql_rcode_t (*sql_select_query)(rlm_sql_handle_t *handle, rlm_sql_config_t *config, char const *query);
@@ -216,7 +221,7 @@ struct sql_inst {
 							//!< dictionary attribute.
 	exfile_t		*ef;
 
-	dl_instance_t		*driver_inst;		//!< Driver's instance data.
+	dl_module_inst_t		*driver_inst;		//!< Driver's instance data.
 	rlm_sql_driver_t const	*driver;		//!< Driver's exported interface.
 
 	int (*sql_set_user)(rlm_sql_t const *inst, REQUEST *request, char const *username);
@@ -235,11 +240,10 @@ struct rlm_sql_grouplist_s {
 	rlm_sql_grouplist_t	*next;
 };
 
-void		*mod_conn_create(TALLOC_CTX *ctx, void *instance, struct timeval const *timeout);
+void		*mod_conn_create(TALLOC_CTX *ctx, void *instance, fr_time_delta_t timeout);
 int		sql_fr_pair_list_afrom_str(TALLOC_CTX *ctx, REQUEST *request, VALUE_PAIR **first_pair, rlm_sql_row_t row);
 int		sql_read_realms(rlm_sql_handle_t *handle);
 int		sql_getvpdata(TALLOC_CTX *ctx, rlm_sql_t const *inst, REQUEST *request, rlm_sql_handle_t **handle, VALUE_PAIR **pair, char const *query);
-int		sql_read_clients(rlm_sql_handle_t *handle);
 int		sql_dict_init(rlm_sql_handle_t *handle);
 void 		rlm_sql_query_log(rlm_sql_t const *inst, REQUEST *request, sql_acct_section_t *section, char const *query) CC_HINT(nonnull (1, 2, 4));
 sql_rcode_t	rlm_sql_select_query(rlm_sql_t const *inst, REQUEST *request, rlm_sql_handle_t **handle, char const *query) CC_HINT(nonnull (1, 3, 4));
@@ -247,3 +251,11 @@ sql_rcode_t	rlm_sql_query(rlm_sql_t const *inst, REQUEST *request, rlm_sql_handl
 int		rlm_sql_fetch_row(rlm_sql_row_t *out, rlm_sql_t const *inst, REQUEST *request, rlm_sql_handle_t **handle);
 void		rlm_sql_print_error(rlm_sql_t const *inst, REQUEST *request, rlm_sql_handle_t *handle, bool force_debug);
 int		sql_set_user(rlm_sql_t const *inst, REQUEST *request, char const *username);
+
+/*
+ *	sql_state.c
+ */
+fr_trie_t	*sql_state_trie_alloc(TALLOC_CTX *ctx);
+int		sql_state_entries_from_table(fr_trie_t *states, sql_state_entry_t const table[]);
+int		sql_sate_entries_from_cs(fr_trie_t *states, CONF_SECTION *overrides);
+sql_state_entry_t const		*sql_state_entry_find(fr_trie_t const *states, char const *sql_state);

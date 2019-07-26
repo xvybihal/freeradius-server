@@ -19,7 +19,7 @@
  *
  * @file src/lib/util/misc.h
  *
- * @copyright 2000,2006  The FreeRADIUS server project
+ * @copyright 2000,2006 The FreeRADIUS server project
  */
 RCSIDH(misc_h, "$Id$")
 
@@ -30,6 +30,7 @@ extern "C" {
 #include <freeradius-devel/build.h>
 #include <freeradius-devel/missing.h>
 #include <freeradius-devel/util/print.h>
+#include <freeradius-devel/util/time.h>
 
 #include <ctype.h>
 #include <signal.h>
@@ -37,6 +38,7 @@ extern "C" {
 #include <talloc.h>
 
 typedef		int8_t (*fr_cmp_t)(void const *a, void const *b);
+
 
 /*
  *	Define TALLOC_DEBUG to check overflows with talloc.
@@ -51,6 +53,20 @@ void		fr_talloc_verify_cb(const void *ptr, int depth,
 #else
 #  define VERIFY_ALL_TALLOC
 #endif
+
+/** Round up - Only works if _mul is a power of 2 but avoids division
+ */
+#define ROUND_UP_POW2(_num, _mul)	(((_num) + ((_mul) - 1)) & ~((_mul) - 1))
+
+/** Round up - Works in all cases, but is slower
+ */
+#define ROUND_UP(_num, _mul)		(((((_num) + ((_mul) - 1))) / (_mul)) * (_mul))
+
+/** Strip whitespace ('\\t', '\\n', '\\v', '\\f', '\\r', ' ') from the beginning of a string
+ *
+ * @param[in,out] _p	string to trim.
+ */
+#define fr_skip_spaces(_p) while(isspace((int)*(_p))) _p++
 
 /** Check whether the string is all whitespace
  *
@@ -133,7 +149,7 @@ int		rad_lockfd(int fd, int lock_len);
 int		rad_lockfd_nonblock(int fd, int lock_len);
 int		rad_unlockfd(int fd, int lock_len);
 char		*fr_abin2hex(TALLOC_CTX *ctx, uint8_t const *bin, size_t inlen);
-size_t		fr_bin2hex(char *hex, uint8_t const *bin, size_t inlen);
+size_t		fr_bin2hex(char * restrict hex, uint8_t const * restrict bin, size_t inlen);
 size_t		fr_hex2bin(uint8_t *bin, size_t outlen, char const *hex, size_t inlen);
 int		fr_strtoull(uint64_t *out, char **end, char const *value);
 int		fr_strtoll(int64_t *out, char **end, char const *value);
@@ -142,27 +158,19 @@ char		*fr_trim(char const *str, size_t size);
 int		fr_nonblock(int fd);
 int		fr_blocking(int fd);
 
-ssize_t		fr_writev(int fd, struct iovec vector[], int iovcnt, struct timeval *timeout);
+ssize_t		fr_writev(int fd, struct iovec vector[], int iovcnt, fr_time_delta_t timeout);
 ssize_t		fr_utf8_to_ucs2(uint8_t *out, size_t outlen, char const *in, size_t inlen);
 size_t		fr_snprint_uint128(char *out, size_t outlen, uint128_t const num);
 int		fr_time_from_str(time_t *date, char const *date_str);
-void		fr_timeval_from_ms(struct timeval *out, uint64_t ms);
-void		fr_timeval_from_usec(struct timeval *out, uint64_t usec);
-void		fr_timeval_subtract(struct timeval *out, struct timeval const *end, struct timeval const *start);
-void		fr_timeval_add(struct timeval *out, struct timeval const *a, struct timeval const *b);
-void		fr_timeval_divide(struct timeval *out, struct timeval const *in, int divisor);
-
-int		fr_timeval_cmp(struct timeval const *a, struct timeval const *b);
-int		fr_timeval_from_str(struct timeval *out, char const *in);
-bool		fr_timeval_isset(struct timeval const *tv);
-
-void		fr_timespec_subtract(struct timespec *out, struct timespec const *end, struct timespec const *start);
 
 bool		fr_multiply(uint64_t *result, uint64_t lhs, uint64_t rhs);
 int		fr_size_from_str(size_t *out, char const *str);
 int8_t		fr_pointer_cmp(void const *a, void const *b);
 void		fr_quick_sort(void const *to_sort[], int min_idx, int max_idx, fr_cmp_t cmp);
 int		fr_digest_cmp(uint8_t const *a, uint8_t const *b, size_t length) CC_HINT(nonnull);
+
+int 		fr_file_touch(char const *filename, mode_t mode);
+int 		fr_file_unlink(char const *filename);
 
 #ifdef __cplusplus
 }

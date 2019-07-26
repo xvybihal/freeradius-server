@@ -1,7 +1,20 @@
 #!/bin/sh -e
 
+#
+# To initialise on MacOS
+#    sudo brew install postgresql
+#    pg_ctl -D /usr/local/var/postgres start
+#    /usr/local/opt/postgres/bin/createuser -s postgres
+#
+
+echo "Dropping existing database"
+psql -h "${SQL_POSTGRESQL_TEST_SERVER}" -c 'drop database radius;' -U postgres || true
+
+echo "Dropping existing database"
+psql -h "${SQL_POSTGRESQL_TEST_SERVER}" -c 'drop user radius;' -U postgres || true
+
 echo "PostgreSQL - Creating database"
-psql -h "${SQL_POSTGRESQL_TEST_SERVER}" -c 'create database radius;' -U postgres
+psql -h "${SQL_POSTGRESQL_TEST_SERVER}" -c 'create database radius;' -U postgres || true
 
 echo "PostgreSQL - Execute schema.sql"
 psql -h "${SQL_POSTGRESQL_TEST_SERVER}" -U postgres radius < raddb/mods-config/sql/main/postgresql/schema.sql

@@ -20,7 +20,7 @@
  * @file protocols/radius/decode.c
  * @brief Functions to decode RADIUS attributes
  *
- * @copyright 2000-2003,2006-2015  The FreeRADIUS server project
+ * @copyright 2000-2003,2006-2015 The FreeRADIUS server project
  */
 RCSID("$Id$")
 
@@ -393,7 +393,7 @@ static ssize_t decode_concat(TALLOC_CTX *ctx, fr_cursor_t *cursor,
 		fr_pair_list_free(&vp);
 		return -1;
 	}
-	fr_pair_value_memsteal(vp, p);
+	fr_pair_value_memsteal(vp, p, true);
 
 	ptr = data;
 	while (ptr < end) {
@@ -988,7 +988,7 @@ ssize_t fr_radius_decode_pair_value(TALLOC_CTX *ctx, fr_cursor_t *cursor, fr_dic
 		return -1;
 	}
 
-	FR_PROTO_HEX_DUMP(data, attr_len, __FUNCTION__ );
+	FR_PROTO_HEX_DUMP(data, attr_len, "%s", __FUNCTION__ );
 
 	FR_PROTO_TRACE("Parent %s len %zu ... %zu", parent->name, attr_len, packet_len);
 
@@ -1116,7 +1116,7 @@ ssize_t fr_radius_decode_pair_value(TALLOC_CTX *ctx, fr_cursor_t *cursor, fr_dic
 	 *	Double-check the length after decrypting the
 	 *	attribute.
 	 */
-	FR_PROTO_TRACE("Type \"%s\" (%u)", fr_int2str(fr_value_box_type_names, parent->type, "?Unknown?"), parent->type);
+	FR_PROTO_TRACE("Type \"%s\" (%u)", fr_int2str(fr_value_box_type_table, parent->type, "?Unknown?"), parent->type);
 
 	min = fr_radius_attr_sizes[parent->type][0];
 	max = fr_radius_attr_sizes[parent->type][1];
@@ -1167,70 +1167,83 @@ ssize_t fr_radius_decode_pair_value(TALLOC_CTX *ctx, fr_cursor_t *cursor, fr_dic
 		break;
 
 	case FR_TYPE_EXTENDED:
-		if (data_len < 2) goto raw; /* etype, value */
+		min = 1 + parent->flags.extra;
 
+		/*
+		 *	Not enough data, just create a raw attribute.
+		 */
+		if (data_len <= min) goto raw;
+
+		/*
+		 *	Look up the extended type.  It's almost always
+		 *	a known child, so we use that as the fast
+		 *	path.
+		 */
 		child = fr_dict_attr_child_by_num(parent, p[0]);
-		if (!child) {
+		if (child) {
+			/*
+			 *	Normal "extended" with 0 or more bytes
+			 *	of data. OR a "long extended" with a
+			 *	flag byte, BUT the "more" flag is not
+			 *	set.  Just decode it.
+			 */
+			if (!parent->flags.extra || ((p[1] & 0x80) == 0)) {
+				rcode = fr_radius_decode_pair_value(ctx, cursor, dict, child,
+								    p + min, attr_len - min, attr_len - min,
+								    decoder_ctx);
+				if (rcode < 0) goto invalid_extended;
+				return attr_len;
+			}
+
+			/*
+			 *	It's a "long extended" attribute with
+			 *	an attribute number, but with no flag
+			 *	byte.  It's invalid.
+			 */
+			if (data_len == 1) goto invalid_extended;
+
+			/*
+			 *	"long extended" with a flag byte.  Due
+			 *	to the above checks, the flag byte
+			 *	MUST have the "more" bit set.  So we
+			 *	don't check it again here.
+			 */
+			rcode = decode_extended(ctx, cursor, dict, child, data, attr_len, packet_len, decoder_ctx);
+			if (rcode >= 0) return rcode; /* which may be LONGER than attr_len */
+
+			/* Fall through to invalid extended attribute */
+		} else {
 			FR_PROTO_TRACE("Extended attribute %s has no child %i", parent->name, p[0]);
-			goto raw;
 		}
-		FR_PROTO_TRACE("decode context changed %s->%s", child->name, parent->name);
 
+	invalid_extended:
 		/*
-		 *	Recurse to decode the contents, which could be
-		 *	a TLV, IPaddr, etc.  Note that we decode only
-		 *	the current attribute, and we ignore any extra
-		 *	p after it.
-		 */
-		rcode = fr_radius_decode_pair_value(ctx, cursor, dict, child,
-						    p + 1, attr_len - 1, attr_len - 1,
-						    decoder_ctx);
-		if (rcode < 0) goto raw;
-		return attr_len;
-
-	case FR_TYPE_LONG_EXTENDED:
-		if (data_len < 3) goto raw; /* etype, flags, value */
-
-		child = fr_dict_attr_child_by_num(parent, p[0]);
-		if (!child) {
-			if ((p[0] != FR_VENDOR_SPECIFIC) || (data_len < (3 + 4 + 1))) {
-				/* da->attr < 255, fr_dict_vendor_num_by_da(da) == 0 */
-				child = fr_dict_unknown_afrom_fields(ctx, parent, 0, p[0]);
-			} else {
-				/*
-				 *	Try to find the VSA.
-				 */
-				memcpy(&vendor, p + 3, 4);
-				vendor = ntohl(vendor);
-
-				if (vendor == 0) goto raw;
-
-				child = fr_dict_unknown_afrom_fields(ctx, parent, vendor, p[7]);
-			}
-			if (!child) {
-				fr_strerror_printf("%s: Internal sanity check %d", __FUNCTION__, __LINE__);
-				return -1;
-			}
-		}
-		FR_PROTO_TRACE("decode context changed %s -> %s", parent->name, child->name);
-
-		/*
-		 *	If there no more fragments, then the contents
-		 *	have to be a well-known p type.
+		 *	Create an unknown attribute, and decode it as
+		 *	"octets".  Note that we have to account for
+		 *	the flag byte, too.
 		 *
+		 *	If the child was a VSA, BUT the VSA contents
+		 *	were malformed, then the recursive call to
+		 *	ourselves would create an unknown attribute
+		 *	and succeed, instead of failing.  So we don't
+		 *	need to handle that case here.
 		 */
-		if ((p[1] & 0x80) == 0) {
-			rcode = fr_radius_decode_pair_value(ctx, cursor, dict,
-							    child, p + 2, attr_len - 2, attr_len - 2,
-							    decoder_ctx);
-			if (rcode < 0) goto raw;
-			return attr_len;
-		}
+		child = fr_dict_unknown_afrom_fields(ctx, parent, 0, p[0]);
+		if (!child) goto raw;
 
 		/*
-		 *	This requires a whole lot more work.
+		 *	"long" extended.  Decode the value.
 		 */
-		return decode_extended(ctx, cursor, dict, child, data, attr_len, packet_len, decoder_ctx);
+		if (parent->flags.extra) {
+			rcode = decode_extended(ctx, cursor, dict, child, data, attr_len, packet_len, decoder_ctx);
+			if (rcode >= 0) return rcode; /* which may be LONGER than attr_len */
+		}
+
+		rcode = fr_radius_decode_pair_value(ctx, cursor, dict, child,
+						    p + min, attr_len - min, attr_len - min,
+						    decoder_ctx);
+		if (rcode < 0) return -1;
+		return attr_len;
 
 	case FR_TYPE_EVS:
 	{
@@ -1393,11 +1406,7 @@ ssize_t fr_radius_decode_pair_value(TALLOC_CTX *ctx, fr_cursor_t *cursor, fr_dic
 	case FR_TYPE_DATE:
 	case FR_TYPE_ETHERNET:
 	case FR_TYPE_IFID:
-	case FR_TYPE_DATE_MILLISECONDS:
-	case FR_TYPE_DATE_MICROSECONDS:
-	case FR_TYPE_DATE_NANOSECONDS:
 	case FR_TYPE_SIZE:
-	case FR_TYPE_TIMEVAL:
 		if (fr_value_box_from_network(vp, &vp->data, vp->da->type, vp->da, p, data_len, true) < 0) {
 			/*
 			 *	Paranoid loop prevention
@@ -1486,6 +1495,7 @@ ssize_t fr_radius_decode_pair_value(TALLOC_CTX *ctx, fr_cursor_t *cursor, fr_dic
 		break;
 
 	case FR_TYPE_NON_VALUES:
+	case FR_TYPE_TIME_DELTA:
 		fr_pair_list_free(&vp);
 		fr_strerror_printf("%s: Internal sanity check %d", __FUNCTION__, __LINE__);
 		return -1;

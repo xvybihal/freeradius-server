@@ -18,9 +18,9 @@
  * @file rlm_date.c
  * @brief Translates timestrings between formats.
  *
- * @author Artur Malinowski <artur@wow.com>
+ * @author Artur Malinowski (artur@wow.com)
  *
- * @copyright 2013 Artur Malinowski <artur@wow.com>
+ * @copyright 2013 Artur Malinowski (artur@wow.com)
  * @copyright 1999-2018 The FreeRADIUS Server Project.
  */
 
@@ -89,19 +89,17 @@ static ssize_t xlat_date_convert(UNUSED TALLOC_CTX *ctx, char **out, size_t outl
 {
 	rlm_date_t const *inst = mod_inst;
 	struct tm tminfo;
-	struct timeval now;
 	VALUE_PAIR *vp;
 
 	memset(&tminfo, 0, sizeof(tminfo));
 
 	if (strcmp(fmt, "request") == 0) {
 		return date_encode_strftime(out, outlen, inst, request,
-					    request->packet->timestamp.tv_sec);
+					    fr_time_to_sec(request->packet->timestamp));
 	}
 
 	if (strcmp(fmt, "now") == 0) {
-		gettimeofday(&now, NULL);
-		return date_encode_strftime(out, outlen, inst, request, now.tv_sec);
+		return date_encode_strftime(out, outlen, inst, request, fr_time_to_sec(fr_time()));
 	}
 
 	if ((xlat_fmt_get_vp(&vp, request, fmt) < 0) || !vp) return 0;
@@ -128,7 +126,7 @@ static ssize_t xlat_date_convert(UNUSED TALLOC_CTX *ctx, char **out, size_t outl
 		return date_convert_string(request, out, outlen, vp->vp_strvalue, inst->fmt);
 
 	default:
-		REDEBUG("Can't convert type %s into date", fr_int2str(fr_value_box_type_names, vp->da->type, "<INVALID>"));
+		REDEBUG("Can't convert type %s into date", fr_int2str(fr_value_box_type_table, vp->da->type, "<INVALID>"));
 	}
 
 	return -1;
@@ -148,8 +146,8 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 	return 0;
 }
 
-extern rad_module_t rlm_date;
-rad_module_t rlm_date = {
+extern module_t rlm_date;
+module_t rlm_date = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "date",
 	.inst_size	= sizeof(rlm_date_t),

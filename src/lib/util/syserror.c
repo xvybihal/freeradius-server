@@ -19,7 +19,7 @@
  * @file src/lib/util/syserror.c
  *
  * @copyright 2017 The FreeRADIUS server project
- * @copyright 2017 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2017 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -259,5 +259,13 @@ char const *fr_syserror(int num)
 		return buffer;
 	}
 #endif
+}
+
+/** Explicitly cleanup the thread specific buffer used
+ *
+ */
+void fr_syserror_free(void)
+{
+	_fr_logging_free(NULL);
 }
 

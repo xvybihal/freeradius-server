@@ -19,7 +19,7 @@
  * @file rlm_idn.c
  * @brief Internationalized Domain Name encoding for DNS aka IDNA aka RFC3490
  *
- * @copyright 2013  Brian S. Julin <bjulin@clarku.edu>
+ * @copyright 2013 Brian S. Julin (bjulin@clarku.edu)
  */
 RCSID("$Id$")
 
@@ -149,8 +149,8 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 	return 0;
 }
 
-extern rad_module_t rlm_idn;
-rad_module_t rlm_idn = {
+extern module_t rlm_idn;
+module_t rlm_idn = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "idn",
 	.type		= RLM_TYPE_THREAD_SAFE,

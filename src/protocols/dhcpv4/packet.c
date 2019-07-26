@@ -21,7 +21,7 @@
  * @brief Functions to encode/decode DHCP packets.
  *
  * @copyright 2008,2017 The FreeRADIUS server project
- * @copyright 2008 Alan DeKok <aland@deployingradius.com>
+ * @copyright 2008 Alan DeKok (aland@deployingradius.com)
  */
 #include <stdint.h>
 #include <stddef.h>
@@ -43,6 +43,8 @@ uint8_t const *fr_dhcpv4_packet_get_option(dhcp_packet_t const *packet, size_t p
 	int field = DHCP_OPTION_FIELD;
 	size_t where, size;
 	uint8_t const *data;
+
+	if (packet_size < MIN_PACKET_SIZE) return NULL;
 
 	where = 0;
 	size = packet_size - offsetof(dhcp_packet_t, options);
@@ -164,7 +166,7 @@ int fr_dhcpv4_packet_decode(RADIUS_PACKET *packet)
 		case FR_TYPE_OCTETS:
 			if (packet->data[2] == 0) break;
 
-			fr_pair_value_memcpy(vp, p, packet->data[2]);
+			fr_pair_value_memcpy(vp, p, packet->data[2], true);
 			break;
 
 			/*
@@ -348,7 +350,7 @@ int fr_dhcpv4_packet_encode(RADIUS_PACKET *packet)
 		packet->id = fr_rand();
 	}
 
-	len = fr_dhcpv4_encode(packet->data, packet->data_len, packet->code, packet->id, packet->vps);
+	len = fr_dhcpv4_encode(packet->data, packet->data_len, NULL, packet->code, packet->id, packet->vps);
 	if (len < 0) return -1;
 
 	packet->data_len = len;

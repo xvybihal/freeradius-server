@@ -19,9 +19,9 @@
  * @file src/lib/sim/vector.c
  * @brief Retrieve or derive vectors for EAP-SIM.
  *
- * @author Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  *
- * @copyright 2016 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2016 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  * @copyright 2016 The FreeRADIUS server project
  */
 RCSID("$Id$")
@@ -29,7 +29,7 @@ RCSID("$Id$")
 #include <freeradius-devel/eap/base.h>
 #include <freeradius-devel/eap/types.h>
 #include "base.h"
-#include "sim_attrs.h"
+#include "attrs.h"
 #include "comp128.h"
 #include "milenage.h"
 
@@ -94,7 +94,7 @@ static int vector_gsm_from_ki(eap_session_t *eap_session, VALUE_PAIR *vps, int i
 	}
 
 	/*
-	 *	Check to see if have a Ki for the IMSI, this allows us to generate the rest
+	 *	Check to see if we have a Ki for the IMSI, this allows us to generate the rest
 	 *	of the triplets.
 	 */
 	version_vp = fr_pair_find_by_da(vps, attr_sim_algo_version, TAG_ANY);
@@ -153,12 +153,20 @@ static int vector_gsm_from_ki(eap_session_t *eap_session, VALUE_PAIR *vps, int i
 			RPEDEBUG2("Failed deriving GSM triplet");
 			return -1;
 		}
-		return 0;
+		break;
 
 	default:
 		REDEBUG("Unknown/unsupported algorithm %i", version);
 		return -1;
 	}
+
+	/*
+	 *	Store for completeness...
+	 */
+	memcpy(keys->auc.ki, ki_vp->vp_octets, sizeof(keys->auc.ki));
+	memcpy(keys->auc.opc, opc_p, sizeof(keys->auc.opc));
+	keys->vector_src = SIM_VECTOR_SRC_KI;
+
 	return 0;
 }
 
@@ -215,6 +223,7 @@ static int vector_gsm_from_triplets(eap_session_t *eap_session, VALUE_PAIR *vps,
 	memcpy(keys->gsm.vector[idx].kc, kc->vp_strvalue, SIM_VECTOR_GSM_KC_SIZE);
 	memcpy(keys->gsm.vector[idx].rand, rand->vp_octets, SIM_VECTOR_GSM_RAND_SIZE);
 	memcpy(keys->gsm.vector[idx].sres, sres->vp_octets, SIM_VECTOR_GSM_SRES_SIZE);
+	keys->vector_src = SIM_VECTOR_SRC_TRIPLETS;
 
 	return 0;
 }
@@ -295,6 +304,8 @@ static int vector_gsm_from_quintuplets(eap_session_t *eap_session, VALUE_PAIR *v
 			       ck->vp_octets,
 			       xres->vp_octets);
 
+	keys->vector_src = SIM_VECTOR_SRC_QUINTUPLETS;
+
 	return 0;
 }
 
@@ -367,13 +378,13 @@ int fr_sim_vector_gsm_from_attrs(eap_session_t *eap_session, VALUE_PAIR *vps,
 		/*
 		 *	Don't change colon indent, matches other messages later...
 		 */
-		RHEXDUMP_INLINE(L_DBG_LVL_2,
+		RHEXDUMP_INLINE2(
 				keys->gsm.vector[idx].kc, SIM_VECTOR_GSM_KC_SIZE,
 				"KC           :");
-		RHEXDUMP_INLINE(L_DBG_LVL_2,
+		RHEXDUMP_INLINE2(
 				keys->gsm.vector[idx].rand, SIM_VECTOR_GSM_RAND_SIZE,
 				"RAND         :");
-		RHEXDUMP_INLINE(L_DBG_LVL_2,
+		RHEXDUMP_INLINE2(
 				keys->gsm.vector[idx].sres, SIM_VECTOR_GSM_SRES_SIZE,
 				"SRES         :");
 		REXDENT();
@@ -384,9 +395,8 @@ int fr_sim_vector_gsm_from_attrs(eap_session_t *eap_session, VALUE_PAIR *vps,
 	return 0;
 }
 
-static int vector_umts_from_ki(eap_session_t *eap_session, VALUE_PAIR *vps, fr_sim_keys_t *keys)
+static int vector_umts_from_ki(REQUEST *request, VALUE_PAIR *vps, fr_sim_keys_t *keys)
 {
-	REQUEST		*request = eap_session->request;
 	VALUE_PAIR	*ki_vp, *amf_vp, *sqn_vp, *version_vp;
 
 	uint64_t	sqn;
@@ -445,18 +455,14 @@ static int vector_umts_from_ki(eap_session_t *eap_session, VALUE_PAIR *vps, fr_s
 		/*
 		 *	Don't change colon indent, matches other messages later...
 		 */
-		RHEXDUMP_INLINE(L_DBG_LVL_3,
-				ki_vp->vp_octets, MILENAGE_KI_SIZE,
-				"Ki           :");
-		RHEXDUMP_INLINE(L_DBG_LVL_3,
-				opc_p, MILENAGE_OPC_SIZE,
-				"OPc          :");
-		RHEXDUMP_INLINE(L_DBG_LVL_3,
-				sqn_buff, MILENAGE_SQN_SIZE,
-				"SQN          :");
-		RHEXDUMP_INLINE(L_DBG_LVL_3,
-				amf_buff, MILENAGE_AMF_SIZE,
-				"AMF          :");
+		RHEXDUMP_INLINE3(ki_vp->vp_octets, MILENAGE_KI_SIZE,
+				 "Ki           :");
+		RHEXDUMP_INLINE3(opc_p, MILENAGE_OPC_SIZE,
+				 "OPc          :");
+		RHEXDUMP_INLINE3(sqn_buff, MILENAGE_SQN_SIZE,
+				 "SQN          :");
+		RHEXDUMP_INLINE3(amf_buff, MILENAGE_AMF_SIZE,
+				 "AMF          :");
 		REXDENT();
 
 		if (milenage_umts_generate(keys->umts.vector.autn,
@@ -472,8 +478,15 @@ static int vector_umts_from_ki(eap_session_t *eap_session, VALUE_PAIR *vps, fr_s
 			RPEDEBUG2("Failed deriving UMTS Quintuplet");
 			return -1;
 		}
-
 		keys->umts.vector.xres_len = 8;
+
+		/*
+		 *	Store the keys we used for possible AUTS
+		 *	validation later.
+		 */
+		memcpy(keys->auc.ki, ki_vp->vp_octets, sizeof(keys->auc.ki));
+		memcpy(keys->auc.opc, opc_p, sizeof(keys->auc.opc));
+		keys->vector_src = SIM_VECTOR_SRC_KI;
 	}
 		return 0;
 
@@ -492,10 +505,8 @@ static int vector_umts_from_ki(eap_session_t *eap_session, VALUE_PAIR *vps, fr_s
 /** Get one set of quintuplets from the request
  *
  */
-static int vector_umts_from_quintuplets(eap_session_t *eap_session, VALUE_PAIR *vps, fr_sim_keys_t *keys)
+static int vector_umts_from_quintuplets(REQUEST *request, VALUE_PAIR *vps, fr_sim_keys_t *keys)
 {
-	REQUEST		*request = eap_session->request;
-
 	VALUE_PAIR	*rand_vp = NULL, *xres_vp = NULL, *ck_vp = NULL, *ik_vp = NULL;
 	VALUE_PAIR	*autn_vp = NULL, *sqn_vp = NULL, *ak_vp = NULL;
 
@@ -637,6 +648,8 @@ static int vector_umts_from_quintuplets(eap_session_t *eap_session, VALUE_PAIR *
 	memcpy(keys->umts.vector.xres, xres_vp->vp_octets, xres_vp->vp_length);
 	keys->umts.vector.xres_len = xres_vp->vp_length;	/* xres is variable length */
 
+	keys->vector_src = SIM_VECTOR_SRC_QUINTUPLETS;
+
 	return 0;
 }
 
@@ -644,7 +657,7 @@ static int vector_umts_from_quintuplets(eap_session_t *eap_session, VALUE_PAIR *
  *
  * Hunt for a source of UMTS quintuplets
  *
- * @param eap_session		The current eap_session.
+ * @param request		The current request.
  * @param vps			List to hunt for triplets in.
  * @param keys			UMTS keys.
  * @param src			Forces quintuplets to be retrieved from a particular src.
@@ -654,10 +667,9 @@ static int vector_umts_from_quintuplets(eap_session_t *eap_session, VALUE_PAIR *
  *	- 0	Vector was retrieved OK and written to the specified index.
  *	- -1	Error retrieving vector from the specified src.
  */
-int fr_sim_vector_umts_from_attrs(eap_session_t *eap_session, VALUE_PAIR *vps,
+int fr_sim_vector_umts_from_attrs(REQUEST *request, VALUE_PAIR *vps,
 				  fr_sim_keys_t *keys, fr_sim_vector_src_t *src)
 {
-	REQUEST		*request = eap_session->request;
 	int		ret;
 
 	rad_assert((keys->vector_type == SIM_VECTOR_NONE) || (keys->vector_type == SIM_VECTOR_UMTS));
@@ -665,7 +677,7 @@ int fr_sim_vector_umts_from_attrs(eap_session_t *eap_session, VALUE_PAIR *vps,
 	switch (*src) {
 	default:
 	case SIM_VECTOR_SRC_KI:
-		ret = vector_umts_from_ki(eap_session, vps, keys);
+		ret = vector_umts_from_ki(request, vps, keys);
 		if (ret == 0) {
 			*src = SIM_VECTOR_SRC_KI;
 			break;
@@ -675,7 +687,7 @@ int fr_sim_vector_umts_from_attrs(eap_session_t *eap_session, VALUE_PAIR *vps,
 		/* FALL-THROUGH */
 
 	case SIM_VECTOR_SRC_QUINTUPLETS:
-		ret = vector_umts_from_quintuplets(eap_session, vps, keys);
+		ret = vector_umts_from_quintuplets(request, vps, keys);
 		if (ret == 0) {
 			*src = SIM_VECTOR_SRC_QUINTUPLETS;
 			break;;
@@ -696,25 +708,121 @@ int fr_sim_vector_umts_from_attrs(eap_session_t *eap_session, VALUE_PAIR *vps,
 		/*
 		 *	Don't change colon indent, matches other messages later...
 		 */
-		RHEXDUMP_INLINE(L_DBG_LVL_2,
+		RHEXDUMP_INLINE2(
 				keys->umts.vector.autn, SIM_VECTOR_UMTS_AUTN_SIZE,
 				"AUTN         :");
-		RHEXDUMP_INLINE(L_DBG_LVL_2,
+		RHEXDUMP_INLINE2(
 				keys->umts.vector.ck, SIM_VECTOR_UMTS_CK_SIZE,
 				"CK           :");
-		RHEXDUMP_INLINE(L_DBG_LVL_2,
+		RHEXDUMP_INLINE2(
 				keys->umts.vector.ik, SIM_VECTOR_UMTS_IK_SIZE,
 				"IK           :");
-		RHEXDUMP_INLINE(L_DBG_LVL_2,
+		RHEXDUMP_INLINE2(
 				keys->umts.vector.rand, SIM_VECTOR_UMTS_RAND_SIZE,
 				"RAND         :");
-		RHEXDUMP_INLINE(L_DBG_LVL_2,
+		RHEXDUMP_INLINE2(
 				keys->umts.vector.xres, keys->umts.vector.xres_len,
 				"XRES         :");
 		REXDENT();
 	}
 
 	keys->vector_type = SIM_VECTOR_UMTS;
+
+	return 0;
+}
+
+/** Populate a fr_sim_keys_t structure from attributes in the session-state list
+ *
+ * @param[in] request	The current request.
+ * @param[in] vps	Session-state list
+ * @param[in] keys	key structure to populate.
+ * @return
+ *	- 1 if we do not have sufficient data.
+ *	- 0 on success.
+ *	- -1 on validation failure.
+ */
+int fr_sim_vector_umts_reauth_from_attrs(REQUEST *request, VALUE_PAIR *vps, fr_sim_keys_t *keys)
+{
+	VALUE_PAIR *counter_vp;
+	VALUE_PAIR *mk_vp;
+
+	/*
+	 *	This is the *old* counter value increment
+	 *	by 1 to get the *new* counter value
+	 */
+	counter_vp = fr_pair_find_by_da(vps, attr_eap_aka_counter, TAG_ANY);
+	if (!counter_vp) {
+		RDEBUG2("No &session-state:%s attribute found, can't calculate re-auth keys",
+			attr_eap_aka_counter->name);
+		return 1;
+	}
+	counter_vp->vp_uint16++;
+
+	mk_vp = fr_pair_find_by_da(vps, attr_eap_aka_mk, TAG_ANY);
+	if (!mk_vp) {
+		RDEBUG2("No &session-state:%s attribute found, can't calculate re-auth keys",
+			attr_eap_aka_mk->name);
+		return 1;
+	}
+
+	if (mk_vp->vp_length != SIM_MK_SIZE) {
+		REDEBUG("&control:%s incorrect length.  Expected "
+			STRINGIFY(SIM_MK_SIZE) " bytes, got %zu bytes",
+			attr_eap_aka_mk->name, mk_vp->vp_length);
+		return -1;
+	}
+
+	fr_sim_crypto_keys_init_reauth(keys, mk_vp->vp_octets, counter_vp->vp_uint16);
+
+	keys->vector_type = SIM_VECTOR_UMTS_REAUTH;	/* Didn't come from a vector */
+	keys->vector_src = SIM_VECTOR_SRC_REAUTH;
+
+	return 0;
+}
+
+/** Clear reauth data if reauthentication failed
+ *
+ * @param[in] keys	key structure to clear.
+ */
+void fr_sim_vector_umts_reauth_clear(fr_sim_keys_t *keys)
+{
+	memset(&keys->reauth, 0, sizeof(keys->reauth));
+	keys->vector_src = 0;
+	keys->vector_type = 0;
+}
+
+/** Perform milenage AUTS validation and resynchronisation
+ *
+ * @param[out] new_sqn	The new sequence number provided by the AUTS.
+ * @param[in] request	The current request.
+ * @param[in] auts_vp	The AUTS response.
+ * @param[in] keys	UMTS keys.
+ * @return
+ *	- 1 if we do not have sufficient data (lacking ki).
+ *	- 0 on success.
+ *	- -1 on validation failure.
+ */
+int fr_sim_umts_resync_from_attrs(uint64_t *new_sqn,
+				  REQUEST *request, VALUE_PAIR *auts_vp, fr_sim_keys_t *keys)
+{
+	if (keys->vector_src != SIM_VECTOR_SRC_KI) {
+		RDEBUG2("Original vectors were not generated locally, cannot perform AUTS validation");
+		return 1;
+	}
+
+	if (auts_vp->vp_length != MILENAGE_AUTS_SIZE) {
+		REDEBUG("&control:%s incorrect length.  Expected "
+			STRINGIFY(MILENAGE_AUTS_SIZE) " bytes, got %zu bytes",
+			attr_eap_aka_auts->name, auts_vp->vp_length);
+		return -1;
+	}
+
+	if (milenage_auts(new_sqn, keys->auc.opc, keys->auc.ki, keys->umts.vector.rand, auts_vp->vp_octets) < 0) {
+		REDEBUG("AUTS validation failed");
+		return -1;
+	}
+
+	RDEBUG2("AUTS validation success, new SQN %"PRIu64, *new_sqn);
 
 	return 0;
 }

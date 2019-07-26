@@ -24,14 +24,13 @@
  * @file src/lib/util/event.c
  *
  * @copyright 2007-2016 The FreeRADIUS server project
- * @copyright 2016 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
- * @copyright 2007 Alan DeKok <aland@freeradius.org>
+ * @copyright 2016 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
+ * @copyright 2007 Alan DeKok (aland@freeradius.org)
  */
 RCSID("$Id$")
 
 #include "event.h"
 
-#include <freeradius-devel/io/time.h>
 #include <freeradius-devel/util/dlist.h>
 #include <freeradius-devel/util/event.h>
 #include <freeradius-devel/util/heap.h>
@@ -41,13 +40,10 @@ RCSID("$Id$")
 #include <freeradius-devel/util/syserror.h>
 #include <freeradius-devel/util/talloc.h>
 #include <freeradius-devel/util/token.h>
-
+#include <freeradius-devel/util/time.h>
 #include <sys/stat.h>
 
 #define FR_EV_BATCH_FDS (256)
-
-#undef USEC
-#define USEC (1000000)
 
 #if !defined(SO_GET_FILTER) && defined(SO_ATTACH_FILTER)
 #  define SO_GET_FILTER SO_ATTACH_FILTER
@@ -84,7 +80,7 @@ static FR_NAME_NUMBER const kevent_filter_table[] = {
  */
 struct fr_event_timer {
 	fr_event_list_t		*el;			//!< because talloc_parent() is O(N) in number of objects
-	struct timeval		when;			//!< When this timer should fire.
+	fr_time_t		when;			//!< When this timer should fire.
 	fr_event_cb_t		callback;		//!< Callback to execute when the timer fires.
 	void const		*uctx;			//!< Context pointer to pass to the callback.
 	TALLOC_CTX		*linked_ctx;		//!< talloc ctx this event was bound to.
@@ -304,7 +300,7 @@ struct fr_event_list {
 	int			exit;			//!< If non-zero, the event loop will exit after its current
 							///< iteration, returning this value.
 
-	struct timeval  	now;			//!< The last time the event list was serviced.
+	fr_time_t 		now;			//!< The last time the event list was serviced.
 	bool			dispatch;		//!< Whether the event list is currently dispatching events.
 
 	int			num_fds;		//!< Number of FDs listened to by this event list.
@@ -337,7 +333,7 @@ static int fr_event_timer_cmp(void const *a, void const *b)
 {
 	fr_event_timer_t const	*ev_a = a, *ev_b = b;
 
-	return fr_timeval_cmp(&ev_a->when, &ev_b->when);
+	return fr_time_cmp(ev_a->when, ev_b->when);
 }
 
 /** Compare two file descriptor handles
@@ -394,7 +390,7 @@ int fr_event_list_kq(fr_event_list_t *el)
 	return el->kq;
 }
 
-/** Get the current time according to the event list
+/** Get the current server time according to the event list
  *
  * If the event list is currently dispatching events, we return the time
  * this iteration of the event list started.
@@ -402,23 +398,16 @@ int fr_event_list_kq(fr_event_list_t *el)
  * If the event list is not currently dispatching events, we return the
  * current system time.
  *
- * @param[out]	when Where to write the time we extracted/acquired.
  * @param[in]	el to get time from.
- * @return
- *	- 0 on success.
- *	- -1 on error.
+ * @return the current time according to the event list.
  */
-int fr_event_list_time(struct timeval *when, fr_event_list_t *el)
+fr_time_t fr_event_list_time(fr_event_list_t *el)
 {
-	if (!when) return -1;
-
 	if (el && el->dispatch) {
-		*when = el->now;
+		return el->now;
 	} else {
-		gettimeofday(when, NULL);
+		return fr_time();
 	}
-
-	return 1;
 }
 
 /** Build a new evset based on function pointers present
@@ -887,7 +876,7 @@ int fr_event_filter_insert(TALLOC_CTX *ctx, fr_event_list_t *el, int fd,
 		count = fr_event_build_evset(evset, sizeof(evset)/sizeof(*evset), &ef->active, ef, funcs, &ef->active);
 		if (count < 0) goto free;
 		if (count && (unlikely(kevent(el->kq, evset, count, NULL, 0, NULL) < 0))) {
-			fr_strerror_printf("Failed modifying filters for FD %i: %s", fd, fr_syserror(errno));
+			fr_strerror_printf("Failed inserting filters for FD %i: %s", fd, fr_syserror(errno));
 			goto free;
 		}
 
@@ -1030,8 +1019,8 @@ static int _event_timer_free(fr_event_timer_t *ev)
  *	- 0 on success.
  *	- -1 on failure.
  */
-int fr_event_timer_insert(TALLOC_CTX *ctx, fr_event_list_t *el, fr_event_timer_t const **ev_p,
-			  struct timeval *when, fr_event_cb_t callback, void const *uctx)
+int fr_event_timer_at(TALLOC_CTX *ctx, fr_event_list_t *el, fr_event_timer_t const **ev_p,
+		      fr_time_t when, fr_event_cb_t callback, void const *uctx)
 {
 	fr_event_timer_t *ev;
 
@@ -1042,11 +1031,6 @@ int fr_event_timer_insert(TALLOC_CTX *ctx, fr_event_list_t *el, fr_event_timer_t
 
 	if (unlikely(!callback)) {
 		fr_strerror_printf("Invalid arguments: NULL callback");
-		return -1;
-	}
-
-	if (unlikely(!when || (when->tv_usec >= USEC))) {
-		fr_strerror_printf("Invalid arguments: time");
 		return -1;
 	}
 
@@ -1104,7 +1088,7 @@ int fr_event_timer_insert(TALLOC_CTX *ctx, fr_event_list_t *el, fr_event_timer_t
 	}
 
 	ev->el = el;
-	ev->when = *when;
+	ev->when = when;
 	ev->callback = callback;
 	ev->uctx = uctx;
 	ev->linked_ctx = ctx;
@@ -1118,6 +1102,35 @@ int fr_event_timer_insert(TALLOC_CTX *ctx, fr_event_list_t *el, fr_event_timer_t
 	*ev_p = ev;
 
 	return 0;
+}
+
+/** Insert a timer event into an event list
+ *
+ * @note The talloc parent of the memory returned in ev_p must not be changed.
+ *	 If the lifetime of the event needs to be bound to another context
+ *	 this function should be called with the existing event pointed to by
+ *	 ev_p.
+ *
+ * @param[in] ctx		to bind lifetime of the event to.
+ * @param[in] el		to insert event into.
+ * @param[in,out] ev_p		If not NULL modify this event instead of creating a new one.  This is a parent
+ *				in a temporal sense, not in a memory structure or dependency sense.
+ * @param[in] delta		In how many nanoseconds to wait before should we execute the event.
+ * @param[in] callback		function to execute if the event fires.
+ * @param[in] uctx		user data to pass to the event.
+ * @return
+ *	- 0 on success.
+ *	- -1 on failure.
+ */
+int fr_event_timer_in(TALLOC_CTX *ctx, fr_event_list_t *el, fr_event_timer_t const **ev_p,
+		      fr_time_delta_t delta, fr_event_cb_t callback, void const *uctx)
+{
+	fr_time_t now;
+
+	now = fr_time();
+	now += delta;
+
+	return fr_event_timer_at(ctx, el, ev_p, now, callback, uctx);
 }
 
 /** Remove PID wait event from kevent if the fr_event_pid_t is freed
@@ -1347,7 +1360,7 @@ int fr_event_post_delete(fr_event_list_t *el, fr_event_cb_t callback, void *uctx
  *	- 0 no timer events fired.
  *	- 1 a timer event fired.
  */
-int fr_event_timer_run(fr_event_list_t *el, struct timeval *when)
+int fr_event_timer_run(fr_event_list_t *el, fr_time_t *when)
 {
 	fr_event_cb_t	callback;
 	void			*uctx;
@@ -1356,24 +1369,20 @@ int fr_event_timer_run(fr_event_list_t *el, struct timeval *when)
 	if (unlikely(!el)) return 0;
 
 	if (fr_heap_num_elements(el->times) == 0) {
-		when->tv_sec = 0;
-		when->tv_usec = 0;
+		*when = 0;
 		return 0;
 	}
 
 	ev = fr_heap_peek(el->times);
 	if (!ev) {
-		when->tv_sec = 0;
-		when->tv_usec = 0;
+		*when = 0;
 		return 0;
 	}
 
 	/*
 	 *	See if it's time to do this one.
 	 */
-	if ((ev->when.tv_sec > when->tv_sec) ||
-	    ((ev->when.tv_sec == when->tv_sec) &&
-	     (ev->when.tv_usec > when->tv_usec))) {
+	if (ev->when > *when) {
 		*when = ev->when;
 		return 0;
 	}
@@ -1388,7 +1397,7 @@ int fr_event_timer_run(fr_event_list_t *el, struct timeval *when)
 	 */
 	fr_event_timer_delete(el, ev->parent);
 
-	callback(el, when, uctx);
+	callback(el, *when, uctx);
 
 	return 1;
 }
@@ -1403,7 +1412,7 @@ int fr_event_timer_run(fr_event_list_t *el, struct timeval *when)
  */
 int fr_event_corral(fr_event_list_t *el, bool wait)
 {
-	struct timeval		when, *wake;
+	fr_time_t		when, *wake;
 	struct timespec		ts_when, *ts_wake;
 	fr_event_pre_t		*pre;
 	int			num_fd_events, num_timer_events;
@@ -1420,8 +1429,7 @@ int fr_event_corral(fr_event_list_t *el, bool wait)
 	 *	Find the first event.  If there's none, we wait
 	 *	on the socket forever.
 	 */
-	when.tv_sec = 0;
-	when.tv_usec = 0;
+	when = 0;
 	wake = &when;
 
 	if (wait) {
@@ -1434,13 +1442,13 @@ int fr_event_corral(fr_event_list_t *el, bool wait)
 				return -1;
 			}
 
-			gettimeofday(&el->now, NULL);
+			el->now = fr_time();
 
 			/*
 			 *	Next event is in the future, get the time
 			 *	between now and that event.
 			 */
-			if (fr_timeval_cmp(&ev->when, &el->now) > 0) fr_timeval_subtract(&when, &ev->when, &el->now);
+			if (ev->when > el->now) when = ev->when - el->now;
 
 			wake = &when;
 			num_timer_events = 1;
@@ -1457,18 +1465,21 @@ int fr_event_corral(fr_event_list_t *el, bool wait)
 	for (pre = fr_dlist_head(&el->pre_callbacks);
 	     pre != NULL;
 	     pre = fr_dlist_next(&el->pre_callbacks, pre)) {
-		if (pre->callback(pre->uctx, wake) > 0) {
+		if (pre->callback(pre->uctx, wake ? *wake : 0) > 0) {
 			num_timer_events++;
 			wake = &when;
-			when.tv_sec = 0;
-			when.tv_usec = 0;
+			when = 0;
 		}
 	}
 
+	/*
+	 *	Wake is the delta between el->now
+	 *	(the event loops view of the current time)
+	 *	and when the event should occur.
+	 */
 	if (wake) {
+		ts_when = fr_time_delta_to_timespec(when);
 		ts_wake = &ts_when;
-		ts_when.tv_sec = when.tv_sec;
-		ts_when.tv_nsec = when.tv_usec * 1000;
 	} else {
 		ts_wake = NULL;
 	}
@@ -1505,7 +1516,7 @@ void fr_event_service(fr_event_list_t *el)
 {
 	int		i;
 	fr_event_post_t	*post;
-	struct timeval	when;
+	fr_time_t	when;
 
 	if (unlikely(el->exit)) return;
 
@@ -1609,7 +1620,6 @@ void fr_event_service(fr_event_list_t *el)
                 }
 
 service:
-
 		/*
 		 *	If any of these callbacks are NULL, then
 		 *	there's a logic error somewhere.
@@ -1700,7 +1710,7 @@ service:
 	 */
 	talloc_list_free(&el->fd_to_free);
 
-	gettimeofday(&el->now, NULL);
+	el->now = fr_time();
 
 	/*
 	 *	Run all of the timer events.
@@ -1719,7 +1729,7 @@ service:
 	     post = fr_dlist_next(&el->post_callbacks, post)) {
 		when = el->now;
 
-		post->callback(el, &when, post->uctx);
+		post->callback(el, when, post->uctx);
 	}
 }
 
@@ -1804,8 +1814,8 @@ static int _event_list_free(fr_event_list_t *el)
  */
 fr_event_list_t *fr_event_list_alloc(TALLOC_CTX *ctx, fr_event_status_cb_t status, void *status_uctx)
 {
-	fr_event_list_t	*el;
-	struct kevent	kev;
+	fr_event_list_t		*el;
+	struct kevent		kev;
 
 	el = talloc_zero(ctx, fr_event_list_t);
 	if (!fr_cond_assert(el)) {
@@ -1872,9 +1882,13 @@ fr_event_list_t *fr_event_list_alloc(TALLOC_CTX *ctx, fr_event_status_cb_t statu
 
 static void print_time(void *ctx)
 {
-	struct timeval *when = ctx;
+	fr_time_t when;
+	int64_t usec;
 
-	printf("%d.%06d\n", when->tv_sec, when->tv_usec);
+	when = *(fr_time_t *) ctx;
+	usec = fr_time_to_usec(when);
+
+	printf("%d.%06d\n", usec / USEC, usec % USEC);
 	fflush(stdout);
 }
 
@@ -1898,8 +1912,8 @@ static uint32_t event_rand(void)
 int main(int argc, char **argv)
 {
 	int i, rcode;
-	struct timeval array[MAX];
-	struct timeval now, when;
+	fr_time_t array[MAX];
+	fr_time_t now, when;
 	fr_event_list_t *el;
 
 	el = fr_event_list_alloc(NULL, NULL);
@@ -1911,27 +1925,21 @@ int main(int argc, char **argv)
 	fr_rand_init(&rand_pool, 1);
 	rand_pool.randcnt = 0;
 
-	gettimeofday(&array[0], NULL);
+	array[0] = fr_time();
 	for (i = 1; i < MAX; i++) {
 		array[i] = array[i - 1];
+		array[i] += event_rand() & 0xffff;
 
-		array[i].tv_usec += event_rand() & 0xffff;
-		if (array[i].tv_usec > 1000000) {
-			array[i].tv_usec -= 1000000;
-			array[i].tv_sec++;
-		}
-		fr_event_timer_insert(NULL, el, &array[i], print_time, &array[i]);
+		fr_event_timer_at(NULL, el, array[i], print_time, array[i]);
 	}
 
 	while (fr_event_list_num_timers(el)) {
-		gettimeofday(&now, NULL);
+		now = fr_time();
 		when = now;
 		if (!fr_event_timer_run(el, &when)) {
-			int delay = (when.tv_sec - now.tv_sec) * 1000000;
-			delay += when.tv_usec;
-			delay -= now.tv_usec;
+			int delay = (when - now) / 1000;	/* nanoseconds to microseconds */
 
-			printf("\tsleep %d\n", delay);
+			printf("\tsleep %d microseconds\n", delay);
 			fflush(stdout);
 			usleep(delay);
 		}

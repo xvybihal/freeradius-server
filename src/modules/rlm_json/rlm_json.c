@@ -21,9 +21,9 @@
  *
  * @author Arran Cudbard-Bell
  *
- * @copyright 2015  Arran Cudbard-Bell <a.cudbardb@freeradius.org>
- * @copyright 2015  Network RADIUS SARL <info@networkradius.com>
- * @copyright 2015  The FreeRADIUS Server Project
+ * @copyright 2015 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
+ * @copyright 2015 Network RADIUS SARL (info@networkradius.com)
+ * @copyright 2015 The FreeRADIUS Server Project
  */
 RCSID("$Id$")
 
@@ -135,7 +135,7 @@ static int mod_map_proc_instantiate(CONF_SECTION *cs, UNUSED void *mod_inst, voi
 		char const	*p;
 
 #ifndef HAVE_JSON_OBJECT_GET_INT64
-		if ((map->lhs->type == TMPL_TYPE_ATTR) && (map->lhs->tmpl_da->type == FR_TYPE_UINT64)) {
+		if (tmpl_is_attr(map->lhs) && (map->lhs->tmpl_da->type == FR_TYPE_UINT64)) {
 			cf_log_err(cp, "64bit integers are not supported by linked json-c.  "
 				      "Upgrade to json-c >= 0.10 to use this feature");
 			return -1;
@@ -285,7 +285,7 @@ static rlm_rcode_t mod_map_proc(UNUSED void *mod_inst, void *proc_inst, REQUEST 
 	tok = json_tokener_new();
 	to_eval.root = json_tokener_parse_ex(tok, json_str, (int)(talloc_array_length(json_str) - 1));
 	if (!to_eval.root) {
-		REMARKER(json_str, tok->char_offset, json_tokener_error_desc(json_tokener_get_error(tok)));
+		REMARKER(json_str, tok->char_offset, "%s", json_tokener_error_desc(json_tokener_get_error(tok)));
 		rcode = RLM_MODULE_FAIL;
 		goto finish;
 	}
@@ -322,7 +322,7 @@ static rlm_rcode_t mod_map_proc(UNUSED void *mod_inst, void *proc_inst, REQUEST 
 			}
 			slen = fr_jpath_parse(request, &node, to_parse, talloc_array_length(to_parse) - 1);
 			if (slen <= 0) {
-				REMARKER(to_parse, -(slen), fr_strerror());
+				REMARKER(to_parse, -(slen), "%s", fr_strerror());
 				talloc_free(to_parse);
 				rcode = RLM_MODULE_FAIL;
 				goto finish;
@@ -375,8 +375,8 @@ static int mod_load(void)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-extern rad_module_t rlm_json;
-rad_module_t rlm_json = {
+extern module_t rlm_json;
+module_t rlm_json = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "json",
 	.type		= RLM_TYPE_THREAD_SAFE,

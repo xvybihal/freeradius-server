@@ -20,7 +20,7 @@
  * @file src/lib/server/snmp.c
  * @brief Implements an SNMP-like interface using FreeRADIUS attributes
  *
- * @author Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  *
  * @copyright 2016 The FreeRADIUS server project
  * @copyright 2016 Network RADIUS SARL
@@ -96,8 +96,8 @@ struct fr_snmp_map {
 	fr_snmp_map_t		*child;			//!< Child map.
 };
 
-static struct timeval uptime;
-static struct timeval reset_time;
+static fr_time_t start_time;
+static fr_time_t reset_time;
 static int reset_state = FR_RADIUS_AUTH_SERV_CONFIG_RESET_VALUE_RUNNING;
 
 static int snmp_value_serv_ident_get(TALLOC_CTX *ctx, fr_value_box_t *out, NDEBUG_UNUSED fr_snmp_map_t const *map,
@@ -113,16 +113,18 @@ static int snmp_value_serv_ident_get(TALLOC_CTX *ctx, fr_value_box_t *out, NDEBU
 static int snmp_value_uptime_get(UNUSED TALLOC_CTX *ctx, fr_value_box_t *out, NDEBUG_UNUSED fr_snmp_map_t const *map,
 				 UNUSED void *snmp_ctx)
 {
-	struct timeval now;
-	struct timeval diff;
+	fr_time_t now;
+	fr_time_delta_t delta;
 
 	rad_assert(map->da->type == FR_TYPE_UINT32);
 
-	gettimeofday(&now, NULL);
-	fr_timeval_subtract(&diff, &now, &uptime);
+	now = fr_time();
+	delta = now - start_time;
 
-	out->vb_uint32 = diff.tv_sec * 100;
-	out->vb_uint32 += diff.tv_usec / 10000;
+	/*
+	 *	ticks are in 1/100's of seconds.
+	 */
+	out->vb_uint32 += delta / 10000000;
 
 	return 0;
 }
@@ -130,16 +132,18 @@ static int snmp_value_uptime_get(UNUSED TALLOC_CTX *ctx, fr_value_box_t *out, ND
 static int snmp_config_reset_time_get(UNUSED TALLOC_CTX *ctx, fr_value_box_t *out, NDEBUG_UNUSED fr_snmp_map_t const *map,
 				      UNUSED void *snmp_ctx)
 {
-	struct timeval now;
-	struct timeval diff;
+	fr_time_t now;
+	fr_time_delta_t delta;
 
 	rad_assert(map->da->type == FR_TYPE_UINT32);
 
-	gettimeofday(&now, NULL);
-	fr_timeval_subtract(&diff, &now, &reset_time);
+	now = fr_time();
+	delta = now - reset_time;
 
-	out->vb_uint32 = diff.tv_sec * 100;
-	out->vb_uint32 += diff.tv_usec / 10000;
+	/*
+	 *	ticks are in 1/100's of seconds.
+	 */
+	out->vb_uint32 += delta / 10000000;
 
 	return 0;
 }
@@ -160,8 +164,8 @@ static int snmp_config_reset_set(NDEBUG_UNUSED fr_snmp_map_t const *map, UNUSED 
 
 	switch (in->vb_uint32) {
 	case FR_RADIUS_AUTH_SERV_CONFIG_RESET_VALUE_RESET:
-		radius_signal_self(RADIUS_SIGNAL_SELF_HUP);
-		gettimeofday(&reset_time, NULL);
+		main_loop_signal_self(RADIUS_SIGNAL_SELF_HUP);
+		reset_time = fr_time();
 		return 0;
 
 	default:
@@ -641,7 +645,7 @@ static ssize_t snmp_process_index_attr(fr_cursor_t *out, REQUEST *request,
 	if (tlv_stack[depth]->type != FR_TYPE_UINT32) {
 		fr_strerror_printf("Bad index attribute: Index attribute \"%s\" should be a integer, "
 				   "but is a %s", tlv_stack[depth]->name,
-				   fr_int2str(fr_value_box_type_names, tlv_stack[depth]->type, "?Unknown?"));
+				   fr_int2str(fr_value_box_type_table, tlv_stack[depth]->type, "?Unknown?"));
 		goto error;
 	}
 
@@ -1046,7 +1050,7 @@ int fr_snmp_process(REQUEST *request)
 			len = fr_dict_print_attr_oid(oid_str + 1, sizeof(oid_str) - 1, attr_snmp_root, tlv_stack[depth]);
 
 			/* Use the difference in OID string length to place the marker */
-			REMARKER(oid_str, oid_len - (len - oid_len), fr_strerror());
+			REMARKER(oid_str, oid_len - (len - oid_len), "%s", fr_strerror());
 
 			return -1;
 		}
@@ -1110,8 +1114,8 @@ static int _fr_snmp_init(fr_snmp_map_t map[])
  */
 int fr_snmp_init(void)
 {
-	gettimeofday(&uptime, NULL);
-	reset_time = uptime;
+	start_time = fr_time();
+	reset_time = start_time;
 
 	if (fr_dict_autoload(snmp_dict) < 0) {
 		fr_perror("snmp_init");

@@ -94,9 +94,6 @@
 /* Define to 1 if you have the <errno.h> header file. */
 #undef HAVE_ERRNO_H
 
-/* Define to 1 if you have the `EVP_sha3_512' function. */
-#undef HAVE_EVP_SHA3_512
-
 /* define this if we have <execinfo.h> and symbols */
 #undef HAVE_EXECINFO
 
@@ -398,12 +395,6 @@
 /* Define to 1 if you have the `snprintf' function. */
 #undef HAVE_SNPRINTF
 
-/* Define to 1 if you have the `SSL_get_client_random' function. */
-#undef HAVE_SSL_GET_CLIENT_RANDOM
-
-/* Define to 1 if you have the `SSL_get_server_random' function. */
-#undef HAVE_SSL_GET_SERVER_RANDOM
-
 /* Define to 1 if you have the <stdatomic.h> header file. */
 #undef HAVE_STDATOMIC_H
 
@@ -461,13 +452,13 @@
 /* Define to 1 if you have the <syslog.h> header file. */
 #undef HAVE_SYSLOG_H
 
-/* Define to 1 if you have the `systemd' library (-lsystemd). */
+/* Define to 1 if you have the 'systemd' library (-lsystemd). */
 #undef HAVE_SYSTEMD
 
 /* Define to 1 if you have the <systemd/sd-daemon.h> header file. */
 #undef HAVE_SYSTEMD_SD_DAEMON_H
 
-/* Define to 1 if you have watchdog support in the `systemd' library
+/* Define to 1 if you have watchdog support in the 'systemd' library
    (-lsystemd). */
 #undef HAVE_SYSTEMD_WATCHDOG
 
@@ -551,6 +542,9 @@
 /* Define to 1 if you have the `vsnprintf' function. */
 #undef HAVE_VSNPRINTF
 
+/* Define if the compiler supports -Wdocumentation */
+#undef HAVE_WDOCUMENTATION
+
 /* Define to 1 if you have the <winsock.h> header file. */
 #undef HAVE_WINSOCK_H
 
@@ -559,12 +553,6 @@
 
 /* Architecture information for the target platform */
 #undef HOSTINFO
-
-/* define if you have OSFC2 authentication */
-#undef OSFC2
-
-/* define if you have OSFSIA authentication */
-#undef OSFSIA
 
 /* Define to the address where bug reports for this package should be sent. */
 #undef PACKAGE_BUGREPORT

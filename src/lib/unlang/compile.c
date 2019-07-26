@@ -26,9 +26,10 @@ RCSID("$Id$")
 
 #include <freeradius-devel/server/base.h>
 #include <freeradius-devel/server/modpriv.h>
-#include <freeradius-devel/server/parser.h>
+#include <freeradius-devel/server/cond.h>
 #include <freeradius-devel/unlang/base.h>
 #include "unlang_priv.h"
+#include "module_priv.h"
 
 /* Here's where we recognize all of our keywords: first the rcodes, then the
  * actions */
@@ -68,7 +69,6 @@ typedef int const unlang_action_table_t[UNLANG_GROUP_TYPE_MAX][RLM_MODULE_NUMCOD
 
 typedef struct {
 	rlm_components_t	component;
-	char const		*name;
 	char const		*section_name1;
 	char const		*section_name2;
 	unlang_action_table_t	*actions;
@@ -388,16 +388,15 @@ static bool pass2_fixup_xlat(CONF_ITEM const *ci, vp_tmpl_t **pvpt, bool convert
 {
 	ssize_t slen;
 	char *fmt;
-	char const *error;
 	xlat_exp_t *head;
 	vp_tmpl_t *vpt;
 
 	vpt = *pvpt;
 
-	rad_assert(vpt->type == TMPL_TYPE_XLAT);
+	rad_assert(tmpl_is_xlat(vpt));
 
 	fmt = talloc_typed_strdup(vpt, vpt->name);
-	slen = xlat_tokenize(vpt, &head, &error, fmt, rules);
+	slen = xlat_tokenize(vpt, &head, fmt, rules);
 
 	if (slen < 0) {
 		char *spaces, *text;
@@ -406,7 +405,7 @@ static bool pass2_fixup_xlat(CONF_ITEM const *ci, vp_tmpl_t **pvpt, bool convert
 
 		cf_log_err(ci, "Failed parsing expansion string:");
 		cf_log_err(ci, "%s", text);
-		cf_log_err(ci, "%s^ %s", spaces, error);
+		cf_log_err(ci, "%s^ %s", spaces, fr_strerror());
 
 		talloc_free(spaces);
 		talloc_free(text);
@@ -474,7 +473,7 @@ static bool pass2_fixup_regex(CONF_ITEM const *ci, vp_tmpl_t *vpt, vp_tmpl_rules
 	ssize_t slen;
 	regex_t *preg;
 
-	rad_assert(vpt->type == TMPL_TYPE_REGEX);
+	rad_assert(tmpl_is_regex(vpt));
 
 	/*
 	 *	It's a dynamic expansion.  We can't expand the string,
@@ -492,8 +491,7 @@ static bool pass2_fixup_regex(CONF_ITEM const *ci, vp_tmpl_t *vpt, vp_tmpl_rules
 		return pass2_fixup_xlat(ci, &vpt, false, NULL, rules);
 	}
 
-	slen = regex_compile(vpt, &preg, vpt->name, vpt->len,
-			     vpt->tmpl_iflag, vpt->tmpl_mflag, true, false);
+	slen = regex_compile(vpt, &preg, vpt->name, vpt->len, &vpt->tmpl_regex_flags, true, false);
 	if (slen <= 0) {
 		char *spaces, *text;
 
@@ -520,7 +518,7 @@ static bool pass2_fixup_undefined(CONF_ITEM const *ci, vp_tmpl_t *vpt, vp_tmpl_r
 {
 	fr_dict_attr_t const *da;
 
-	rad_assert(vpt->type == TMPL_TYPE_ATTR_UNDEFINED);
+	rad_assert(tmpl_is_attr_undefined(vpt));
 
 	if (fr_dict_attr_by_qualified_name(&da, rules->dict_def, vpt->tmpl_unknown_name, true) != FR_DICT_ATTR_OK) {
 		ssize_t slen;
@@ -567,7 +565,7 @@ static bool pass2_fixup_tmpl(CONF_ITEM const *ci, vp_tmpl_t **pvpt, vp_tmpl_rule
 {
 	vp_tmpl_t *vpt = *pvpt;
 
-	if (vpt->type == TMPL_TYPE_XLAT) {
+	if (tmpl_is_xlat(vpt)) {
 		return pass2_fixup_xlat(ci, pvpt, convert, NULL, rules);
 	}
 
@@ -575,14 +573,14 @@ static bool pass2_fixup_tmpl(CONF_ITEM const *ci, vp_tmpl_t **pvpt, vp_tmpl_rule
 	 *	The existence check might have been &Foo-Bar,
 	 *	where Foo-Bar is defined by a module.
 	 */
-	if (vpt->type == TMPL_TYPE_ATTR_UNDEFINED) {
+	if (tmpl_is_attr_undefined(vpt)) {
 		return pass2_fixup_undefined(ci, vpt, rules);
 	}
 
 	/*
 	 *	Convert virtual &Attr-Foo to "%{Attr-Foo}"
 	 */
-	if ((vpt->type == TMPL_TYPE_ATTR) && vpt->tmpl_da->flags.virtual) {
+	if (tmpl_is_attr(vpt) && vpt->tmpl_da->flags.virtual) {
 		vpt->tmpl_xlat = xlat_from_tmpl_attr(vpt, vpt);
 		vpt->type = TMPL_TYPE_XLAT_STRUCT;
 	}
@@ -623,12 +621,12 @@ static bool pass2_fixup_map(fr_cond_t *c, vp_tmpl_rules_t const *rules)
 		/*
 		 *	Resolve the attribute references first
 		 */
-		if (map->lhs->type == TMPL_TYPE_ATTR_UNDEFINED) {
+		if (tmpl_is_attr_undefined(map->lhs)) {
 			if (!pass2_fixup_undefined(map->ci, map->lhs, rules)) return false;
 			if (!cast) cast = map->lhs->tmpl_da;
 		}
 
-		if (map->rhs->type == TMPL_TYPE_ATTR_UNDEFINED) {
+		if (tmpl_is_attr_undefined(map->rhs)) {
 			if (!pass2_fixup_undefined(map->ci, map->rhs, rules)) return false;
 			if (!cast) cast = map->rhs->tmpl_da;
 		}
@@ -636,7 +634,7 @@ static bool pass2_fixup_map(fr_cond_t *c, vp_tmpl_rules_t const *rules)
 		/*
 		 *	Then fixup the other side if it was unparsed
 		 */
-		if (map->lhs->type == TMPL_TYPE_UNPARSED) {
+		if (tmpl_is_unparsed(map->lhs)) {
 			switch (cast->type) {
 			case FR_TYPE_IPV4_ADDR:
 				if (strchr(c->data.map->lhs->name, '/') != NULL) {
@@ -658,12 +656,12 @@ static bool pass2_fixup_map(fr_cond_t *c, vp_tmpl_rules_t const *rules)
 
 			if (tmpl_cast_in_place(c->data.map->lhs, cast->type, cast) < 0) {
 				cf_log_err(map->ci, "Failed to parse data type %s from string: %pV",
-					   fr_int2str(fr_value_box_type_names, cast->type, "<UNKNOWN>"),
+					   fr_int2str(fr_value_box_type_table, cast->type, "<UNKNOWN>"),
 					   fr_box_strvalue_len(map->lhs->name, map->lhs->len));
 
 				return false;
 			}
-		} else if (map->rhs->type == TMPL_TYPE_UNPARSED) {
+		} else if (tmpl_is_unparsed(map->rhs)) {
 			switch (cast->type) {
 			case FR_TYPE_IPV4_ADDR:
 				if (strchr(c->data.map->rhs->name, '/') != NULL) {
@@ -685,7 +683,7 @@ static bool pass2_fixup_map(fr_cond_t *c, vp_tmpl_rules_t const *rules)
 
 			if (tmpl_cast_in_place(c->data.map->rhs, cast->type, cast) < 0) {
 				cf_log_err(map->ci, "Failed to parse data type %s from string: %pV",
-					   fr_int2str(fr_value_box_type_names, cast->type, "<UNKNOWN>"),
+					   fr_int2str(fr_value_box_type_table, cast->type, "<UNKNOWN>"),
 					   fr_box_strvalue_len(map->rhs->name, map->rhs->len));
 				return false;
 			}
@@ -703,14 +701,14 @@ static bool pass2_fixup_map(fr_cond_t *c, vp_tmpl_rules_t const *rules)
 	/*
 	 *	Precompile xlat's
 	 */
-	if (map->lhs->type == TMPL_TYPE_XLAT) {
+	if (tmpl_is_xlat(map->lhs)) {
 		/*
 		 *	Compile the LHS to an attribute reference only
 		 *	if the RHS is a literal.
 		 *
 		 *	@todo v3.1: allow anything anywhere.
 		 */
-		if (map->rhs->type != TMPL_TYPE_UNPARSED) {
+		if (!tmpl_is_unparsed(map->rhs)) {
 			if (!pass2_fixup_xlat(map->ci, &map->lhs, false, NULL, rules)) {
 				return false;
 			}
@@ -731,7 +729,7 @@ static bool pass2_fixup_map(fr_cond_t *c, vp_tmpl_rules_t const *rules)
 			 *	But now we've just converted "%{Attr}"
 			 *	to &Attr, so we've got to do it again.
 			 */
-			if (map->lhs->type == TMPL_TYPE_ATTR) {
+			if (tmpl_is_attr(map->lhs)) {
 				if ((map->rhs->len > 0) ||
 				    (map->op != T_OP_CMP_EQ) ||
 				    (map->lhs->tmpl_da->type == FR_TYPE_STRING) ||
@@ -739,7 +737,7 @@ static bool pass2_fixup_map(fr_cond_t *c, vp_tmpl_rules_t const *rules)
 
 					if (tmpl_cast_in_place(map->rhs, map->lhs->tmpl_da->type, map->lhs->tmpl_da) < 0) {
 						cf_log_err(map->ci, "Failed to parse data type %s from string: %pV",
-							   fr_int2str(fr_value_box_type_names, map->lhs->tmpl_da->type, "<UNKNOWN>"),
+							   fr_int2str(fr_value_box_type_table, map->lhs->tmpl_da->type, "<UNKNOWN>"),
 							   fr_box_strvalue_len(map->rhs->name, map->rhs->len));
 						return false;
 					} /* else the cast was successful */
@@ -772,7 +770,7 @@ static bool pass2_fixup_map(fr_cond_t *c, vp_tmpl_rules_t const *rules)
 		}
 	}
 
-	if (map->rhs->type == TMPL_TYPE_XLAT) {
+	if (tmpl_is_xlat(map->rhs)) {
 		/*
 		 *	Convert the RHS to an attribute reference only
 		 *	if the LHS is an attribute reference, AND is
@@ -783,7 +781,7 @@ static bool pass2_fixup_map(fr_cond_t *c, vp_tmpl_rules_t const *rules)
 		 *	on the RHS.  For now, the code in parser.c
 		 *	forbids this.
 		 */
-		if (map->lhs->type == TMPL_TYPE_ATTR) {
+		if (tmpl_is_attr(map->lhs)) {
 			fr_dict_attr_t const *da = c->cast;
 
 			if (!c->cast) da = map->lhs->tmpl_da;
@@ -802,7 +800,7 @@ static bool pass2_fixup_map(fr_cond_t *c, vp_tmpl_rules_t const *rules)
 	/*
 	 *	Convert bare refs to %{Foreach-Variable-N}
 	 */
-	if ((map->lhs->type == TMPL_TYPE_UNPARSED) &&
+	if (tmpl_is_unparsed(map->lhs) &&
 	    (strncmp(map->lhs->name, "Foreach-Variable-", 17) == 0)) {
 		char *fmt;
 		ssize_t slen;
@@ -830,12 +828,12 @@ static bool pass2_fixup_map(fr_cond_t *c, vp_tmpl_rules_t const *rules)
 	}
 
 #ifdef HAVE_REGEX
-	if (map->rhs->type == TMPL_TYPE_REGEX) {
+	if (tmpl_is_regex(map->rhs)) {
 		if (!pass2_fixup_regex(map->ci, map->rhs, rules)) {
 			return false;
 		}
 	}
-	rad_assert(map->lhs->type != TMPL_TYPE_REGEX);
+	rad_assert(!tmpl_is_regex(map->lhs));
 #endif
 
 	/*
@@ -845,7 +843,7 @@ static bool pass2_fixup_map(fr_cond_t *c, vp_tmpl_rules_t const *rules)
 	 *	xlat code does.
 	 */
 	vpt = c->data.map->lhs;
-	if ((vpt->type == TMPL_TYPE_ATTR) && vpt->tmpl_da->flags.virtual) {
+	if (tmpl_is_attr(vpt) && vpt->tmpl_da->flags.virtual) {
 		if (!c->cast) c->cast = vpt->tmpl_da;
 		vpt->tmpl_xlat = xlat_from_tmpl_attr(vpt, vpt);
 		vpt->type = TMPL_TYPE_XLAT_STRUCT;
@@ -860,7 +858,7 @@ static bool pass2_fixup_map(fr_cond_t *c, vp_tmpl_rules_t const *rules)
 	 *	they can only be with the current REQUEST, and only
 	 *	with the request pairs.
 	 */
-	if ((map->lhs->type != TMPL_TYPE_ATTR) ||
+	if (!tmpl_is_attr(map->lhs) ||
 	    (map->lhs->tmpl_request != REQUEST_CURRENT) ||
 	    (map->lhs->tmpl_list != PAIR_LIST_REQUEST)) {
 		return true;
@@ -868,21 +866,18 @@ static bool pass2_fixup_map(fr_cond_t *c, vp_tmpl_rules_t const *rules)
 
 	if (!paircmp_find(map->lhs->tmpl_da)) return true;
 
-	if (map->rhs->type == TMPL_TYPE_REGEX) {
-		cf_log_err(map->ci, "Cannot compare virtual attribute %s via a regex",
-			   map->lhs->name);
+	if (tmpl_is_regex(map->rhs)) {
+		cf_log_err(map->ci, "Cannot compare virtual attribute %s via a regex", map->lhs->name);
 		return false;
 	}
 
 	if (c->cast) {
-		cf_log_err(map->ci, "Cannot cast virtual attribute %s",
-			   map->lhs->name);
+		cf_log_err(map->ci, "Cannot cast virtual attribute %s", map->lhs->name);
 		return false;
 	}
 
 	if (map->op != T_OP_CMP_EQ) {
-		cf_log_err(map->ci, "Must use '==' for comparisons with virtual attribute %s",
-			   map->lhs->name);
+		cf_log_err(map->ci, "Must use '==' for comparisons with virtual attribute %s", map->lhs->name);
 		return false;
 	}
 
@@ -917,7 +912,7 @@ static bool pass2_cond_callback(fr_cond_t *c, void *uctx)
 	 *	Fix up the template.
 	 */
 	case COND_TYPE_EXISTS:
-		rad_assert(c->data.vpt->type != TMPL_TYPE_REGEX);
+		rad_assert(!tmpl_is_regex(c->data.vpt));
 		return pass2_fixup_tmpl(c->ci, &c->data.vpt, unlang_ctx->rules, true);
 
 	/*
@@ -935,27 +930,29 @@ static bool pass2_cond_callback(fr_cond_t *c, void *uctx)
 	}
 }
 
-
-/*
- *	Compile the RHS of update sections to xlat_exp_t
- */
-static bool pass2_fixup_update(unlang_group_t *g, vp_tmpl_rules_t const *rules)
+static bool pass2_fixup_update_map(vp_map_t *map, vp_tmpl_rules_t const *rules)
 {
-	vp_map_t *map;
+	if (tmpl_is_xlat(map->lhs)) {
+		rad_assert(map->lhs->tmpl_xlat == NULL);
 
-	for (map = g->map; map != NULL; map = map->next) {
-		if (map->lhs->type == TMPL_TYPE_XLAT) {
-			rad_assert(map->lhs->tmpl_xlat == NULL);
-
-			/*
-			 *	FIXME: compile to attribute && handle
-			 *	the conversion in map_to_vp().
-			 */
-			if (!pass2_fixup_xlat(map->ci, &map->lhs, false, NULL, rules)) {
-				return false;
-			}
+		/*
+		 *	FIXME: compile to attribute && handle
+		 *	the conversion in map_to_vp().
+		 */
+		if (!pass2_fixup_xlat(map->ci, &map->lhs, false, NULL, rules)) {
+			return false;
 		}
-		if (map->rhs->type == TMPL_TYPE_XLAT) {
+	}
+
+	/*
+	 *	Deal with undefined attributes now.
+	 */
+	if (tmpl_is_attr_undefined(map->lhs)) {
+		if (!pass2_fixup_undefined(map->ci, map->lhs, rules)) return false;
+	}
+
+	if (map->rhs) {
+		if (tmpl_is_xlat(map->rhs)) {
 			rad_assert(map->rhs->tmpl_xlat == NULL);
 
 			/*
@@ -967,18 +964,27 @@ static bool pass2_fixup_update(unlang_group_t *g, vp_tmpl_rules_t const *rules)
 			}
 		}
 
-		rad_assert(map->rhs->type != TMPL_TYPE_REGEX);
+		rad_assert(!tmpl_is_regex(map->rhs));
 
-		/*
-		 *	Deal with undefined attributes now.
-		 */
-		if (map->lhs->type == TMPL_TYPE_ATTR_UNDEFINED) {
-			if (!pass2_fixup_undefined(map->ci, map->lhs, rules)) return false;
-		}
-
-		if (map->rhs->type == TMPL_TYPE_ATTR_UNDEFINED) {
+		if (tmpl_is_attr_undefined(map->rhs)) {
 			if (!pass2_fixup_undefined(map->ci, map->rhs, rules)) return false;
 		}
+	}
+
+	if (map->child) return pass2_fixup_update_map(map->child, rules);
+
+	return true;
+}
+
+/*
+ *	Compile the RHS of update sections to xlat_exp_t
+ */
+static bool pass2_fixup_update(unlang_group_t *g, vp_tmpl_rules_t const *rules)
+{
+	vp_map_t *map;
+
+	for (map = g->map; map != NULL; map = map->next) {
+		if (!pass2_fixup_update_map(map, rules)) return false;
 	}
 
 	return true;
@@ -1015,26 +1021,24 @@ static void unlang_dump(unlang_t *mc, int depth)
 		default:
 			break;
 
-		case UNLANG_TYPE_MODULE: {
+		case UNLANG_TYPE_MODULE:
+		{
 			unlang_module_t *single = unlang_generic_to_module(inst);
 
-			DEBUG("%.*s%s", depth, modcall_spaces,
-				single->module_instance->name);
-			}
+			DEBUG("%.*s%s", depth, modcall_spaces, single->module_instance->name);
+		}
 			break;
 
 #ifdef WITH_UNLANG
 		case UNLANG_TYPE_MAP:
 			g = unlang_generic_to_group(inst); /* FIXMAP: print option 3, too */
-			DEBUG("%.*s%s %s {", depth, modcall_spaces,
-			      unlang_ops[inst->type].name,
+			DEBUG("%.*s%s %s {", depth, modcall_spaces, unlang_ops[inst->type].name,
 			      cf_section_name2(g->cs));
 			goto print_map;
 
 		case UNLANG_TYPE_UPDATE:
 			g = unlang_generic_to_group(inst);
-			DEBUG("%.*s%s {", depth, modcall_spaces,
-				unlang_ops[inst->type].name);
+			DEBUG("%.*s%s {", depth, modcall_spaces, unlang_ops[inst->type].name);
 
 		print_map:
 			for (map = g->map; map != NULL; map = map->next) {
@@ -1047,8 +1051,7 @@ static void unlang_dump(unlang_t *mc, int depth)
 
 		case UNLANG_TYPE_ELSE:
 			g = unlang_generic_to_group(inst);
-			DEBUG("%.*s%s {", depth, modcall_spaces,
-				unlang_ops[inst->type].name);
+			DEBUG("%.*s%s {", depth, modcall_spaces, unlang_ops[inst->type].name);
 			unlang_dump(g->children, depth + 1);
 			DEBUG("%.*s}", depth, modcall_spaces);
 			break;
@@ -1057,8 +1060,7 @@ static void unlang_dump(unlang_t *mc, int depth)
 		case UNLANG_TYPE_ELSIF:
 			g = unlang_generic_to_group(inst);
 			cond_snprint(buffer, sizeof(buffer), g->cond);
-			DEBUG("%.*s%s (%s) {", depth, modcall_spaces,
-				unlang_ops[inst->type].name, buffer);
+			DEBUG("%.*s%s (%s) {", depth, modcall_spaces, unlang_ops[inst->type].name, buffer);
 			unlang_dump(g->children, depth + 1);
 			DEBUG("%.*s}", depth, modcall_spaces);
 			break;
@@ -1067,8 +1069,7 @@ static void unlang_dump(unlang_t *mc, int depth)
 		case UNLANG_TYPE_CASE:
 			g = unlang_generic_to_group(inst);
 			tmpl_snprint(buffer, sizeof(buffer), g->vpt);
-			DEBUG("%.*s%s %s {", depth, modcall_spaces,
-				unlang_ops[inst->type].name, buffer);
+			DEBUG("%.*s%s %s {", depth, modcall_spaces, unlang_ops[inst->type].name, buffer);
 			unlang_dump(g->children, depth + 1);
 			DEBUG("%.*s}", depth, modcall_spaces);
 			break;
@@ -1076,8 +1077,7 @@ static void unlang_dump(unlang_t *mc, int depth)
 		case UNLANG_TYPE_POLICY:
 		case UNLANG_TYPE_FOREACH:
 			g = unlang_generic_to_group(inst);
-			DEBUG("%.*s%s %s {", depth, modcall_spaces,
-				unlang_ops[inst->type].name, inst->name);
+			DEBUG("%.*s%s %s {", depth, modcall_spaces, unlang_ops[inst->type].name, inst->name);
 			unlang_dump(g->children, depth + 1);
 			DEBUG("%.*s}", depth, modcall_spaces);
 			break;
@@ -1089,8 +1089,7 @@ static void unlang_dump(unlang_t *mc, int depth)
 #endif
 		case UNLANG_TYPE_GROUP:
 			g = unlang_generic_to_group(inst);
-			DEBUG("%.*s%s {", depth, modcall_spaces,
-			      unlang_ops[inst->type].name);
+			DEBUG("%.*s%s {", depth, modcall_spaces, unlang_ops[inst->type].name);
 			unlang_dump(g->children, depth + 1);
 			DEBUG("%.*s}", depth, modcall_spaces);
 			break;
@@ -1098,8 +1097,7 @@ static void unlang_dump(unlang_t *mc, int depth)
 		case UNLANG_TYPE_LOAD_BALANCE:
 		case UNLANG_TYPE_REDUNDANT_LOAD_BALANCE:
 			g = unlang_generic_to_group(inst);
-			DEBUG("%.*s%s {", depth, modcall_spaces,
-				unlang_ops[inst->type].name);
+			DEBUG("%.*s%s {", depth, modcall_spaces, unlang_ops[inst->type].name);
 			unlang_dump(g->children, depth + 1);
 			DEBUG("%.*s}", depth, modcall_spaces);
 			break;
@@ -1122,12 +1120,12 @@ static int modcall_fixup_map(vp_map_t *map, UNUSED void *ctx)
 	 *	Anal-retentive checks.
 	 */
 	if (DEBUG_ENABLED3) {
-		if ((map->lhs->type == TMPL_TYPE_ATTR) && (map->lhs->name[0] != '&')) {
+		if (tmpl_is_attr(map->lhs) && (map->lhs->name[0] != '&')) {
 			cf_log_warn(cp, "Please change attribute reference to '&%s %s ...'",
 				    map->lhs->name, fr_int2str(fr_tokens_table, map->op, "<INVALID>"));
 		}
 
-		if ((map->rhs->type == TMPL_TYPE_ATTR) && (map->rhs->name[0] != '&')) {
+		if (tmpl_is_attr(map->rhs) && (map->rhs->name[0] != '&')) {
 			cf_log_warn(cp, "Please change attribute reference to '... %s &%s'",
 				    fr_int2str(fr_tokens_table, map->op, "<INVALID>"), map->rhs->name);
 		}
@@ -1186,12 +1184,12 @@ int unlang_fixup_update(vp_map_t *map, UNUSED void *ctx)
 	 *	Anal-retentive checks.
 	 */
 	if (DEBUG_ENABLED3) {
-		if ((map->lhs->type == TMPL_TYPE_ATTR) && (map->lhs->name[0] != '&')) {
+		if (tmpl_is_attr(map->lhs) && (map->lhs->name[0] != '&')) {
 			cf_log_warn(cp, "Please change attribute reference to '&%s %s ...'",
 				    map->lhs->name, fr_int2str(fr_tokens_table, map->op, "<INVALID>"));
 		}
 
-		if ((map->rhs->type == TMPL_TYPE_ATTR) && (map->rhs->name[0] != '&')) {
+		if (tmpl_is_attr(map->rhs) && (map->rhs->name[0] != '&')) {
 			cf_log_warn(cp, "Please change attribute reference to '... %s &%s'",
 				    fr_int2str(fr_tokens_table, map->op, "<INVALID>"), map->rhs->name);
 		}
@@ -1229,7 +1227,7 @@ int unlang_fixup_update(vp_map_t *map, UNUSED void *ctx)
 	 *	We then free the template and alloc a NULL one instead.
 	 */
 	if (map->op == T_OP_CMP_FALSE) {
-		if ((map->rhs->type != TMPL_TYPE_UNPARSED) || (strcmp(map->rhs->name, "ANY") != 0)) {
+		if (!tmpl_is_unparsed(map->rhs) || (strcmp(map->rhs->name, "ANY") != 0)) {
 			WARN("%s[%d] Wildcard deletion MUST use '!* ANY'",
 			     cf_filename(cp), cf_lineno(cp));
 		}
@@ -1246,8 +1244,8 @@ int unlang_fixup_update(vp_map_t *map, UNUSED void *ctx)
 	/*
 	 *	What exactly where you expecting to happen here?
 	 */
-	if ((map->lhs->type == TMPL_TYPE_ATTR) &&
-	    (map->rhs->type == TMPL_TYPE_LIST)) {
+	if (tmpl_is_attr(map->lhs) &&
+	    tmpl_is_list(map->rhs)) {
 		cf_log_err(map->ci, "Can't copy list into an attribute");
 		return -1;
 	}
@@ -1255,14 +1253,14 @@ int unlang_fixup_update(vp_map_t *map, UNUSED void *ctx)
 	/*
 	 *	Depending on the attribute type, some operators are disallowed.
 	 */
-	if ((map->lhs->type == TMPL_TYPE_ATTR) && (!fr_assignment_op[map->op] && !fr_equality_op[map->op])) {
+	if (tmpl_is_attr(map->lhs) && (!fr_assignment_op[map->op] && !fr_equality_op[map->op])) {
 		cf_log_err(map->ci, "Invalid operator \"%s\" in update section.  "
 			   "Only assignment or filter operators are allowed",
 			   fr_int2str(fr_tokens_table, map->op, "<INVALID>"));
 		return -1;
 	}
 
-	if (map->lhs->type == TMPL_TYPE_LIST) {
+	if (tmpl_is_list(map->lhs)) {
 		/*
 		 *	Can't copy an xlat expansion or literal into a list,
 		 *	we don't know what type of attribute we'd need
@@ -1290,27 +1288,27 @@ int unlang_fixup_update(vp_map_t *map, UNUSED void *ctx)
 			break;
 
 		case T_OP_ADD:
-			if ((map->rhs->type != TMPL_TYPE_LIST) &&
-			    (map->rhs->type != TMPL_TYPE_EXEC)) {
+			if (!tmpl_is_list(map->rhs) &&
+			    !tmpl_is_exec(map->rhs)) {
 				cf_log_err(map->ci, "Invalid source for list assignment '%s += ...'", map->lhs->name);
 				return -1;
 			}
 			break;
 
 		case T_OP_SET:
-			if (map->rhs->type == TMPL_TYPE_EXEC) {
+			if (tmpl_is_exec(map->rhs)) {
 				WARN("%s[%d]: Please change ':=' to '=' for list assignment",
 				     cf_filename(cp), cf_lineno(cp));
 			}
 
-			if (map->rhs->type != TMPL_TYPE_LIST) {
+			if (!tmpl_is_list(map->rhs)) {
 				cf_log_err(map->ci, "Invalid source for list assignment '%s := ...'", map->lhs->name);
 				return -1;
 			}
 			break;
 
 		case T_OP_EQ:
-			if (map->rhs->type != TMPL_TYPE_EXEC) {
+			if (!tmpl_is_exec(map->rhs)) {
 				cf_log_err(map->ci, "Invalid source for list assignment '%s = ...'", map->lhs->name);
 				return -1;
 			}
@@ -1336,15 +1334,15 @@ int unlang_fixup_update(vp_map_t *map, UNUSED void *ctx)
 	 *	Unless it's a unary operator in which case we
 	 *	ignore map->rhs.
 	 */
-	if ((map->lhs->type == TMPL_TYPE_ATTR) && (map->rhs->type == TMPL_TYPE_UNPARSED)) {
+	if (tmpl_is_attr(map->lhs) && tmpl_is_unparsed(map->rhs)) {
 		/*
 		 *	It's a literal string, just copy it.
 		 *	Don't escape anything.
 		 */
 		if (tmpl_cast_in_place(map->rhs, map->lhs->tmpl_da->type, map->lhs->tmpl_da) < 0) {
 			cf_log_perr(map->ci, "Cannot convert RHS value (%s) to LHS attribute type (%s)",
-				    fr_int2str(fr_value_box_type_names, FR_TYPE_STRING, "<INVALID>"),
-				    fr_int2str(fr_value_box_type_names, map->lhs->tmpl_da->type, "<INVALID>"));
+				    fr_int2str(fr_value_box_type_table, FR_TYPE_STRING, "<INVALID>"),
+				    fr_int2str(fr_value_box_type_table, map->lhs->tmpl_da->type, "<INVALID>"));
 			return -1;
 		}
 
@@ -1358,7 +1356,7 @@ int unlang_fixup_update(vp_map_t *map, UNUSED void *ctx)
 			da = fr_dict_attr_by_type(map->lhs->tmpl_da, map->rhs->tmpl_value_type);
 			if (!da) {
 				fr_strerror_printf("Cannot find %s variant of attribute \"%s\"",
-						   fr_int2str(fr_value_box_type_names, map->rhs->tmpl_value_type,
+						   fr_int2str(fr_value_box_type_table, map->rhs->tmpl_value_type,
 						   "<INVALID>"), map->lhs->tmpl_da->name);
 				return -1;
 			}
@@ -1966,8 +1964,8 @@ static unlang_t *compile_group(unlang_t *parent, unlang_compile_t *unlang_ctx, C
 	 *	FIXME: We may also want to put the names into a
 	 *	rbtree, so that groups can reference each other...
 	 */
-	c->name = unlang_ops[c->type].name;
-	c->debug_name = c->name;
+	c->name = talloc_typed_strdup(c, unlang_ops[c->type].name);
+	c->debug_name = talloc_typed_strdup(c, c->name);
 
 	return compile_children(g, parent, unlang_ctx, group_type, parentgroup_type);
 }
@@ -2129,7 +2127,7 @@ static unlang_t *compile_case(unlang_t *parent, unlang_compile_t *unlang_ctx, CO
 			return NULL;
 		}
 
-		if (vpt->type == TMPL_TYPE_ATTR_UNDEFINED) {
+		if (tmpl_is_attr_undefined(vpt)) {
 			if (!pass2_fixup_undefined(cf_section_to_item(cs), vpt, unlang_ctx->rules)) {
 				talloc_free(vpt);
 				return NULL;
@@ -2148,8 +2146,8 @@ static unlang_t *compile_case(unlang_t *parent, unlang_compile_t *unlang_ctx, CO
 		 *	attribute.  Check that the
 		 *	values match.
 		 */
-		if ((vpt->type == TMPL_TYPE_UNPARSED) &&
-		    (f->vpt->type == TMPL_TYPE_ATTR)) {
+		if (tmpl_is_unparsed(vpt) &&
+		    tmpl_is_attr(f->vpt)) {
 			rad_assert(f->vpt->tmpl_da != NULL);
 
 			if (tmpl_cast_in_place(vpt, f->vpt->tmpl_da->type, f->vpt->tmpl_da) < 0) {
@@ -2164,10 +2162,10 @@ static unlang_t *compile_case(unlang_t *parent, unlang_compile_t *unlang_ctx, CO
 		 *	Compile and sanity check xlat
 		 *	expansions.
 		 */
-		if (vpt->type == TMPL_TYPE_XLAT) {
+		if (tmpl_is_xlat(vpt)) {
 			fr_dict_attr_t const *da = NULL;
 
-			if (f->vpt->type == TMPL_TYPE_ATTR) da = f->vpt->tmpl_da;
+			if (tmpl_is_attr(f->vpt)) da = f->vpt->tmpl_da;
 
 			/*
 			 *	Don't expand xlat's into an
@@ -2267,7 +2265,7 @@ static unlang_t *compile_foreach(unlang_t *parent, unlang_compile_t *unlang_ctx,
 	 */
 	rad_assert(vpt);
 
-	if ((vpt->type != TMPL_TYPE_ATTR) && (vpt->type != TMPL_TYPE_LIST)) {
+	if (!tmpl_is_attr(vpt) && !tmpl_is_list(vpt)) {
 		cf_log_err(cs, "MUST use attribute or list reference (not %s) in 'foreach'",
 			   fr_int2str(tmpl_type_table, vpt->type, "???"));
 		talloc_free(vpt);
@@ -2362,11 +2360,10 @@ static unlang_t *compile_xlat_inline(unlang_t *parent,
 	mx->xlat_name = talloc_typed_strdup(mx, cf_pair_attr(cp));
 	if (mx->xlat_name[0] == '%') {
 		ssize_t		slen;
-		char const	*error;
 
-		slen = xlat_tokenize(mx, &mx->exp, &error, mx->xlat_name, unlang_ctx->rules);
+		slen = xlat_tokenize(mx, &mx->exp, mx->xlat_name, unlang_ctx->rules);
 		if (slen < 0) {
-			cf_log_err(cp, "%s", error);
+			cf_log_err(cp, "%s", fr_strerror());
 			talloc_free(mx);
 			return NULL;
 		}
@@ -2744,22 +2741,18 @@ static unlang_t *compile_parallel(unlang_t *parent, unlang_compile_t *unlang_ctx
 static unlang_t *compile_subrequest(unlang_t *parent, unlang_compile_t *unlang_ctx, CONF_SECTION *cs,
 				    unlang_group_type_t group_type, unlang_group_type_t parentgroup_type, unlang_type_t mod_type)
 {
-	char const *name2;
-	unlang_t *c;
-	unlang_group_t *g;
-
-	/*
-	 *	async async is not allowed.  It will work, but we
-	 *	don't know what it means.  If someone has a good
-	 *	use-case, we can try enabling it.
-	 */
-	for (c = parent; c != NULL; c = c->parent) {
-		if (c->type == UNLANG_TYPE_SUBREQUEST) {
-			cf_log_err(cs, "'%s' sections cannot be nested inside of other '%s' sections",
-				   unlang_ops[mod_type].name, unlang_ops[mod_type].name);
-			return NULL;
-		}
-	}
+	char const		*name2;
+	unlang_t		*c;
+	unlang_group_t		*g;
+	unlang_compile_t	unlang_ctx2;
+	vp_tmpl_rules_t		parse_rules;
+	fr_dict_t const		*dict;
+	fr_dict_attr_t const	*da;
+	fr_dict_enum_t const	*type_enum;
+	char const		*namespace, *packet_name, *component_name, *p;
+	char			buffer[64];
+	char			buffer2[64];
+	char			buffer3[64];
 
 	g = group_allocate(parent, cs, group_type, mod_type);
 	if (!g) return NULL;
@@ -2769,14 +2762,135 @@ static unlang_t *compile_subrequest(unlang_t *parent, unlang_compile_t *unlang_c
 	c->debug_name = c->name;
 
 	/*
-	 *	subrequests can't have an argument.
+	 *	subrequests can specify the dictionary if they want to.
 	 */
 	name2 = cf_section_name2(cs);
-	if (name2) {
-		cf_log_err(cs, "Invalid argument '%s' to subrequest", name2);
+	if (!name2) {
+		cf_log_err(cs, "Invalid syntax: expected <namespace>.<packet>");
 		return NULL;
 	}
-	return compile_children(g, parent, unlang_ctx, group_type, parentgroup_type);
+
+	p = strchr(name2, '.');
+	if (!p) {
+		dict = unlang_ctx->rules->dict_def;
+		namespace = fr_dict_root(dict)->name;
+		packet_name = name2;
+
+	} else {
+		if ((size_t) (p - name2) >= sizeof(buffer)) {
+			cf_log_err(cs, "Unknown namespace '%.*s'", (int) (p - name2), name2);
+			return NULL;
+		}
+
+		memcpy(buffer, name2, p - name2);
+		buffer[p - name2] = '\0';
+
+		dict = fr_dict_by_protocol_name(buffer);
+		if (!dict) {
+			cf_log_err(cs, "Unknown namespace '%.*s'", (int) (p - name2), name2);
+			return NULL;
+		}
+
+		namespace = buffer;
+		p++;
+		packet_name = p;	// need to quiet a stupid compiler
+	}
+
+	da = fr_dict_attr_by_name(dict, "Packet-Type");
+	if (!da) {
+		cf_log_err(cs, "No such attribute 'Packet-Type' in namespace '%s'", namespace);
+		return NULL;
+	}
+
+	/*
+	 *	Get the packet name.
+	 */
+	if (p) {
+		packet_name = p;
+		p = strchr(packet_name, '.');
+		if (p) {
+			if ((size_t) (p - packet_name) >= sizeof(buffer2)) {
+				cf_log_err(cs, "No such value '%.*s' for attribute 'Packet-Type' in namespace '%s'",
+					   (int) (p - packet_name), packet_name, namespace);
+				return NULL;
+			}
+
+			memcpy(buffer2, packet_name, p - packet_name);
+			buffer[p - packet_name] = '\0';
+			packet_name = buffer2;
+			p++;
+		}
+	}
+
+	type_enum = fr_dict_enum_by_alias(da, packet_name, -1);
+	if (!type_enum) {
+		cf_log_err(cs, "No such value '%s' for attribute 'Packet-Type' in namespace '%s'",
+			   packet_name, namespace);
+		return NULL;
+	}
+
+	unlang_ctx2.component = unlang_ctx->component;
+
+	/*
+	 *	Figure out the component name we're supposed to call.
+	 *	Which isn't necessarily the same as the one from the
+	 *	parent request.
+	 */
+	if (p) {
+		component_name = p;
+		p = strchr(component_name, '.');
+		if (p) {
+			rlm_components_t i;
+
+			if ((size_t) (p - component_name) >= sizeof(buffer3)) {
+			unknown_component:
+				cf_log_err(cs, "No such component '%.*s",
+					   (int) (p - component_name), component_name);
+				return NULL;
+			}
+
+			memcpy(buffer3, component_name, p - component_name);
+			buffer[p - component_name] = '\0';
+			component_name = buffer3;
+
+			for (i = MOD_AUTHENTICATE; i < MOD_COUNT; i++) {
+				if (strcmp(comp2str[i], component_name) == 0) {
+				break;
+				}
+			}
+
+			if (i == MOD_COUNT) goto unknown_component;
+
+			unlang_ctx2.component = i;
+		}
+	}
+
+	parse_rules = *unlang_ctx->rules;
+	parse_rules.dict_def = dict;
+
+	unlang_ctx2.actions = unlang_ctx->actions;
+
+	/*
+	 *	@todo - for named methods, we really need to determine
+	 *	what methods we're calling here.
+	 */
+	unlang_ctx2.section_name1 = "subrequest";
+	unlang_ctx2.section_name2 = name2;
+	unlang_ctx2.rules = &parse_rules;
+
+	/*
+	 *	Compile the children of this subrequest in the context
+	 *	of the dictionary && namespace that was given by the
+	 *	subrequest.
+	 */
+	c = compile_children(g, parent, &unlang_ctx2, group_type, parentgroup_type);
+	if (!c) return NULL;
+
+	g->dict = dict;
+	g->attr_packet_type = da;
+	g->type_enum = type_enum;
+
+	return c;
 }
 
 
@@ -2784,42 +2898,16 @@ static unlang_t *compile_call(unlang_t *parent, unlang_compile_t *unlang_ctx, CO
 			      unlang_group_type_t group_type, unlang_group_type_t parentgroup_type,
 			      unlang_type_t mod_type)
 {
-	ssize_t			slen;
-	char const		*name2;
 	unlang_group_t		*g;
 	unlang_t		*c;
 	FR_TOKEN		type;
-	char			*server;
-	char			*packet;
+	char const     		*server;
 	CONF_SECTION		*server_cs;
-	fr_io_process_t		*process_p;
+	fr_dict_t const		*dict;
 
-	vp_tmpl_rules_t		parse_rules;
-
-	/*
-	 *	We allow unknown attributes here.
-	 */
-	parse_rules = *(unlang_ctx->rules);
-	parse_rules.allow_unknown = true;
-
-	/*
-	 *	calls with a normal packet are not allowed.  It will
-	 *	work, but we don't know what it means.  If someone has
-	 *	a good use-case, we can try enabling it.
-	 */
-	for (c = parent; c != NULL; c = c->parent) {
-		if (c->type == UNLANG_TYPE_SUBREQUEST) break;
-	}
-
-	if (!c) {
-		cf_log_err(cs, "'%s' can only be used inside of a 'subrequest' section",
-			   unlang_ops[mod_type].name);
-		return NULL;
-	}
-
-	name2 = cf_section_name2(cs);
-	if (!name2) {
-		cf_log_err(cs, "'call' must be given with a server.PACKET argument");
+	server = cf_section_name2(cs);
+	if (!server) {
+		cf_log_err(cs, "You MUST specify a server name for 'call <server> { ... }'");
 		return NULL;
 	}
 
@@ -2832,67 +2920,25 @@ static unlang_t *compile_call(unlang_t *parent, unlang_compile_t *unlang_ctx, CO
 	g = group_allocate(parent, cs, group_type, mod_type);
 	if (!g) return NULL;
 
-	slen = tmpl_afrom_str(g, &g->vpt, name2, strlen(name2), type, &parse_rules, true);
-	if (slen < 0) {
-		char *spaces, *text;
-
-		fr_canonicalize_error(cs, &spaces, &text, slen, fr_strerror());
-
-		cf_log_err(cs, "Syntax error");
-		cf_log_err(cs, "%s", name2);
-		cf_log_err(cs, "%s^ %s", spaces, text);
-
-		talloc_free(g);
-		talloc_free(spaces);
-		talloc_free(text);
-
-		return NULL;
-	}
-
-	/*
-	 *      Convert TMPL_TYPE_UNPARSED (it might have been
-	 *      an attribute) to TMPL_TYPE_DATA, with
-	 *      FR_TYPE_STRING data.
-	 */
-	tmpl_cast_in_place_str(g->vpt);
-
-	/*
-	 *	Look up server and packet type.
-	 *
-	 *	memcpy for const issues... we know what we're doing.
-	 */
-	memcpy(&server, &g->vpt->tmpl_value.datum.strvalue, sizeof(server));
-	packet = strchr(server, '.');
-	if (!packet) {
-		cf_log_err(cs, "Invalid syntax: expected server.PACKET");
-		talloc_free(g);
-		return NULL;
-	}
-
-	*packet = '\0';		/* hack */
-	server_cs = cf_section_find(cf_root(cs), "server", server);
+	server_cs = virtual_server_find(server);
 	if (!server_cs) {
 		cf_log_err(cs, "Unknown virtual server '%s'", server);
 		talloc_free(g);
 		return NULL;
 	}
 
-	*packet = '.';
-	packet++;
-
 	/*
-	 *	Verify it exists, but don't bother caching it.  We can
-	 *	figure it out at run-time.
+	 *	The dictionaries are not compatible, forbid it.
 	 */
-	process_p = (fr_io_process_t *) cf_data_value(cf_data_find(server_cs, fr_io_process_t, packet));
-	if (!process_p) {
-		cf_log_err(cs, "Virtual server %s cannot process '%s' packets",
-			   cf_section_name2(server_cs), packet);
+	dict = virtual_server_namespace(server);
+	if (dict && (dict != fr_dict_internal) && fr_dict_internal &&
+	    unlang_ctx->rules->dict_def && (unlang_ctx->rules->dict_def != dict)) {
+		cf_log_err(cs, "Cannot call namespace '%s' from namespaces '%s'",
+			   fr_dict_root(dict)->name, fr_dict_root(unlang_ctx->rules->dict_def)->name);
 		talloc_free(g);
 		return NULL;
 	}
 
-	g->process = (void *)*process_p;
 	g->server_cs = server_cs;
 
 	c = unlang_group_to_generic(g);
@@ -2995,22 +3041,39 @@ static CONF_SECTION *virtual_module_find_cs(CONF_SECTION *conf_root, rlm_compone
 }
 
 
-static unlang_t *compile_module(unlang_t *parent, unlang_compile_t *unlang_ctx, CONF_ITEM *ci, module_instance_t *inst, unlang_group_type_t parentgroup_type, char const *realname)
+static unlang_t *compile_module(unlang_t *parent, unlang_compile_t *unlang_ctx,
+				CONF_ITEM *ci, module_instance_t *inst, module_method_t method,
+				unlang_group_type_t parentgroup_type, char const *realname)
 {
 	unlang_t *c;
 	unlang_module_t *single;
 
 	/*
+	 *	Can't use "chap" in "dhcp".
+	 */
+	if (inst->module->dict && *inst->module->dict && unlang_ctx->rules && unlang_ctx->rules->dict_def &&
+	    (unlang_ctx->rules->dict_def != fr_dict_internal) &&
+	    (*inst->module->dict != unlang_ctx->rules->dict_def)) {
+		cf_log_err(ci, "The \"%s\" module can only used with 'namespace = %s'.  It cannot be used with 'namespace = %s'.",
+			   inst->module->name,
+			   fr_dict_root(*inst->module->dict)->name,
+			   fr_dict_root(unlang_ctx->rules->dict_def)->name);
+		return NULL;
+	}
+
+	/*
 	 *	Check if the module in question has the necessary
 	 *	component.
 	 */
-	if (!inst->module->methods[unlang_ctx->component]) {
+	if (!method) {
 		if (unlang_ctx->section_name1 && unlang_ctx->section_name2) {
-			cf_log_err(ci, "\"%s\" modules aren't allowed in '%s %s { ... }' sections -- they have no such method.", inst->module->name,
+			cf_log_err(ci, "The \"%s\" module does not have a '%s %s' method.",
+				   inst->module->name,
 				   unlang_ctx->section_name1, unlang_ctx->section_name2);
 		} else {
-			cf_log_err(ci, "\"%s\" modules aren't allowed in '%s { ... }' sections -- they have no such method.", inst->module->name,
-				   unlang_ctx->name);
+			cf_log_err(ci, "The \"%s\" module does not have a '%s' method.",
+				   inst->module->name,
+				   unlang_ctx->section_name1);
 		}
 
 		return NULL;
@@ -3018,7 +3081,7 @@ static unlang_t *compile_module(unlang_t *parent, unlang_compile_t *unlang_ctx, 
 
 	single = talloc_zero(parent, unlang_module_t);
 	single->module_instance = inst;
-	single->method = inst->module->methods[unlang_ctx->component];
+	single->method = method;
 
 	c = unlang_module_to_generic(single);
 	c->parent = parent;
@@ -3079,7 +3142,6 @@ static modcall_compile_t compile_table[] = {
  */
 #define UPDATE_CTX2  \
 	unlang_ctx2.component = component; \
-	unlang_ctx2.name = comp2str[component]; \
 	unlang_ctx2.actions = unlang_ctx->actions; \
 	unlang_ctx2.section_name1 = unlang_ctx->section_name1; \
 	unlang_ctx2.section_name2 = unlang_ctx->section_name2; \
@@ -3100,6 +3162,7 @@ static unlang_t *compile_item(unlang_t *parent,
 	char const		*realname;
 	rlm_components_t	component = unlang_ctx->component;
 	unlang_compile_t	unlang_ctx2;
+	module_method_t		method;
 
 	if (cf_item_is_section(ci)) {
 		int i;
@@ -3108,11 +3171,14 @@ static unlang_t *compile_item(unlang_t *parent,
 		cs = cf_item_to_section(ci);
 		modrefname = cf_section_name1(cs);
 		name2 = cf_section_name2(cs);
-		if (!name2) name2 = "";
 
 		for (i = 0; compile_table[i].name != NULL; i++) {
 			if (strcmp(modrefname, compile_table[i].name) == 0) {
-				*modname = name2;
+				if (name2) {
+					*modname = name2;
+				} else {
+					*modname = "";
+				}
 
 				/*
 				 *	Some blocks can be empty.  The rest need
@@ -3128,6 +3194,20 @@ static unlang_t *compile_item(unlang_t *parent,
 								compile_table[i].group_type, parent_group_type,
 								compile_table[i].mod_type);
 			}
+		}
+
+		/*
+		 *	Allow for named subsections, to change processing method types.
+		 */
+		if (name2 && (virtual_server_section_component(&component, modrefname, name2) == 0)) {
+			UPDATE_CTX2;
+
+			c = compile_group(parent, &unlang_ctx2, cs, UNLANG_GROUP_TYPE_SIMPLE, parent_group_type, UNLANG_TYPE_GROUP);
+			if (!c) return NULL;
+
+			c->name = modrefname;
+			c->debug_name = talloc_typed_asprintf(c, "%s %s", modrefname, name2);
+			return c;
 		}
 
 #ifdef WITH_UNLANG
@@ -3335,17 +3415,18 @@ static unlang_t *compile_item(unlang_t *parent,
 	if (realname[0] == '-') realname++;
 
 	/*
-	 *	As of v3, the "modules" section contains
-	 *	modules we use.  Configuration for other
-	 *	modules belongs in raddb/mods-available/,
-	 *	which isn't loaded into the "modules" section.
+	 *	Set the child compilation context BEFORE parsing the
+	 *	module name and method.  The lookup function will take
+	 *	care of returning the appropriate component, name1,
+	 *	name2, etc.
 	 */
-	inst = module_find_with_method(&component, modules, realname);
+	UPDATE_CTX2;
+	inst = module_by_name_and_method(&method, &unlang_ctx2.component,
+					 &unlang_ctx2.section_name1, &unlang_ctx2.section_name2,
+					 realname);
 	if (inst) {
-		UPDATE_CTX2;
-
 		*modname = inst->module->name;
-		return compile_module(parent, &unlang_ctx2, ci, inst, parent_group_type, realname);
+		return compile_module(parent, &unlang_ctx2, ci, inst, method, parent_group_type, realname);
 	}
 
 	/*
@@ -3367,18 +3448,44 @@ fail:
 	return NULL;
 }
 
+/** Set an unlang group name from a section
+ *
+ * This is to improve debug readability
+ *
+ * @param[in] group	to set name for.
+ * @param[in] cs	to derive name from.
+ */
+static inline void unlang_group_name_from_cs(unlang_group_t *group, CONF_SECTION *cs)
+{
+	char const *name1, *name2;
+
+	/*
+	 *	Clear out existing name values
+	 */
+	talloc_const_free(group->self.name);
+	talloc_const_free(group->self.debug_name);
+
+	name1 = cf_section_name1(cs);
+	name2 = cf_section_name2(cs);
+	group->self.name = name1;
+
+	if (!name2) {
+		MEM(group->self.debug_name = talloc_typed_strdup(group, name1));
+	} else {
+		MEM(group->self.debug_name = talloc_typed_asprintf(group, "%s %s", name1, name2));
+	}
+}
+
 int unlang_compile(CONF_SECTION *cs, rlm_components_t component, vp_tmpl_rules_t const *rules)
 {
-	char const		*name1, *name2;
 	unlang_t		*c;
-	unlang_compile_t	unlang_ctx;
 	vp_tmpl_rules_t		my_rules;
 
-	unlang_ctx.component = component;
-	unlang_ctx.name = comp2str[component];
-	unlang_ctx.section_name1 = cf_section_name1(cs);
-	unlang_ctx.section_name2 = cf_section_name2(cs);
-	unlang_ctx.actions = &defaultactions[component];
+	/*
+	 *	Don't compile it twice, and don't print out debug
+	 *	messages twice.
+	 */
+	if (cf_data_find(cs, unlang_group_t, NULL) != NULL) return 1;
 
 	/*
 	 *	Ensure that all compile functions get valid rules.
@@ -3387,24 +3494,20 @@ int unlang_compile(CONF_SECTION *cs, rlm_components_t component, vp_tmpl_rules_t
 		memset(&my_rules, 0, sizeof(my_rules));
 		rules = &my_rules;
 	}
-	unlang_ctx.rules = rules;
 
-	c = compile_group(NULL, &unlang_ctx, cs, UNLANG_GROUP_TYPE_SIMPLE, UNLANG_GROUP_TYPE_SIMPLE, UNLANG_TYPE_GROUP);
+	c = compile_group(NULL,
+			  &(unlang_compile_t){
+			  	.component = component,
+			  	.section_name1 = cf_section_name1(cs),
+			  	.section_name2 = cf_section_name2(cs),
+			  	.actions = &defaultactions[component],
+				.rules = rules
+			  },
+			  cs, UNLANG_GROUP_TYPE_SIMPLE, UNLANG_GROUP_TYPE_SIMPLE, UNLANG_TYPE_GROUP);
 	if (!c) return -1;
 
-	/*
-	 *	The name / debug name are set to "group".  We want
-	 *	that to be a little more informative.
-	 */
-	name1 = cf_section_name1(cs);
-	name2 = cf_section_name2(cs);
-	c->name = name1;
+	unlang_group_name_from_cs(unlang_generic_to_group(c), cs);
 
-	if (!name2) {
-		c->debug_name = name1;
-	} else {
-		c->debug_name = talloc_typed_asprintf(c, "%s %s", name1, name2);
-	}
 
 	if (DEBUG_ENABLED4) unlang_dump(c, 2);
 
@@ -3419,33 +3522,26 @@ int unlang_compile(CONF_SECTION *cs, rlm_components_t component, vp_tmpl_rules_t
 
 /** Compile a named subsection
  *
- * @param server_cs the server CONF_SECTION
- * @param name1 the first name of the subsection to compile
- * @param name2 the second name of the subsection to compile.
- * @param component the component to compile
- * @param rules the rules to follow
+ * @param[in] cs		the subsection to compile
+ * @param[in] component 	The default method to call when compiling module calls.
+ * @param[in] rules		For resolving attribute references.
  * @return
  *	- <0 on error
  *	- 0 on section was not found
  *	- 1 on successfully compiled
  *
  */
-int unlang_compile_subsection(CONF_SECTION *server_cs, char const *name1, char const *name2, rlm_components_t component,
+int unlang_compile_subsection(CONF_SECTION *cs, rlm_components_t component,
 			      vp_tmpl_rules_t const *rules)
 {
-	CONF_SECTION *cs;
+	char const *name1, *name2;
 
-	cs = cf_section_find(server_cs, name1, name2);
-	if (!cs) return 0;
-
-	/*
-	 *	Don't print out debug messages twice.
-	 */
-	if (cf_data_find(cs, unlang_group_t, NULL) != NULL) return 1;
+	name1 = cf_section_name1(cs);
+	name2 = cf_section_name2(cs);
 
 	if (!name2) name2 = "";
 
-	cf_log_debug(cs, "Compiling policies - %s %s {...}", name1, name2);
+	cf_log_debug(cs, "Compiling policies in - %s %s {...}", name1, name2);
 
 	if (unlang_compile(cs, component, rules) < 0) {
 		cf_log_err(cs, "Failed compiling '%s %s { ... }' section", name1, name2);
@@ -3462,7 +3558,7 @@ int unlang_compile_subsection(CONF_SECTION *server_cs, char const *name1, char c
  *	- true if it is a keyword.
  *	- false if it's not a keyword.
  */
-bool unlang_keyword(const char *name)
+bool unlang_compile_is_keyword(const char *name)
 {
 	int i;
 
@@ -3471,6 +3567,10 @@ bool unlang_keyword(const char *name)
 	for (i = 1; compile_table[i].name != NULL; i++) {
 		if (strcmp(name, compile_table[i].name) == 0) return true;
 	}
+
+	if (strcmp(name, "break") == 0) return true;
+	if (strcmp(name, "detach") == 0) return true;
+	if (strcmp(name, "return") == 0) return true;
 
 	return false;
 }

@@ -21,8 +21,8 @@
  * @brief Functions to decode DHCP options.
  *
  * @copyright 2008,2017 The FreeRADIUS server project
- * @copyright 2008 Alan DeKok <aland@deployingradius.com>
- * @copyright 2015,2017 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2008 Alan DeKok (aland@deployingradius.com)
+ * @copyright 2015,2017 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 #include <stdint.h>
 #include <stddef.h>
@@ -175,7 +175,8 @@ static ssize_t decode_value_internal(TALLOC_CTX *ctx, fr_cursor_t *cursor, fr_di
 		if (ret < 0) {
 			FR_PROTO_TRACE("decoding as unknown type");
 			if (fr_pair_to_unknown(vp) < 0) return -1;
-			fr_pair_value_memcpy(vp, p, data_len);
+			fr_pair_value_memcpy(vp, p, data_len, true);
+			ret = data_len;
 		}
 		p += (size_t) ret;
 	}
@@ -287,11 +288,11 @@ static ssize_t decode_tlv(TALLOC_CTX *ctx, fr_cursor_t *cursor, fr_dict_attr_t c
 			child = unknown_child;
 		}
 		FR_PROTO_TRACE("decode context changed %s:%s -> %s:%s",
-			       fr_int2str(fr_value_box_type_names, parent->type, "<invalid>"), parent->name,
-			       fr_int2str(fr_value_box_type_names, child->type, "<invalid>"), child->name);
+			       fr_int2str(fr_value_box_type_table, parent->type, "<invalid>"), parent->name,
+			       fr_int2str(fr_value_box_type_table, child->type, "<invalid>"), child->name);
 
 		tlv_len = decode_value(ctx, cursor, child, p + 2, p[1]);
-		if (tlv_len <= 0) {
+		if (tlv_len < 0) {
 			fr_dict_unknown_free(&child);
 			return tlv_len;
 		}
@@ -406,12 +407,12 @@ ssize_t fr_dhcpv4_decode_option(TALLOC_CTX *ctx, fr_cursor_t *cursor,
 		 *	Unknown attribute, create an octets type
 		 *	attribute with the contents of the sub-option.
 		 */
-		child = fr_dict_unknown_afrom_fields(ctx, parent, DHCP_MAGIC_VENDOR, p[0]);
+		child = fr_dict_unknown_afrom_fields(ctx, parent, fr_dict_vendor_num_by_da(parent), p[0]);
 		if (!child) return -1;
 	}
 	FR_PROTO_TRACE("decode context changed %s:%s -> %s:%s",
-		       fr_int2str(fr_value_box_type_names, parent->type, "<invalid>"), parent->name,
-		       fr_int2str(fr_value_box_type_names, child->type, "<invalid>"), child->name);
+		       fr_int2str(fr_value_box_type_table, parent->type, "<invalid>"), parent->name,
+		       fr_int2str(fr_value_box_type_table, child->type, "<invalid>"), child->name);
 
 	ret = decode_value(ctx, cursor, child, data + 2, data[1]);
 	if (ret < 0) {

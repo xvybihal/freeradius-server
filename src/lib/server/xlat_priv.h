@@ -23,8 +23,8 @@
  *
  * Private structures for the xlat tokenizer and xlat eval code.
  *
- * @copyright 2000,2006  The FreeRADIUS server project
- * @copyright 2000  Alan DeKok <aland@freeradius.org>
+ * @copyright 2000,2006 The FreeRADIUS server project
+ * @copyright 2000 Alan DeKok (aland@freeradius.org)
  */
 #ifdef __cplusplus
 extern "C" {
@@ -44,7 +44,7 @@ typedef enum {
 	XLAT_FUNC_ASYNC						//!< Ingests and excretes value boxes (and may yield)
 } xlat_func_sync_type_t;
 
-typedef struct {
+typedef struct xlat_s {
 	char const		*name;				//!< Name of xlat function.
 
 	union {
@@ -64,12 +64,13 @@ typedef struct {
 
 	char const		*inst_type;			//!< C name of instance structure.
 	size_t			inst_size;			//!< Size of instance data to pre-allocate.
+	void			*uctx;				//!< uctx to pass to instantiation functions.
 
 	char const		*thread_inst_type;		//!< C name of thread instance structure.
 	size_t			thread_inst_size;		//!< Size of the thread instance data to pre-allocate.
+	void			*thread_uctx;			//!< uctx to pass to instantiation functions.
 
 	bool			async_safe;			//!< If true, is async safe
-	void			*uctx;				//!< uctx to pass to instantiation functions.
 
 	size_t			buf_len;			//!< Length of output buffer to pre-allocate.
 	void			*mod_inst;			//!< Module instance passed to xlat
@@ -87,7 +88,7 @@ typedef enum {
 	XLAT_REGEX		= 0x11,		//!< regex reference
 #endif
 	XLAT_ALTERNATE		= 0x12		//!< xlat conditional syntax :-
-} xlat_state_t;
+} xlat_type_t;
 
 /** An xlat expansion node
  *
@@ -99,7 +100,7 @@ struct xlat_exp {
 
 	bool		async_safe;	//!< carried from all of the children
 
-	xlat_state_t	type;		//!< type of this expansion.
+	xlat_type_t	type;		//!< type of this expansion.
 	xlat_exp_t	*next;		//!< Next in the list.
 
 	xlat_exp_t	*child;		//!< Nested expansion.
@@ -148,6 +149,9 @@ xlat_t	*xlat_func_find(char const *name);
 /*
  *	xlat_eval.c
  */
+void		xlat_signal(xlat_func_signal_t signal, xlat_exp_t const *exp,
+			    REQUEST *request, void *rctx, fr_state_signal_t action);
+
 xlat_action_t	xlat_frame_eval_resume(TALLOC_CTX *ctx, fr_cursor_t *out,
 				       xlat_func_resume_t resume, xlat_exp_t const *exp,
 				       REQUEST *request, fr_value_box_t **result, void *rctx);
@@ -160,7 +164,7 @@ xlat_action_t	xlat_frame_eval_repeat(TALLOC_CTX *ctx, fr_cursor_t *out,
 xlat_action_t	xlat_frame_eval(TALLOC_CTX *ctx, fr_cursor_t *out, xlat_exp_t const **child,
 				REQUEST *request, xlat_exp_t const **in);
 
-int		xlat_eval_walk(xlat_exp_t *exp, xlat_walker_t walker, xlat_state_t type, void *uctx);
+int		xlat_eval_walk(xlat_exp_t *exp, xlat_walker_t walker, xlat_type_t type, void *uctx);
 
 int		xlat_eval_init(void);
 

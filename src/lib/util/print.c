@@ -18,7 +18,7 @@
  *
  * @file src/lib/util/print.c
  *
- * @copyright 2000,2006  The FreeRADIUS server project
+ * @copyright 2000,2006 The FreeRADIUS server project
  */
 RCSID("$Id$")
 
@@ -209,11 +209,11 @@ char const *fr_utf8_strchr(int *chr_len, char const *str, char const *chr)
  * @note Return value should be checked with is_truncated
  * @note Will always \0 terminate unless outlen == 0.
  *
- * @param[in] in string to escape.
- * @param[in] inlen length of string to escape (lets us deal with embedded NULs)
- * @param[out] out where to write the escaped string.
- * @param[out] outlen the length of the buffer pointed to by out.
- * @param[in] quote the quotation character
+ * @param[in] in	string to escape.
+ * @param[in] inlen	length of string to escape (lets us deal with embedded NULs)
+ * @param[out] out	where to write the escaped string.
+ * @param[out] outlen	the length of the buffer pointed to by out.
+ * @param[in] quote	the quotation character
  * @return
  *	- The number of bytes written to the out buffer.
  *	- A number >= outlen if truncation has occurred.
@@ -411,13 +411,13 @@ size_t fr_snprint_len(char const *in, ssize_t inlen, char quote)
  * but under some conditions may get binary data. A good example is libldap
  * and the arrays of struct berval ldap_get_values_len returns.
  *
- * @param[in] ctx To allocate new buffer in.
- * @param[in] in String to escape.
- * @param[in] inlen Length of string. Should be >= 0 if the data may contain
- *	embedded \0s. Must be >= 0 if data may not be \0 terminated.
- *	If < 0 inlen will be calculated using strlen.
- * @param[in] quote the quotation character.
- * @return new buffer holding the escaped string.
+ * @param[in] ctx	To allocate new buffer in.
+ * @param[in] in	String to escape.
+ * @param[in] inlen	Length of string. Should be >= 0 if the data may contain
+ *			embedded \0s. Must be >= 0 if data may not be \0 terminated.
+ *			If < 0 inlen will be calculated using strlen.
+ * @param[in] quote	the quotation character.
+ * @return new		buffer holding the escaped string.
  */
 char *fr_asprint(TALLOC_CTX *ctx, char const *in, ssize_t inlen, char quote)
 {
@@ -518,9 +518,13 @@ char *fr_vasprintf(TALLOC_CTX *ctx, char const *fmt, va_list ap)
 	done_flags:
 
 		/*
-		 *	Check for width field
+		 *	Check for width field.  First for strings, and
+		 *	then for other parameters.
 		 */
-		if (*p == '*') {
+		if ((*p == '.') && (*(p + 1) == '*') && (*(p + 2) == 's')) {
+			(void) va_arg(ap_q, int);
+			p += 2;
+		} else if (*p == '*') {
 			(void) va_arg(ap_q, int);
 			p++;
 		} else {
@@ -695,13 +699,14 @@ char *fr_vasprintf(TALLOC_CTX *ctx, char const *fmt, va_list ap)
 					out = out_tmp;
 
 					va_end(ap_p);		/* one time use only */
-					va_copy(ap_p, ap_q);	/* already advanced to the next argument */
 				} else {
 					out_tmp = talloc_strdup_append_buffer(out, subst);
 					TALLOC_FREE(subst);
 					if (!out_tmp) goto oom;
 					out = out_tmp;
 				}
+
+				va_copy(ap_p, ap_q);	/* already advanced to the next argument */
 
 				fmt_p = p + 1;
 			}
@@ -781,17 +786,6 @@ char *fr_vasprintf(TALLOC_CTX *ctx, char const *fmt, va_list ap)
 			}
 				goto do_splice;
 
-			case 'T':
-			{
-				struct timeval *in = va_arg(ap_q, struct timeval *);
-
-				subst = talloc_typed_asprintf(NULL, "%" PRIu64 ".%06" PRIu64,
-							      (uint64_t)in->tv_sec,
-							      (uint64_t)in->tv_usec);
-				if (!subst) goto oom;
-			}
-				goto do_splice;
-
 			default:
 				(void) va_arg(ap_q, void *);				/* void * */
 			}
@@ -841,6 +835,40 @@ char *fr_asprintf(TALLOC_CTX *ctx, char const *fmt, ...)
 	va_start(ap, fmt);
 	ret = fr_vasprintf(ctx, fmt, ap);
 	va_end(ap);
+
+	return ret;
+}
+
+/** Special version of fprintf which implements custom format specifiers
+ *
+ * @copybrief fr_vasprintf
+ *
+ * @param[in] fp	to write the result of fmt string.
+ * @param[in] fmt	string.
+ * @param[in] ...	variadic argument list.
+ * @return
+ *   - On success, the number of bytes written is returned (zero indicates nothing was written).
+ *   - On error, -1 is returned, and errno is set appropriately
+ */
+ssize_t fr_fprintf(FILE *fp, char const *fmt, ...)
+{
+	va_list ap;
+	char *buf;
+	int ret, fd;
+
+	fd = fileno(fp);
+	if (fd < 0) {
+		fr_strerror_printf("Invalid 'fp'");
+		return -1;
+	}
+
+	va_start(ap, fmt);
+	buf = fr_vasprintf(NULL, fmt, ap);
+	va_end(ap);
+
+	ret = write(fd, buf, strlen(buf));
+
+	TALLOC_FREE(buf);
 
 	return ret;
 }

@@ -38,14 +38,17 @@ fr_dict_autoload_t proto_radius_acct_dict[] = {
 };
 
 static fr_dict_attr_t const *attr_packet_type;
+static fr_dict_attr_t const *attr_acct_status_type;
 
 extern fr_dict_attr_autoload_t proto_radius_acct_dict_attr[];
 fr_dict_attr_autoload_t proto_radius_acct_dict_attr[] = {
 	{ .out = &attr_packet_type, .name = "Packet-Type", .type = FR_TYPE_UINT32, .dict = &dict_radius },
+	{ .out = &attr_acct_status_type, .name = "Acct-Status-Type", .type = FR_TYPE_UINT32, .dict = &dict_radius },
 	{ NULL }
 };
 
-static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, fr_io_action_t action)
+
+static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request)
 {
 	VALUE_PAIR 	*vp;
 	rlm_rcode_t	rcode;
@@ -53,15 +56,6 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 	fr_dict_enum_t	const *dv;
 
 	REQUEST_VERIFY(request);
-
-	/*
-	 *	Pass this through asynchronously to the module which
-	 *	is waiting for something to happen.
-	 */
-	if (action != FR_IO_ACTION_RUN) {
-		unlang_signal(request, (fr_state_signal_t) action);
-		return FR_IO_DONE;
-	}
 
 	switch (request->request_state) {
 	case REQUEST_INIT:
@@ -79,13 +73,13 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 		}
 
 		RDEBUG("Running 'recv Accounting-Request' from file %s", cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_RECV;
 		/* FALL-THROUGH */
 
 	case REQUEST_RECV:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
 
@@ -118,6 +112,60 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 		}
 
 		/*
+		 *	Run accounting foo { ... }
+		 */
+		vp = fr_pair_find_by_da(request->packet->vps, attr_acct_status_type, TAG_ANY);
+		if (!vp) goto setup_send;
+
+		dv = fr_dict_enum_by_value(vp->da, &vp->data);
+		if (!dv) goto setup_send;
+
+		unlang = cf_section_find(request->server_cs, "accounting", dv->alias);
+		if (!unlang) {
+			REDEBUG2("No 'accounting %s' section found: Ignoring it.", dv->alias);
+			goto setup_send;
+		}
+
+		RDEBUG("Running 'accounting %s' from file %s", cf_section_name2(unlang), cf_filename(unlang));
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOTFOUND, UNLANG_TOP_FRAME);
+
+		request->request_state = REQUEST_PROCESS;
+		/* FALL-THROUGH */
+
+	case REQUEST_PROCESS:
+		rcode = unlang_interpret_resume(request);
+
+		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
+
+		if (rcode == RLM_MODULE_YIELD) return FR_IO_YIELD;
+
+		rad_assert(request->log.unlang_indent == 0);
+
+		switch (rcode) {
+		/*
+		 *	The module has a number of OK return codes.
+		 */
+		case RLM_MODULE_NOOP:
+		case RLM_MODULE_OK:
+		case RLM_MODULE_UPDATED:
+		case RLM_MODULE_HANDLED:
+			break;
+
+		/*
+		 *	The module failed, or said the request is
+		 *	invalid, therefore we stop here.
+		 */
+		case RLM_MODULE_FAIL:
+		case RLM_MODULE_INVALID:
+		case RLM_MODULE_NOTFOUND:
+		case RLM_MODULE_REJECT:
+		case RLM_MODULE_USERLOCK:
+		default:
+			return FR_IO_FAIL;
+		}
+
+	setup_send:
+		/*
 		 *	Allow for over-ride of reply code.
 		 */
 		vp = fr_pair_find_by_da(request->reply->vps, attr_packet_type, TAG_ANY);
@@ -130,13 +178,13 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 		if (!unlang) goto send_reply;
 
 		RDEBUG("Running 'send %s' from file %s", cf_section_name2(unlang), cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_SEND;
 		/* FALL-THROUGH */
 
 	case REQUEST_SEND:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
 
@@ -158,8 +206,7 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 		}
 
 	send_reply:
-		gettimeofday(&request->reply->timestamp, NULL);
-
+		request->reply->timestamp = fr_time();
 		/*
 		 *	Check for "do not respond".
 		 */
@@ -182,9 +229,41 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request, 
 }
 
 
+static virtual_server_compile_t compile_list[] = {
+	{
+		.name = "recv",
+		.name2 = "Accounting-Request",
+		.component = MOD_PREACCT,
+	},
+	{
+		.name = "send",
+		.name2 = "Accounting-Response",
+		.component = MOD_ACCOUNTING,
+	},
+	{
+		.name = "send",
+		.name2 = "Do-Not-Respond",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "send",
+		.name2 = "Protocol-Error",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "accounting",
+		.name2 = CF_IDENT_ANY,
+		.component = MOD_ACCOUNTING,
+	},
+
+	COMPILE_TERMINATOR
+};
+
+
 extern fr_app_worker_t proto_radius_acct;
 fr_app_worker_t proto_radius_acct = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "radius_acct",
 	.entry_point	= mod_process,
+	.compile_list	= compile_list,
 };

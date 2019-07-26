@@ -19,9 +19,9 @@
  * @file redis.c
  * @brief Common functions for interacting with Redis via hiredis
  *
- * @copyright 2015 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
- * @copyright 2000,2006,2015  The FreeRADIUS server project
- * @copyright 2011 TekSavvy Solutions <gabe@teksavvy.com>
+ * @copyright 2015 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
+ * @copyright 2000,2006,2015 The FreeRADIUS server project
+ * @copyright 2011 TekSavvy Solutions (gabe@teksavvy.com)
  */
 #include "base.h"
 #include <freeradius-devel/server/rad_assert.h>
@@ -232,14 +232,14 @@ int fr_redis_reply_to_value_box(TALLOC_CTX *ctx, fr_value_box_t *out, redisReply
 		break;
 
 	case REDIS_REPLY_STRING:
+	case REDIS_REPLY_STATUS:
+	case REDIS_REPLY_ERROR:
 		in.type = FR_TYPE_STRING;
 		in.datum.ptr = reply->str;
 		in.datum.length = reply->len;
 		break;
 
 	case REDIS_REPLY_ARRAY:
-	case REDIS_REPLY_STATUS:
-	case REDIS_REPLY_ERROR:
 		rad_assert(0);
 	}
 
@@ -289,9 +289,9 @@ int fr_redis_reply_to_map(TALLOC_CTX *ctx, vp_map_t **out, REQUEST *request,
 	RDEBUG3("Got value : %pV", fr_box_strvalue_len(value->str, value->len));
 
 	map = talloc_zero(ctx, vp_map_t);
-	slen = tmpl_afrom_attr_str(map, &map->lhs, key->str, &(vp_tmpl_rules_t){ .dict_def = request->dict });
+	slen = tmpl_afrom_attr_str(map, NULL, &map->lhs, key->str, &(vp_tmpl_rules_t){ .dict_def = request->dict });
 	if (slen < 0) {
-		REMARKER(key->str, -slen, fr_strerror());
+		REMARKER(key->str, -slen, "%s", fr_strerror());
 		goto error;
 	}
 
@@ -359,8 +359,8 @@ int fr_redis_tuple_from_map(TALLOC_CTX *pool, char const *out[], size_t out_len[
 	char		*key;
 	size_t		key_len;
 
-	rad_assert(map->lhs->type == TMPL_TYPE_ATTR);
-	rad_assert(map->rhs->type == TMPL_TYPE_DATA);
+	rad_assert(tmpl_is_attr(map->lhs));
+	rad_assert(tmpl_is_data(map->rhs));
 
 	key_len = tmpl_snprint(key_buf, sizeof(key_buf), map->lhs);
 	if (is_truncated(key_len, sizeof(key_buf))) {
@@ -411,13 +411,14 @@ int fr_redis_tuple_from_map(TALLOC_CTX *pool, char const *out[], size_t out_len[
  * If the number of responses != pipelined, that's also an error, a very serious one,
  * in libhiredis or Redis.  We can't really do much here apart from error out.
  *
- * @param[out] pipelined Number of pipelined commands we sent to the server.
- * @param[out] rcode Status of the first errored response, or REDIS_RCODE_SUCCESS
- *	if all responses were processed.
- * @param[out] out Where to write the replies from pipelined commands.
- *	Will contain exactly 1 element on error, else the number passed in pipelined.
- * @param[in] out_len number of elements in out.
- * @param[in] conn the pipelined commands were issued on.
+ * @param[out] pipelined	Number of pipelined commands we sent to the server.
+ * @param[out] rcode		Status of the first errored response, or REDIS_RCODE_SUCCESS
+ *				if all responses were processed.
+ * @param[out] out		Where to write the replies from pipelined commands.
+ *				Will contain exactly 1 element on error WHICH MUST BE FREED,
+ *				else the number passed in pipelined.
+ * @param[in] out_len		number of elements in out.
+ * @param[in] conn		the pipelined commands were issued on.
  * @return
  *	- #REDIS_RCODE_SUCCESS on success.
  *	- #REDIS_RCODE_ERROR on command/response mismatch or command error.
@@ -439,7 +440,7 @@ fr_redis_rcode_t fr_redis_pipeline_result(unsigned int *pipelined, fr_redis_rcod
 	if ((size_t) *pipelined > out_len) {
 		for (i = 0; i < (size_t)*pipelined; i++) {
 			if (redisGetReply(conn->handle, (void **)&reply) != REDIS_OK) break;
-			fr_redis_reply_free(reply);
+			fr_redis_reply_free(&reply);
 		}
 
 		*pipelined = 0;			/* all outstanding responses should be cleared */
@@ -478,7 +479,7 @@ fr_redis_rcode_t fr_redis_pipeline_result(unsigned int *pipelined, fr_redis_rcod
 			 *	Free everything that came before the bad reply
 			 */
 			for (j = 0; j < i; j++) {
-				fr_redis_reply_free(out[j]);
+				fr_redis_reply_free(&out[j]);
 				out[j] = NULL;
 			}
 
@@ -489,7 +490,7 @@ fr_redis_rcode_t fr_redis_pipeline_result(unsigned int *pipelined, fr_redis_rcod
 				redisReply *to_clear;
 
 				if (redisGetReply(conn->handle, (void **)&to_clear) != REDIS_OK) break;
-				fr_redis_reply_free(to_clear);
+				fr_redis_reply_free(&to_clear);
 			}
 
 			out[0] = reply;
@@ -543,7 +544,7 @@ fr_redis_rcode_t fr_redis_get_version(char *out, size_t out_len, fr_redis_conn_t
 		fr_strerror_printf("Bad value type, expected string or integer, got %s",
 				   fr_int2str(redis_reply_types, reply->type, "<UNKNOWN>"));
 	error:
-		fr_redis_reply_free(reply);
+		fr_redis_reply_free(&reply);
 		return REDIS_RCODE_ERROR;
 	}
 
@@ -565,6 +566,8 @@ fr_redis_rcode_t fr_redis_get_version(char *out, size_t out_len, fr_redis_conn_t
 		goto error;
 	}
 	strlcpy(out, p, (q - p) + 1);
+
+	fr_redis_reply_free(&reply);
 
 	return REDIS_RCODE_SUCCESS;
 }

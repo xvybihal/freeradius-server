@@ -21,9 +21,9 @@
  *
  * @author Gabriel Blanchard
  *
- * @copyright 2015 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
- * @copyright 2011  TekSavvy Solutions <gabe@teksavvy.com>
- * @copyright 2000,2006  The FreeRADIUS server project
+ * @copyright 2015 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
+ * @copyright 2011 TekSavvy Solutions (gabe@teksavvy.com)
+ * @copyright 2000,2006 The FreeRADIUS server project
  */
 
 RCSID("$Id$")
@@ -145,7 +145,7 @@ static int rediswho_command(rlm_rediswho_t const *inst, REQUEST *request, char c
 	if (s_ret != REDIS_RCODE_SUCCESS) {
 		RERROR("Failed inserting accounting data");
 	error:
-		fr_redis_reply_free(reply);
+		fr_redis_reply_free(&reply);
 		return -1;
 	}
 	if (!fr_cond_assert(reply)) goto error;
@@ -172,7 +172,7 @@ static int rediswho_command(rlm_rediswho_t const *inst, REQUEST *request, char c
 			fr_int2str(redis_reply_types, reply->type, "<UNKNOWN>"));
 		break;
 	}
-	fr_redis_reply_free(reply);
+	fr_redis_reply_free(&reply);
 
 	return ret;
 }
@@ -207,19 +207,19 @@ static rlm_rcode_t CC_HINT(nonnull) mod_accounting(void *instance, UNUSED void *
 
 	vp = fr_pair_find_by_da(request->packet->vps, attr_acct_status_type, TAG_ANY);
 	if (!vp) {
-		RDEBUG("Could not find account status type in packet");
+		RDEBUG2("Could not find account status type in packet");
 		return RLM_MODULE_NOOP;
 	}
 
 	dv = fr_dict_enum_by_value(vp->da, &vp->data);
 	if (!dv) {
-		RDEBUG("Unknown Acct-Status-Type %u", vp->vp_uint32);
+		RDEBUG2("Unknown Acct-Status-Type %u", vp->vp_uint32);
 		return RLM_MODULE_NOOP;
 	}
 
 	cs = cf_section_find(inst->cs, dv->alias, NULL);
 	if (!cs) {
-		RDEBUG("No subsection %s", dv->alias);
+		RDEBUG2("No subsection %s", dv->alias);
 		return RLM_MODULE_NOOP;
 	}
 
@@ -260,8 +260,8 @@ static int mod_load(void)
 	return 0;
 }
 
-extern rad_module_t rlm_rediswho;
-rad_module_t rlm_rediswho = {
+extern module_t rlm_rediswho;
+module_t rlm_rediswho = {
 	.magic		= RLM_MODULE_INIT,
 	.name		= "rediswho",
 	.type		= RLM_TYPE_THREAD_SAFE,

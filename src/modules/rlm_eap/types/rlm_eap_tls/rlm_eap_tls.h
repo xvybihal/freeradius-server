@@ -18,15 +18,22 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2001  hereUare Communications, Inc. <raghud@hereuare.com>
- * @copyright 2003  Alan DeKok <aland@freeradius.org>
- * @copyright 2006  The FreeRADIUS server project
+ * @copyright 2001 hereUare Communications, Inc. (raghud@hereuare.com)
+ * @copyright 2003 Alan DeKok (aland@freeradius.org)
+ * @copyright 2006 The FreeRADIUS server project
  */
 RCSIDH(rlm_eap_tls_h, "$Id$")
 
 #include <freeradius-devel/eap/tls.h>
 #include <freeradius-devel/server/base.h>
 #include <freeradius-devel/server/module.h>
+
+/** Cache sections to call on various protocol events
+ *
+ */
+typedef struct {
+	CONF_SECTION			*recv_access_request;
+} eap_tls_actions_t;
 
 typedef struct {
 	/*

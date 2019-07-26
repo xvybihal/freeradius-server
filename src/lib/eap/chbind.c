@@ -19,8 +19,8 @@
  * @file lib/eap/chbind.c
  * @brief Channel binding
  *
- * @copyright 2014  Network RADIUS SARL
- * @copyright 2014  The FreeRADIUS server project
+ * @copyright 2014 Network RADIUS SARL
+ * @copyright 2014 The FreeRADIUS server project
  */
 
 RCSID("$Id$")
@@ -78,7 +78,7 @@ static bool chbind_build_response(REQUEST *request, CHBIND_REQ *chbind)
 	ptr[2] = total & 0xff;
 	ptr[3] = CHBIND_NSID_RADIUS;
 
-	RDEBUG("Sending chbind response: code %i", (int )(ptr[0]));
+	RDEBUG2("Sending chbind response: code %i", (int )(ptr[0]));
 	log_request_pair_list(L_DBG_LVL_1, request, request->reply->vps, NULL);
 
 	/* Encode the chbind attributes into the response */
@@ -171,7 +171,7 @@ FR_CODE chbind_process(REQUEST *request, CHBIND_REQ *chbind)
 		   (chbind->response == NULL));
 
 	/* Set-up the fake request */
-	fake = request_alloc_fake(request);
+	fake = request_alloc_fake(request, NULL);
 	MEM(fr_pair_add_by_da(fake->packet, &vp, &fake->packet->vps, attr_freeradius_proxied_to) >= 0);
 	fr_pair_value_from_str(vp, "127.0.0.1", sizeof("127.0.0.1"), '\0', false);
 
@@ -300,7 +300,7 @@ VALUE_PAIR *eap_chbind_packet2vp(RADIUS_PACKET *packet, chbind_packet_t *chbind)
 
 	vp = fr_pair_afrom_da(packet, attr_eap_channel_binding_message);
 	if (!vp) return NULL;
-	fr_pair_value_memcpy(vp, (uint8_t *) chbind, talloc_array_length((uint8_t *)chbind));
+	fr_pair_value_memcpy(vp, (uint8_t *) chbind, talloc_array_length((uint8_t *)chbind), false);
 
 	return vp;
 }

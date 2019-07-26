@@ -11,12 +11,12 @@ $(BUILD_DIR)/tests/trie:
 	${Q}mkdir -p $@
 
 $(BUILD_DIR)/tests/trie/trie-%: $(DIR)/% $(TESTBINDIR)/trie | $(BUILD_DIR)/tests/trie
-	@echo TRIE-TEST $(dir $@)
-	@$(TESTBINDIR)/trie $^ > $@
+	@echo TRIE-TEST $(notdir $@)
+	@$(TESTBIN)/trie $^ > $@
 
 $(BUILD_DIR)/tests/trie/nopc-%: $(DIR)/% $(TESTBINDIR)/nopc | $(BUILD_DIR)/tests/trie
-	@echo TRIE-NO-PC-TEST $(dir $@)
-	@$(TESTBINDIR)/nopc $^ > $@
+	@echo TRIE-NO-PC-TEST $(notdir $@)
+	@$(TESTBIN)/nopc $^ > $@
 
 #
 #  Get all of the unit test output files
@@ -34,3 +34,5 @@ $(TESTS.TRIE_FILES): $(TESTS.UNIT_FILES)
 .PHONY: clean.tests.trie
 clean.tests.trie:
 	${Q}rm -rf $(BUILD_DIR)/tests/trie/
+
+clean.test: clean.tests.trie

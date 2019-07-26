@@ -20,7 +20,7 @@
  *
  * @file src/lib/util/udpfromto.c
  *
- * @copyright 2007 Alan DeKok <aland@deployingradius.com>
+ * @copyright 2007 Alan DeKok (aland@deployingradius.com)
  * @copyright 2002 Miquel van Smoorenburg
  */
 RCSID("$Id$")
@@ -186,7 +186,7 @@ int udpfromto_init(int s)
  *			Will only be populated if to is not NULL.
  * @param[out] when	the packet was received (may be NULL).  If SO_TIMESTAMP is
  *			not available or SO_TIMESTAMP Was not set on the socket,
- *			gettimeofday will be used instead.
+ *			then another method will be used instead to get the time.
  * @return
  *	- 0 on success.
  *	- -1 on failure.
@@ -194,7 +194,7 @@ int udpfromto_init(int s)
 int recvfromto(int fd, void *buf, size_t len, int flags,
 	       struct sockaddr *from, socklen_t *from_len,
 	       struct sockaddr *to, socklen_t *to_len,
-	       int *if_index, struct timeval *when)
+	       int *if_index, fr_time_t *when)
 {
 	struct msghdr		msgh;
 	struct cmsghdr		*cmsg;
@@ -216,7 +216,7 @@ int recvfromto(int fd, void *buf, size_t len, int flags,
 	 *	Catch the case where the caller passes invalid arguments.
 	 */
 	if (!to || !to_len) {
-		if (when) gettimeofday(when, NULL);
+		if (when) *when = fr_time();
 		return recvfrom(fd, buf, len, flags, from, from_len);
 	}
 
@@ -301,10 +301,7 @@ int recvfromto(int fd, void *buf, size_t len, int flags,
 	if (from_len) *from_len = msgh.msg_namelen;
 
 	if (if_index) *if_index = 0;
-	if (when) {
-		when->tv_sec = 0;
-		when->tv_usec = 0;
-	}
+	if (when) *when = 0;
 
 	/* Process auxiliary received data in msgh */
 	for (cmsg = CMSG_FIRSTHDR(&msgh);
@@ -354,12 +351,12 @@ int recvfromto(int fd, void *buf, size_t len, int flags,
 
 #ifdef SO_TIMESTAMP
 		if (when && (cmsg->cmsg_level == SOL_IP) && (cmsg->cmsg_type == SO_TIMESTAMP)) {
-			memcpy(when, CMSG_DATA(cmsg), sizeof(*when));
+			*when = fr_time_from_timeval((struct timeval *)CMSG_DATA(cmsg));
 		}
 #endif
 	}
 
-	if (when && !when->tv_sec) gettimeofday(when, NULL);
+	if (when && !*when) *when = fr_time();
 
 	return ret;
 }
@@ -547,7 +544,7 @@ int main(int argc, char **argv)
 	uint16_t port = DEF_PORT;
 	int n, server_socket, client_socket, fl, tl, pid;
 	int if_index;
-	struct timeval when;
+	fr_time_t when;
 
 	if (argc > 1) destip = argv[1];
 	if (argc > 2) port = atoi(argv[2]);
@@ -637,7 +634,7 @@ client:
 
 	if ((n = recvfromto(client_socket, buf, sizeof(buf), 0,
 	    		    (struct sockaddr *)&from, &fl,
-	    		    (struct sockaddr *)&to, &tl, &if_index)) < 0) {
+	    		    (struct sockaddr *)&to, &tl, &if_index, NULL)) < 0) {
 		perror("client: recvfromto");
 		fr_exit_now(1);
 	}

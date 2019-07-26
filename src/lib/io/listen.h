@@ -30,6 +30,8 @@ struct fr_listen {
 	void const    		*app_io_instance;	//!< I/O path configuration context.
 	void			*thread_instance;	//!< thread / socket context
 
+	fr_socket_addr_t	*app_io_addr;		//!< for tracking duplicate sockets
+
 	fr_app_t const		*app;
 	void const		*app_instance;
 
@@ -58,7 +60,7 @@ struct fr_async_t {
 	fr_listen_t		*listen;	//!< How we received this request,
 						//!< and how we'll send the reply.
 	uint32_t		priority;
-	bool			detached;	//!< if detached, we don't send real replies
+	bool			fake;		//!< is it a fake request
 };
 
 int fr_io_listen_free(fr_listen_t *li);

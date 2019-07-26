@@ -24,7 +24,7 @@
  * @copyright 2017 The FreeRADIUS project
  */
 #include <freeradius-devel/server/cf_util.h>
-#include <freeradius-devel/server/dl.h>
+#include <freeradius-devel/server/dl_module.h>
 #include <freeradius-devel/io/base.h>
 
 /*
@@ -100,7 +100,7 @@ typedef void (*fr_app_event_list_set_t)(fr_listen_t *li, fr_event_list_t *el, vo
  * How the fr_app_t operates is specific to each protocol.
  */
 typedef struct {
-	RAD_MODULE_COMMON;				//!< Common fields to all loadable modules.
+	DL_MODULE_COMMON;				//!< Common fields to all loadable modules.
 
 	fr_app_bootstrap_t		bootstrap;	//!< Bootstrap function to allow the fr_app_t to load the
 							///< various submodules it requires.
@@ -136,11 +136,12 @@ typedef struct {
  * the packet after its been decoded.
  */
 typedef struct {
-	RAD_MODULE_COMMON;				//!< Common fields to all loadable modules.
+	DL_MODULE_COMMON;				//!< Common fields to all loadable modules.
 
 	fr_app_bootstrap_t		bootstrap;
 	fr_app_instantiate_t		instantiate;
 	fr_io_process_t			entry_point;	//!< Entry point into the protocol subtype's state machine.
+	virtual_server_compile_t const	*compile_list;	//!< list of processing sections
 } fr_app_worker_t;
 
 #include <freeradius-devel/io/app_io.h>

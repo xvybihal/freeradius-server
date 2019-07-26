@@ -93,7 +93,9 @@ Requires: freeradius-config = %{version}-%{release}
 %if %{?_with_freeradius_openssl:1}%{!?_with_freeradius_openssl:0}
 Requires: freeradius-openssl
 %else
-Requires: openssl
+# Need openssl-perl for c_rehash, which is used when
+# generating certificates
+Requires: openssl, openssl-perl
 %endif
 
 Requires: libpcap
@@ -469,6 +471,7 @@ make %{?_smp_mflags}
 rm -rf $RPM_BUILD_ROOT
 mkdir -p $RPM_BUILD_ROOT/var/run/radiusd
 mkdir -p $RPM_BUILD_ROOT/var/lib/radiusd
+mkdir -p $RPM_BUILD_ROOT/%{docdir}
 make install R=$RPM_BUILD_ROOT
 # modify default configuration
 RADDB=$RPM_BUILD_ROOT%{_sysconfdir}/raddb
@@ -525,7 +528,6 @@ for f in COPYRIGHT CREDITS INSTALL.md README.md; do
     cp $f $RPM_BUILD_ROOT/%{docdir}
 done
 cp LICENSE $RPM_BUILD_ROOT/%{docdir}/LICENSE.gpl
-cp src/lib/util/LICENSE $RPM_BUILD_ROOT/%{docdir}/LICENSE.lgpl
 cp src/LICENSE.openssl $RPM_BUILD_ROOT/%{docdir}/LICENSE.openssl
 
 # add Red Hat specific documentation
@@ -688,8 +690,12 @@ fi
 %dir %attr(750,root,radiusd) %{_sysconfdir}/raddb/mods-config
 %dir %attr(750,root,radiusd) %{_sysconfdir}/raddb/mods-config/attr_filter
 %attr(640,root,radiusd) %config(noreplace) %{_sysconfdir}/raddb/mods-config/attr_filter/*
+%dir %attr(750,root,radiusd) %{_sysconfdir}/raddb/mods-config/csv
+%attr(640,root,radiusd) %config(noreplace) %{_sysconfdir}/raddb/mods-config/csv/*
 %dir %attr(750,root,radiusd) %{_sysconfdir}/raddb/mods-config/files
 %attr(640,root,radiusd) %config(noreplace) %{_sysconfdir}/raddb/mods-config/files/*
+%dir %attr(750,root,radiusd) %{_sysconfdir}/raddb/mods-config/isc_dhcp
+%attr(640,root,radiusd) %config(noreplace) %{_sysconfdir}/raddb/mods-config/isc_dhcp/*
 %dir %attr(750,root,radiusd) %{_sysconfdir}/raddb/mods-config/lua
 %attr(640,root,radiusd) %config(noreplace) %{_sysconfdir}/raddb/mods-config/lua/*
 %dir %attr(750,root,radiusd) %{_sysconfdir}/raddb/mods-config/perl

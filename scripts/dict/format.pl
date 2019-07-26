@@ -38,6 +38,23 @@ $begin_vendor = 0;
 $blank = 0;
 $previous = "";
 
+
+sub tabs {
+	my $width = shift;
+	my $name = shift;
+	my $len, $lenx;
+
+	$len = length $name;
+
+	return " " if ($len >= $width);
+
+	$lenx = $width - $len;
+	$lenx += 7;		# round up
+	$lenx /= 8;
+	$lenx = int $lenx;
+	return "\t" x $lenx;
+}
+
 while (@ARGV) {
     $filename = shift;
 
@@ -45,7 +62,30 @@ while (@ARGV) {
 
     @output = ();
 
+    my $year = 1900 + (localtime)[5];
+
+    #
+    #  Print a common header
+    #
+    push @output, "# -*- text -*-\n";
+    push @output, "# Copyright (C) ", $year, " The FreeRADIUS Server project and contributors\n";
+    push @output, "# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0\n";
+
+    #
+    #  Separate the '$' from the "Id", so that git doesn't get excited over it.
+    #
+    push @output, "# Version \$", "Id: ", "\$\n";
+
+
     while (<FILE>) {
+	#
+	#  Suppress any existing header
+	#
+	next if (/^# -\*- text/);
+	next if (/^# Copyright/);
+	next if (/^# This work is licensed/);
+	next if (/^# Version \$/);
+
 	#
 	#  Clear out trailing whitespace
 	#
@@ -83,20 +123,26 @@ while (@ARGV) {
 	}
 
 	#
+	#  Remember the protocol
+	#
+	if (/^PROTOCOL\s+([-\w]+)\s+(\w+)\s+(.*)/) {
+	    $name=$1;
+	    $format = $3;
+	    $tabs = tabs(16, $name);
+
+	    $format = "\t$format" if ($format);
+
+	    push @output, "PROTOCOL\t$name$tabs$2$format\n";
+	    next;
+	}
+
+	#
 	#  Remember the vendor
 	#
 	if (/^VENDOR\s+([-\w]+)\s+(\w+)(.*)/) {
 	    $name=$1;
-	    $len = length $name;
-	    if ($len < 32) {
-		$lenx = 32 - $len;
-		$lenx += 7;		# round up
-		$lenx /= 8;
-		$lenx = int $lenx;
-		$tabs = "\t" x $lenx;
-	    } else {
-		$tabs = " ";
-	    }
+	    $tabs = tabs(32, $name);
+
 	    push @output, "VENDOR\t\t$name$tabs$2$3\n";
 	    $vendor = $name;
 	    next;
@@ -137,19 +183,7 @@ while (@ARGV) {
 	#
 	if (/^ATTRIBUTE\s+([-\w]+)\s+([\w.]+)\s+(\w+)(.*)/) {
 	    $name=$1;
-	    $len = length $name;
-	    if ($len < 40) {
-		$lenx = 40 - $len;
-		$lenx += 7;		# round up
-		$lenx /= 8;
-		$lenx = int $lenx;
-		$tabs = "\t" x $lenx;
-		if ($tabs eq "") {
-		    $tabs = " ";
-		}
-	    } else {
-		$tabs = " ";
-	    }
+	    $tabs = tabs(40, $name);
 
 	    $value = $2;
 	    $type = $3;
@@ -189,11 +223,27 @@ while (@ARGV) {
 	}
 
 	#
+	#  Get MEMBER
+	#
+	if (/^MEMBER\s+([-\w]+)\s+(\w+)(.*)/) {
+	    $name=$1;
+	    $tabs = tabs(40, $name);
+
+	    $type = $2;
+	    $stuff = $3;
+
+	    push @output, "MEMBER\t\t$name$tabs$type$stuff\n";
+	    next;
+	}
+
+	#
 	#  Values.
 	#
 	if (/^VALUE\s+([-\w]+)\s+([-\w\/,.]+)\s+(\w+)(.*)/) {
 	    $attr=$1;
 	    $len = length $attr;
+
+
 	    if ($len < 32) {
 		$lenx = 32 - $len;
 		$lenx += 7;		# round up
@@ -245,21 +295,9 @@ while (@ARGV) {
 	#
 	if (/^FLAGS\s+([!-\w]+)\s+(.*)/) {
 	    $name=$1;
-	    $len = length $name;
-	    if ($len < 40) {
-		$lenx = 40 - $len;
-		$lenx += 7;		# round up
-		$lenx /= 8;
-		$lenx = int $lenx;
-		$tabs = "\t" x $lenx;
-		if ($tabs eq "") {
-		    $tabs = " ";
-		}
-	    } else {
-		$tabs = " ";
-	    }
+	    $tabs = tabs(40, $name);
 
-	    push @output, "FLAGS\t$name$stuff\n";
+	    push @output, "FLAGS\t$name$2\n";
 	    next;
 	}
 

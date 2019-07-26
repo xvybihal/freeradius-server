@@ -18,7 +18,7 @@
  *
  * @file src/lib/util/missing.c
  *
- * @copyright 2000,2006  The FreeRADIUS server project
+ * @copyright 2000,2006 The FreeRADIUS server project
  */
 RCSID("$Id$")
 
@@ -211,47 +211,6 @@ int vdprintf (int fd, char const *format, va_list args)
 }
 #endif
 
-#ifndef HAVE_GETTIMEOFDAY
-#ifdef WIN32
-/*
- * Number of micro-seconds between the beginning of the Windows epoch
- * (Jan. 1, 1601) and the Unix epoch (Jan. 1, 1970).
- *
- * This assumes all Win32 compilers have 64-bit support.
- */
-#if defined(_MSC_VER) || defined(_MSC_EXTENSIONS) || defined(__WATCOMC__)
-#define DELTA_EPOCH_IN_USEC  11644473600000000Ui64
-#else
-#define DELTA_EPOCH_IN_USEC  11644473600000000ULL
-#endif
-
-static uint64_t filetime_to_unix_epoch (FILETIME const *ft)
-{
-	uint64_t res = (uint64_t) ft->dwHighDateTime << 32;
-
-	res |= ft->dwLowDateTime;
-	res /= 10;		   /* from 100 nano-sec periods to usec */
-	res -= DELTA_EPOCH_IN_USEC;  /* from Win epoch to Unix epoch */
-	return (res);
-}
-
-int gettimeofday (struct timeval *tv, UNUSED void *tz)
-{
-	FILETIME  ft;
-	uint64_t tim;
-
-	if (!tv) {
-		errno = EINVAL;
-		return (-1);
-	}
-	GetSystemTimeAsFileTime (&ft);
-	tim = filetime_to_unix_epoch (&ft);
-	tv->tv_sec  = (long) (tim / 1000000L);
-	tv->tv_usec = (long) (tim % 1000000L);
-	return (0);
-}
-#endif
-#endif
 
 #if !defined(HAVE_CLOCK_GETTIME) && defined(__MACH__)
 int clock_gettime(int clk_id, struct timespec *t)
@@ -278,10 +237,10 @@ int clock_gettime(int clk_id, struct timespec *t)
 	{
 		uint64_t time;
 		time = mach_absolute_time();
-		double nseconds = ((double)time * (double)timebase.numer)/((double)timebase.denom);
+		double nanoseconds = ((double)time * (double)timebase.numer)/((double)timebase.denom);
 		double seconds = ((double)time * (double)timebase.numer)/((double)timebase.denom * 1e9);
 		t->tv_sec = seconds;
-		t->tv_nsec = nseconds;
+		t->tv_nsec = nanoseconds;
 	}
 		return 0;
 
@@ -291,46 +250,6 @@ int clock_gettime(int clk_id, struct timespec *t)
 	}
 }
 #endif
-
-#define NTP_EPOCH_OFFSET	2208988800ULL
-
-/*
- *	Convert 'struct timeval' into NTP format (32-bit integer
- *	of seconds, 32-bit integer of fractional seconds)
- */
-void
-timeval2ntp(struct timeval const *tv, uint8_t *ntp)
-{
-	uint32_t sec, usec;
-
-	sec = tv->tv_sec + NTP_EPOCH_OFFSET;
-	usec = tv->tv_usec * 4295; /* close enough to 2^32 / USEC */
-	usec -= ((tv->tv_usec * 2143) >> 16); /*  */
-
-	sec = htonl(sec);
-	usec = htonl(usec);
-
-	memcpy(ntp, &sec, sizeof(sec));
-	memcpy(ntp + sizeof(sec), &usec, sizeof(usec));
-}
-
-/*
- *	Inverse of timeval2ntp
- */
-void
-ntp2timeval(struct timeval *tv, char const *ntp)
-{
-	uint32_t sec, usec;
-
-	memcpy(&sec, ntp, sizeof(sec));
-	memcpy(&usec, ntp + sizeof(sec), sizeof(usec));
-
-	sec = ntohl(sec);
-	usec = ntohl(usec);
-
-	tv->tv_sec = sec - NTP_EPOCH_OFFSET;
-	tv->tv_usec = usec / 4295; /* close enough */
-}
 
 #if !defined(HAVE_128BIT_INTEGERS) && !defined(WORDS_BIGENDIAN)
 /** Swap byte order of 128 bit integer

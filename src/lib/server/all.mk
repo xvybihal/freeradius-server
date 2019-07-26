@@ -12,18 +12,18 @@ SOURCES	:= \
 	connection.c \
 	crypt.c \
 	dependency.c \
-	dl.c \
+	dl_module.c \
 	exec.c \
 	exfile.c \
 	log.c \
 	main_config.c \
+	main_loop.c \
 	map_proc.c \
 	map.c \
 	module.c \
 	paircmp.c \
 	pairmove.c \
 	pool.c \
-	process.c \
 	rcode.c \
 	regex.c \
 	request.c \

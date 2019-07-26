@@ -18,7 +18,7 @@
  *
  * @file src/lib/util/log.h
  *
- * @copyright 2016  The FreeRADIUS server project
+ * @copyright 2016 The FreeRADIUS server project
  */
 RCSIDH(util_log_h, "$Id$")
 
@@ -41,8 +41,7 @@ extern FILE	*fr_log_fp;
 /*
  *	Error functions.
  */
-void		fr_printf_log(char const *, ...) CC_HINT(format (printf, 1, 2));
-void		fr_canonicalize_error(TALLOC_CTX *ctx, char **spaces, char **text, ssize_t slen, char const *msg);
+void		fr_canonicalize_error(TALLOC_CTX *ctx, char **spaces, char **text, ssize_t slen, char const *fmt);
 
 extern int	fr_debug_lvl;	/* 0 = no debugging information */
 extern bool	log_dates_utc;
@@ -50,13 +49,9 @@ extern bool	log_dates_utc;
 extern const FR_NAME_NUMBER fr_log_levels[];
 
 typedef enum {
-	L_AUTH = 2,				//!< Authentication message.
 	L_INFO = 3,				//!< Informational message.
 	L_ERR = 4,				//!< Error message.
 	L_WARN = 5,				//!< Warning.
-	L_PROXY	= 6,				//!< Proxy messages
-	L_ACCT = 7,				//!< Accounting messages
-
 	L_DBG = 16,				//!< Only displayed when debugging is enabled.
 	L_DBG_INFO = 17,			//!< Info only displayed when debugging is enabled.
 	L_DBG_WARN = 18,			//!< Warning only displayed when debugging is enabled.
@@ -95,6 +90,8 @@ typedef enum {
 typedef struct {
 	fr_log_dst_t		dst;		//!< Log destination.
 
+	bool			line_number;	//!< Log src file and line number.
+
 	bool			colourise;	//!< Prefix log messages with VT100 escape codes to change text
 						//!< colour.
 
@@ -117,14 +114,22 @@ extern fr_log_t default_log;
 
 int	fr_log_init(fr_log_t *log, bool daemonize);
 
-int	fr_vlog(fr_log_t const *log, fr_log_type_t lvl, char const *fmt, va_list ap)
-	CC_HINT(format (printf, 3, 0)) CC_HINT(nonnull (1,3));
+int	fr_vlog(fr_log_t const *log, fr_log_type_t lvl, char const *file, int line, char const *fmt, va_list ap)
+	CC_HINT(format (printf, 5, 0)) CC_HINT(nonnull (1,3));
 
-int	fr_log(fr_log_t const *log, fr_log_type_t lvl, char const *fmt, ...)
-	CC_HINT(format (printf, 3, 4)) CC_HINT(nonnull (1,3));
+int	fr_log(fr_log_t const *log, fr_log_type_t lvl, char const *file, int line, char const *fmt, ...)
+	CC_HINT(format (printf, 5, 6)) CC_HINT(nonnull (1,3));
 
-int	fr_log_perror(fr_log_t const *log, fr_log_type_t type, char const *msg, ...)
-	CC_HINT(format (printf, 3, 4)) CC_HINT(nonnull (1));
+int	fr_vlog_perror(fr_log_t const *log, fr_log_type_t type, char const *file, int line, char const *fmt, va_list ap)
+	CC_HINT(format (printf, 5, 0)) CC_HINT(nonnull (1));
+
+int	fr_log_perror(fr_log_t const *log, fr_log_type_t type, char const *file, int line, char const *fmt, ...)
+	CC_HINT(format (printf, 5, 6)) CC_HINT(nonnull (1));
+
+void	fr_log_hex(fr_log_t const *log, fr_log_type_t type,
+		   char const *file, int line,
+		   uint8_t const *data, size_t data_len, char const *fmt, ...)
+		   CC_HINT(format (printf, 7, 8)) CC_HINT(nonnull (1,3,5));
 
 bool	fr_rate_limit_enabled(void);
 

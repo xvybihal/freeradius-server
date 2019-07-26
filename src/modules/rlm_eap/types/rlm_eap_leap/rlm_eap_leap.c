@@ -17,7 +17,7 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2003 Alan DeKok <aland@freeradius.org>
+ * @copyright 2003 Alan DeKok (aland@freeradius.org)
  * @copyright 2006 The FreeRADIUS server project
  */
 
@@ -49,15 +49,15 @@ fr_dict_attr_autoload_t rlm_eap_leap_dict_attr[] = {
 	{ NULL }
 };
 
-static rlm_rcode_t CC_HINT(nonnull) mod_process(void *instance, eap_session_t *eap_session);
-
-static rlm_rcode_t mod_process(UNUSED void *instance, eap_session_t *eap_session)
+static rlm_rcode_t mod_process(UNUSED void *instance, UNUSED void *thread, REQUEST *request)
 {
-	int		rcode;
-	REQUEST 	*request = eap_session->request;
+	rlm_rcode_t	rcode;
+
+	eap_session_t	*eap_session = eap_session_get(request);
 	leap_session_t	*session;
 	leap_packet_t	*packet;
 	leap_packet_t	*reply;
+
 	VALUE_PAIR	*password;
 
 	if (!eap_session->opaque) {
@@ -133,7 +133,7 @@ static rlm_rcode_t mod_process(UNUSED void *instance, eap_session_t *eap_session
 		 *	Stage 2 is handled by initiate()
 		 */
 	default:
-		RDEBUG("Internal sanity check failed on stage");
+		REDEBUG("Internal sanity check failed on stage");
 		break;
 	}
 
@@ -159,9 +159,9 @@ static rlm_rcode_t mod_process(UNUSED void *instance, eap_session_t *eap_session
  * len = header + type + leap_methoddata
  * leap_methoddata = value_size + value
  */
-static rlm_rcode_t CC_HINT(nonnull) mod_session_init(UNUSED void *instance, eap_session_t *eap_session)
+static rlm_rcode_t CC_HINT(nonnull) mod_session_init(UNUSED void *instance, UNUSED void *thread, REQUEST *request)
 {
-	REQUEST 	*request = eap_session->request;
+	eap_session_t	*eap_session = eap_session_get(request);
 	leap_session_t	*session;
 	leap_packet_t	*reply;
 
@@ -175,7 +175,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_session_init(UNUSED void *instance, eap_
 		return RLM_MODULE_REJECT;
 	}
 
-	reply = eap_leap_initiate(request, eap_session->this_round, eap_session->request->username);
+	reply = eap_leap_initiate(request, eap_session->this_round, request->username);
 	if (!reply) return RLM_MODULE_FAIL;
 
 	eap_leap_compose(request, eap_session->this_round, reply);
@@ -208,7 +208,7 @@ rlm_eap_submodule_t rlm_eap_leap = {
 	.name		= "eap_leap",
 	.magic		= RLM_MODULE_INIT,
 
-	.provides	= { FR_EAP_LEAP },
+	.provides	= { FR_EAP_METHOD_LEAP },
 	.session_init	= mod_session_init,	/* Initialise a new EAP session */
 	.entry_point	= mod_process		/* Process next round of EAP method */
 };

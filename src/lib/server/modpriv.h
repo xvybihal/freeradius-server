@@ -26,19 +26,13 @@
  */
 RCSIDH(modpriv_h, "$Id$")
 
-#include <freeradius-devel/server/dl.h>
+#include <freeradius-devel/server/dl_module.h>
 #include <freeradius-devel/server/map.h>
 #include <freeradius-devel/server/module.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-module_instance_t	*module_find_with_method(rlm_components_t *method,
-						 CONF_SECTION *modules, char const *asked_name);
-
-module_instance_t	*module_find(CONF_SECTION *modules, char const *asked_name);
-
 int			module_sibling_section_find(CONF_SECTION **out, CONF_SECTION *module, char const *name);
 
 int			unlang_fixup_update(vp_map_t *map, void *ctx);

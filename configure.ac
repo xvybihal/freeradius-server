@@ -29,6 +29,7 @@ AC_CONFIG_HEADER([src/include/autoconf.h])
 m4_include([m4/ax_cc.m4])
 m4_include([m4/ax_with_lib_args.m4])
 m4_include([m4/ax_with_feature_args.m4])
+m4_include([m4/ax_prog_perl_modules.m4])
 
 dnl #############################################################
 dnl #
@@ -83,6 +84,34 @@ dnl #
 AC_CHECK_PROG(GIT, git, yes, no)
 
 dnl #
+dnl # check for JSON.pm, ASCIIDOCTOR and pandoc
+dnl #
+AC_PATH_PROG(ASCIIDOCTOR, asciidoctor)
+if test "x$ac_cv_path_ASCIIDOCTOR" = "x"; then
+  AC_MSG_WARN([asciidoctor not found - Please install if you want build the docs])
+fi
+
+AC_PATH_PROG(PANDOC, pandoc)
+if test "x$ac_cv_path_PANDOC" = "x"; then
+  AC_MSG_WARN([pandoc not found - Please install if you want build the docs])
+else
+  #
+  #  Pandoc v2 onwards renamed --latex-engine to --pdf-engine
+  #
+  if pandoc --help 2>&1 | grep -q "latex-engine"; then
+    PANDOC_ENGINE=latex
+  else
+    PANDOC_ENGINE=pdf
+  fi
+  AC_SUBST(PANDOC_ENGINE)
+fi
+
+# pandoc and asciidoctor is defined? then check it.
+if test "x$ac_cv_path_PANDOC" != "x" && test "x$ac_cv_path_ASCIIDOCTOR" != "x"; then
+  AX_PROG_PERL_MODULES(JSON, , AC_MSG_WARN([Perl JSON module not found - Please install if you want build the docs]))
+fi
+
+dnl #
 dnl #  Enable developer features like debugging symbols.
 dnl #  These checks must be done before expanding the AC_PROG_CC
 dnl #  and AC_PROG_CXX macros.
@@ -118,7 +147,6 @@ if test "x$GIT" = "xyes" && git status 2>&1 > /dev/null; then
     AC_MSG_NOTICE([in git repository, enabling developer build implicitly, disable with --disable-developer])
     developer="yes"
   fi
-
 fi
 
 if test "x$RADIUSD_VERSION_RELEASE" != "x"; then
@@ -300,6 +328,22 @@ AC_ARG_ENABLE(llvm-address-sanitizer,
     ;;
   *)
     llvm_address_sanitizer=yes
+  esac ]
+)
+
+dnl #
+dnl #  Enable the -fsanitize=undefined and link in the address sanitizer
+dnl #  libraries.
+dnl #
+AC_ARG_ENABLE(llvm-undefined-behaviour-sanitizer,
+[AS_HELP_STRING([--enable-llvm-undefined-behaviour-sanitizer],
+                [build with support for LLVM's undefined behaviour sanitizer (if building with clang).])],
+[ case "$enableval" in
+  no)
+    llvm_undefined_behaviour_sanitizer=no
+    ;;
+  *)
+    llvm_undefined_behaviour_sanitizer=yes
   esac ]
 )
 
@@ -800,7 +844,6 @@ AC_CHECK_HEADERS( \
   stdio.h \
   sys/event.h \
   sys/fcntl.h \
-  sys/event.h \
   sys/prctl.h \
   sys/ptrace.h \
   sys/resource.h \
@@ -831,19 +874,6 @@ AC_CHECK_HEADERS(net/if.h, [], [],
   ]
 )
 
-dnl #
-dnl #  other checks which require headers
-dnl #
-if test "x$ac_cv_header_sys_security_h" = "xyes" && test "x$ac_cv_header_prot_h" = "xyes"
-then
-  AC_DEFINE(OSFC2, [], [define if you have OSFC2 authentication])
-fi
-
-if test "x$ac_cv_header_sia_h" = "xyes" && test "x$ac_cv_header_siad_h" = "xyes"
-then
-  AC_DEFINE(OSFSIA, [], [define if you have OSFSIA authentication])
-fi
-
 dnl #############################################################
 dnl #
 dnl #  3a. Checks for user libraries
@@ -857,7 +887,7 @@ smart_try_dir="$talloc_lib_dir"
 FR_SMART_CHECK_LIB(talloc, _talloc)
 if test "x$ac_cv_lib_talloc__talloc" != "xyes"; then
   AC_MSG_WARN([talloc library not found. Use --with-talloc-lib-dir=<path>.])
-  AC_MSG_ERROR([FreeRADIUS requires libtalloc.  Please read doc/developer/dependencies.rst for further instructions.])
+  AC_MSG_ERROR([FreeRADIUS requires libtalloc.  Please read doc/source/dependencies.rst for further instructions.])
 fi
 
 TALLOC_LIBS="${smart_lib}"
@@ -875,7 +905,7 @@ if test "x$ac_cv_func_kqueue" != "xyes"; then
   FR_SMART_CHECK_LIB(kqueue, kqueue)
   if test "x$ac_cv_lib_kqueue_kqueue" != "xyes"; then
     AC_MSG_WARN([kqueue library not found. Use --with-kqueue-lib-dir=<path>.])
-    AC_MSG_ERROR([FreeRADIUS requires libkqueue (or system kqueue).  Please read doc/developer/dependencies.rst for further instructions.])
+    AC_MSG_ERROR([FreeRADIUS requires libkqueue (or system kqueue).  Please read doc/source/dependencies.rst for further instructions.])
   fi
 fi
 
@@ -961,7 +991,7 @@ if test "x$WITH_SYSTEMD" = xyes; then
     AC_MSG_WARN([systemd library not found. Use --with-systemd-lib-dir=<path>.])
   else
     AC_DEFINE(HAVE_SYSTEMD, 1,
-      [Define to 1 if you have the `systemd' library (-lsystemd).]
+      [Define to 1 if you have the 'systemd' library (-lsystemd).]
     )
     HAVE_SYSTEMD=1
     SYSTEMD_LIBS="${smart_lib}"
@@ -980,7 +1010,7 @@ else
     AC_MSG_WARN([systemd watchdog is only available from systemd 209.])
   else
     AC_DEFINE(HAVE_SYSTEMD_WATCHDOG, 1,
-      [Define to 1 if you have watchdog support in the `systemd' library (-lsystemd).]
+      [Define to 1 if you have watchdog support in the 'systemd' library (-lsystemd).]
     )
   fi
   dnl Set by FR_SMART_CHECKLIB
@@ -1146,12 +1176,6 @@ if test "x$WITH_OPENSSL" = xyes; then
       [
         AC_MSG_RESULT([cross-compiling (assuming yes)])
       ]
-    )
-
-    AC_CHECK_FUNCS( \
-      SSL_get_client_random \
-      SSL_get_server_random \
-      EVP_sha3_512 \
     )
 
     CPPFLAGS="$old_CPPFLAGS"
@@ -1598,6 +1622,7 @@ if test "x$developer" = "xyes"; then
   AX_CC_WDOCUMENTATION_FLAG
   if test "x$ax_cv_cc_wdocumentation_flag" = "xyes"; then
     devcflags="-Wdocumentation"
+    AC_DEFINE([HAVE_WDOCUMENTATION],1,[Define if the compiler supports -Wdocumentation])
   fi
 
   dnl #
@@ -1606,7 +1631,7 @@ if test "x$developer" = "xyes"; then
   dnl #
   AX_CC_WEVERYTHING_FLAG
   if test "x$ax_cv_cc_weverything_flag" = "xyes"; then
-    devcflags="$devflags \
+    devcflags="$devcflags \
 	-W \
 	-Weverything \
 	-Wformat=2 \
@@ -1630,7 +1655,7 @@ if test "x$developer" = "xyes"; then
     	-Wno-format-pedantic"
   else
     if test "x$GCC" = "xyes"; then
-      devcflags="$devflags \
+      devcflags="$devcflags \
       	-Wshadow \
       	-Wpointer-arith \
       	-Wcast-qual \
@@ -1686,6 +1711,18 @@ if test "x$developer" = "xyes"; then
   fi
 
   dnl #
+  dnl #  If running with clang, add in UBSAN
+  dnl #
+  if test "x$llvm_undefined_behaviour_sanitizer" = "xyes" && test "x$ax_cv_cc_clang" = "xyes"; then
+    dnl #
+    dnl #  -fsanitize=undefined		- Build with ubsan support
+    dnl #  -fno-omit-frame-pointer	- Always keep the frame pointer in a register
+    dnl #
+    devcflags="$devcflags -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+    devldflags="$devldflags -fno-sanitize-recover=undefined"
+  fi
+
+  dnl #
   dnl # Clean the flags up
   dnl #
   devcflags="$(echo $devcflags | sed -e 's/\\t//g;s/  //g')"
@@ -1693,9 +1730,6 @@ if test "x$developer" = "xyes"; then
 
   AC_MSG_NOTICE([Developer CFLAGS are "$devcflags"])
   AC_MSG_NOTICE([Developer LDFLAGS are "$devldflags"])
-
-  CFLAGS="$CFLAGS $devcflags"
-  LDFLAGS="$LDFLAGS $devldflags"
 
   dnl #
   dnl #  Enable experimental modules (we want to know if code changes breaks one of them)
@@ -1732,7 +1766,6 @@ FR_TLS
 AX_CC_BUILTIN_CHOOSE_EXPR
 AX_CC_BUILTIN_TYPES_COMPATIBLE_P
 AX_CC_HAVE_BUILTIN_BSWAP64
-AX_CC_HAVE_BOUNDED_ATTRIBUTE
 
 AX_CC_HAVE_C11_GENERIC
 if test "x$ax_cv_cc_c11_generic" != "xyes"; then
@@ -2286,10 +2319,13 @@ fi
 
 dnl #############################################################
 dnl #
-dnl #  Add -Werror last, so it doesn't interfere with autoconf's
-dnl #  test programs.
+dnl #  Add $devcflags, $devldflags and -Werror last, so they don't
+dnl #  interfere with autoconf's test programs.
 dnl #
 dnl #############################################################
+CFLAGS="$CFLAGS $devcflags"
+LDFLAGS="$LDFLAGS $devldflags"
+
 if test "x$werror" = "xyes"; then
   CFLAGS="-Werror $CFLAGS"
 fi

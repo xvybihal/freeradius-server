@@ -17,9 +17,9 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2000,2006  The FreeRADIUS server project
- * @copyright 2000  Miquel van Smoorenburg <miquels@cistron.nl>
- * @copyright 2010  Alan DeKok <aland@freeradius.org>
+ * @copyright 2000,2006 The FreeRADIUS server project
+ * @copyright 2000 Miquel van Smoorenburg (miquels@cistron.nl)
+ * @copyright 2010 Alan DeKok (aland@freeradius.org)
  */
 
 RCSID("$Id$")
@@ -33,7 +33,7 @@ RCSID("$Id$")
  *	Logging macros
  */
  #undef DEBUG
-#define DEBUG(fmt, ...)		if (fr_debug_lvl > 0) fr_printf_log(fmt "\n", ## __VA_ARGS__)
+#define DEBUG(fmt, ...)		if (fr_debug_lvl > 0) fprintf(stdout, fmt "\n", ## __VA_ARGS__)
 
 #define ERROR(fmt, ...)		fr_perror("dhcpclient: " fmt, ## __VA_ARGS__)
 
@@ -50,8 +50,7 @@ RCSID("$Id$")
 #include <net/if.h>
 
 static int retries = 3;
-static float timeout = 5.0;
-static struct timeval tv_timeout;
+static fr_time_delta_t	timeout;
 
 static int sockfd;
 #ifdef HAVE_LIBPCAP
@@ -139,7 +138,7 @@ static void NEVER_RETURNS usage(void)
 	DEBUG("  -v                     Show program version information.");
 	DEBUG("  -x                     Debugging mode.");
 
-	exit(EXIT_FAILURE);
+	exit(EXIT_SUCCESS);
 }
 
 
@@ -168,10 +167,11 @@ static RADIUS_PACKET *request_init(char const *filename)
 	}
 
 	request = fr_radius_alloc(NULL, false);
+
 	/*
 	 *	Read the VP's.
 	 */
-	if (fr_pair_list_afrom_file(NULL, dict_dhcpv4, &request->vps, fp, &filedone) < 0) {
+	if (fr_pair_list_afrom_file(request, dict_dhcpv4, &request->vps, fp, &filedone) < 0) {
 		fr_perror("dhcpclient");
 		fr_radius_packet_free(&request);
 		if (fp != stdin) fclose(fp);
@@ -308,7 +308,7 @@ static RADIUS_PACKET *fr_dhcpv4_recv_raw_loop(int lsockfd,
 #endif
 					    RADIUS_PACKET *request_p)
 {
-	struct timeval	tval;
+	fr_time_delta_t	our_timeout;
 	RADIUS_PACKET	*reply_p = NULL;
 	RADIUS_PACKET	*cur_reply_p = NULL;
 	int		nb_reply = 0;
@@ -317,19 +317,21 @@ static RADIUS_PACKET *fr_dhcpv4_recv_raw_loop(int lsockfd,
 	fd_set		read_fd;
 	int		retval;
 
-	memcpy(&tval, &tv_timeout, sizeof(struct timeval));
+	our_timeout = timeout;
 
 	/* Loop waiting for DHCP replies until timer expires */
-	while (fr_timeval_isset(&tval)) {
+	while (our_timeout) {
 		if ((!reply_p) || (cur_reply_p)) { // only debug at start and each time we get a valid DHCP reply on raw socket
 			DEBUG("Waiting for %s DHCP replies for: %d.%06d",
-			      (nb_reply>0)?" additional ":" ", (int)tval.tv_sec, (int)tval.tv_usec);
+			      (nb_reply > 0) ? " additional ":" ",
+			      (int)(our_timeout / NSEC),
+			      (int)(our_timeout % NSEC));
 		}
 
 		cur_reply_p = NULL;
 		FD_ZERO(&read_fd);
 		FD_SET(lsockfd, &read_fd);
-		retval = select(lsockfd + 1, &read_fd, NULL, NULL, &tval);
+		retval = select(lsockfd + 1, &read_fd, NULL, NULL, &fr_time_delta_to_timeval(our_timeout));
 		if (retval < 0) {
 			fr_strerror_printf("Select on DHCP socket failed: %s", fr_syserror(errno));
 			return NULL;
@@ -348,8 +350,7 @@ static RADIUS_PACKET *fr_dhcpv4_recv_raw_loop(int lsockfd,
 #  endif
 #endif
 		} else {
-			// Not all implementations of select clear the timer
-			memset(&tval, 0, sizeof(tval));
+			our_timeout = 0;
 		}
 
 		if (cur_reply_p) {
@@ -439,7 +440,8 @@ static int send_with_socket(RADIUS_PACKET **reply, RADIUS_PACKET *request)
 	 *	Set option 'receive timeout' on socket.
 	 *	Note: in case of a timeout, the error will be "Resource temporarily unavailable".
 	 */
-	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv_timeout, sizeof(struct timeval)) == -1) {
+	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,
+		       &fr_time_delta_to_timeval(timeout), sizeof(struct timeval)) == -1) {
 		ERROR("Failed setting socket timeout: %s", fr_syserror(errno));
 		return -1;
 	}
@@ -617,7 +619,6 @@ int main(int argc, char **argv)
 	int			ret;
 
 	fr_debug_lvl = 1;
-	fr_log_fp = stdout;
 
 	while ((c = getopt(argc, argv, "d:D:f:hr:t:vxi:")) != -1) switch(c) {
 		case 'D':
@@ -643,8 +644,7 @@ int main(int argc, char **argv)
 			break;
 
 		case 't':
-			if (!isdigit((int) *optarg)) usage();
-			timeout = atof(optarg);
+			if (fr_time_delta_from_str(&timeout, optarg, FR_TIME_RES_SEC) < 0) usage();
 			break;
 
 		case 'v':
@@ -663,11 +663,6 @@ int main(int argc, char **argv)
 	argv += (optind - 1);
 
 	if (argc < 2) usage();
-
-	/*	convert timeout to a struct timeval */
-#define USEC 1000000
-	tv_timeout.tv_sec = timeout;
-	tv_timeout.tv_usec = ((timeout - (float) tv_timeout.tv_sec) * USEC);
 
 	if (fr_dict_global_init(autofree, dict_dir) < 0) {
 		fr_perror("dhcpclient");
@@ -693,7 +688,10 @@ int main(int argc, char **argv)
 	/*
 	 *	Initialise the DHCPv4 library
 	 */
-	fr_dhcpv4_global_init();
+	if (fr_dhcpv4_global_init() < 0) {
+		fr_perror("dhcpclient");
+		exit(EXIT_FAILURE);
+	}
 
 	/*
 	 *	Resolve hostname.

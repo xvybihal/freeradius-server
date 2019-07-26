@@ -8,9 +8,9 @@
  *	in stupid ways, where the configure script will use the local ldap.h
  *	file, instead of the one from libldap.
  *
- * @author Arran Cudbard-Bell <a.cudbardb@freeradius.org>
- * @copyright 2015 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
- * @copyright 2013 Network RADIUS SARL<info@networkradius.com>
+ * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
+ * @copyright 2015 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
+ * @copyright 2013 Network RADIUS SARL (info@networkradius.com)
  * @copyright 2013-2015 The FreeRADIUS Server Project.
  */
 #include <freeradius-devel/server/base.h>
@@ -109,6 +109,9 @@ struct ldap_inst_s {
 	fr_dict_attr_t const	*group_da;		//!< The DA associated with this specific instance of the
 							//!< rlm_ldap module.
 
+	bool		allow_dangling_group_refs;	//!< Don't error if we fail to resolve a group DN referenced
+														///< from a user object.
+
 	/*
 	 *	Profiles
 	 */
@@ -191,4 +194,4 @@ fr_ldap_connection_t	*mod_conn_get(rlm_ldap_t const *inst, REQUEST *request);
 
 void		mod_conn_release(rlm_ldap_t const *inst, REQUEST *request, fr_ldap_connection_t *conn);
 
-void		*mod_conn_create(TALLOC_CTX *ctx, void *instance, struct timeval const *timeout);
+void		*mod_conn_create(TALLOC_CTX *ctx, void *instance, fr_time_delta_t timeout);

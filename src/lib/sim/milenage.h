@@ -15,7 +15,7 @@
  * See README for more details.
  *
  * @copyright 2017 The FreeRADIUS server project
- * @copyright 2006-2007 <j@w1.fi>
+ * @copyright 2006-2007 (j@w1.fi)
  */
 #include <stddef.h>
 
@@ -99,7 +99,7 @@ int	milenage_umts_generate(uint8_t autn[MILENAGE_AUTN_SIZE],
 			       uint64_t sqn,
 			       uint8_t const rand[MILENAGE_RAND_SIZE]);
 
-int	milenage_auts(uint64_t sqn,
+int	milenage_auts(uint64_t *sqn,
 		      uint8_t const opc[MILENAGE_OPC_SIZE],
 		      uint8_t const ki[MILENAGE_KI_SIZE],
 		      uint8_t const rand[MILENAGE_RAND_SIZE],

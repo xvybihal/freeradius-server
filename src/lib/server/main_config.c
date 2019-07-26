@@ -20,8 +20,8 @@
  * @brief Handle the the main server's (radiusd) configuration.
  * @file src/lib/server/main_config.c
  *
- * @copyright 2002,2006-2007  The FreeRADIUS server project
- * @copyright 2002  Alan DeKok <aland@freeradius.org>
+ * @copyright 2002,2006-2007 The FreeRADIUS server project
+ * @copyright 2002 Alan DeKok (aland@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -72,6 +72,7 @@ static int hostname_lookups_parse(TALLOC_CTX *ctx, void *out, void *parent, CONF
 
 static int num_networks_parse(TALLOC_CTX *ctx, void *out, void *parent, CONF_ITEM *ci, CONF_PARSER const *rule);
 static int num_workers_parse(TALLOC_CTX *ctx, void *out, void *parent, CONF_ITEM *ci, CONF_PARSER const *rule);
+static int lib_dir_parse(TALLOC_CTX *ctx, void *out, void *parent, CONF_ITEM *ci, CONF_PARSER const *rule);
 
 static int talloc_memory_limit_parse(TALLOC_CTX *ctx, void *out, void *parent, CONF_ITEM *ci, CONF_PARSER const *rule);
 static int talloc_pool_size_parse(TALLOC_CTX *ctx, void *out, void *parent, CONF_ITEM *ci, CONF_PARSER const *rule);
@@ -105,10 +106,21 @@ static const CONF_PARSER initial_log_subsection_config[] = {
 static const CONF_PARSER initial_logging_config[] = {
 	{ FR_CONF_POINTER("log", FR_TYPE_SUBSECTION, NULL), .subcs = (void const *) initial_log_subsection_config },
 
+	CONF_PARSER_TERMINATOR
+};
+
+/*
+ *	Basic configuration for the server.
+ */
+static const CONF_PARSER lib_dir_on_read_config[] = {
 	{ FR_CONF_OFFSET("prefix", FR_TYPE_STRING, main_config_t, prefix), .dflt = "/usr/local" },
 
 	{ FR_CONF_OFFSET("use_utc", FR_TYPE_BOOL, main_config_t, log_dates_utc) },
 	{ FR_CONF_OFFSET_IS_SET("timestamp", FR_TYPE_BOOL, main_config_t, log_timestamp) },
+
+	{ FR_CONF_OFFSET("libdir", FR_TYPE_STRING | FR_TYPE_ON_READ, main_config_t, lib_dir), .dflt = "${prefix}/lib",
+	  .func = lib_dir_parse },
+
 	CONF_PARSER_TERMINATOR
 };
 
@@ -120,6 +132,7 @@ static const CONF_PARSER initial_logging_config[] = {
  **********************************************************************/
 static const CONF_PARSER log_config[] = {
 	{ FR_CONF_OFFSET("colourise", FR_TYPE_BOOL, main_config_t, do_colourise) },
+	{ FR_CONF_OFFSET("line_number", FR_TYPE_BOOL, main_config_t, log_line_number) },
 	{ FR_CONF_OFFSET("timestamp", FR_TYPE_BOOL, main_config_t, log_timestamp) },
 	{ FR_CONF_OFFSET("use_utc", FR_TYPE_BOOL, main_config_t, log_dates_utc) },
 #ifdef WITH_CONF_WRITE
@@ -163,12 +176,11 @@ static const CONF_PARSER server_config[] = {
 	{ FR_CONF_OFFSET("sbin_dir", FR_TYPE_STRING, main_config_t, sbin_dir), .dflt = "${prefix}/sbin"},
 	{ FR_CONF_OFFSET("logdir", FR_TYPE_STRING, main_config_t, log_dir), .dflt = "${local_state_dir}/log"},
 	{ FR_CONF_OFFSET("run_dir", FR_TYPE_STRING, main_config_t, run_dir), .dflt = "${local_state_dir}/run/${name}"},
-	{ FR_CONF_OFFSET("libdir", FR_TYPE_STRING, main_config_t, lib_dir), .dflt = "${prefix}/lib"},
 	{ FR_CONF_OFFSET("radacctdir", FR_TYPE_STRING, main_config_t, radacct_dir), .dflt = "${logdir}/radacct" },
 	{ FR_CONF_OFFSET("panic_action", FR_TYPE_STRING, main_config_t, panic_action) },
 	{ FR_CONF_OFFSET("reverse_lookups", FR_TYPE_BOOL, main_config_t, reverse_lookups), .dflt = "no", .func = reverse_lookups_parse },
 	{ FR_CONF_OFFSET("hostname_lookups", FR_TYPE_BOOL, main_config_t, hostname_lookups), .dflt = "yes", .func = hostname_lookups_parse },
-	{ FR_CONF_OFFSET("max_request_time", FR_TYPE_UINT32, main_config_t, max_request_time), .dflt = STRINGIFY(MAX_REQUEST_TIME), .func = max_request_time_parse },
+	{ FR_CONF_OFFSET("max_request_time", FR_TYPE_TIME_DELTA, main_config_t, max_request_time), .dflt = STRINGIFY(MAX_REQUEST_TIME), .func = max_request_time_parse },
 	{ FR_CONF_OFFSET("pidfile", FR_TYPE_STRING, main_config_t, pid_file), .dflt = "${run_dir}/radiusd.pid"},
 
 	{ FR_CONF_OFFSET("debug_level", FR_TYPE_UINT32, main_config_t, debug_level), .dflt = "0" },
@@ -369,6 +381,35 @@ static int num_workers_parse(TALLOC_CTX *ctx, void *out, void *parent,
 	return 0;
 }
 
+static int lib_dir_parse(UNUSED TALLOC_CTX *ctx, UNUSED void *out, UNUSED void *parent,
+			 CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
+{
+	CONF_PAIR	*cp = cf_item_to_pair(ci);
+	char const	*value;
+
+	rad_assert(main_config != NULL);
+	value = cf_pair_value(cp);
+	if (value) {
+		main_config_t *config;
+
+		memcpy(&config, &main_config, sizeof(config)); /* const issues */
+
+		config->lib_dir = value;
+	}
+
+	/*
+	 *	Initialize the DL infrastructure, which is used by the
+	 *	config file parser.  And also add in the search path.
+	 */
+	if (!dl_module_loader_init(main_config->lib_dir)) {
+		cf_log_err(ci, "Failed initializing 'lib_dir': %s",
+			   fr_strerror());
+		return -1;
+	}
+
+	return 0;
+}
+
 /** Configured server name takes precedence over default values
  *
  */
@@ -427,57 +468,6 @@ static int gid_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 	return 0;
 }
 #endif
-
-/** Callback to automatically load dictionaries required by modules
- *
- * @param[in] module	being loaded.
- * @param[in] symbol	An array of fr_dict_autoload_t to load.
- * @param[in] user_ctx	unused.
- * @return
- *	- 0 on success.
- *	- -1 on failure.
- */
-static int _module_dict_autoload(dl_t const *module, void *symbol, UNUSED void *user_ctx)
-{
-	DEBUG("Loading dictionaries for %s", module->name);
-
-	if (fr_dict_autoload((fr_dict_autoload_t const *)symbol) < 0) {
-		WARN("Failed initialising protocol library: %s", fr_strerror());
-		return -1;
-	}
-
-	return 0;
-}
-
-/** Callback to automatically free a dictionary when the module is unloaded
- *
- * @param[in] module	being loaded.
- * @param[in] symbol	An array of fr_dict_autoload_t to load.
- * @param[in] user_ctx	unused.
- */
-static void _module_dict_autofree(UNUSED dl_t const *module, UNUSED void *symbol, UNUSED void *user_ctx)
-{
-//	fr_dict_autofree(((fr_dict_autoload_t *)symbol));
-}
-
-/** Callback to automatically resolve attributes and check the types are correct
- *
- * @param[in] module	being loaded.
- * @param[in] symbol	An array of fr_dict_autoload_t to load.
- * @param[in] user_ctx	unused.
- * @return
- *	- 0 on success.
- *	- -1 on failure.
- */
-static int _module_dict_attr_autoload(dl_t const *module, void *symbol, UNUSED void *user_ctx)
-{
-	if (fr_dict_attr_autoload((fr_dict_attr_autoload_t *)symbol) < 0) {
-		ERROR("%s: %s", module->name, fr_strerror());
-		return -1;
-	}
-
-	return 0;
-}
 
 static size_t config_escape_func(UNUSED REQUEST *request, char *out, size_t outlen, char const *in, UNUSED void *arg)
 {
@@ -896,6 +886,12 @@ main_config_t *main_config_alloc(TALLOC_CTX *ctx)
 	return config;
 }
 
+static int _dlhandle_free(void **dl_handle)
+{
+	dlclose(*dl_handle);
+	return 0;
+}
+
 /*
  *	Read config files.
  *
@@ -1008,14 +1004,8 @@ do {\
 	 *	And then all of the modules have to be updated to use
 	 *	their local dict pointer, instead of NULL.
 	 */
+	if (cf_section_rules_push(cs, lib_dir_on_read_config) < 0) goto failure;
 	if (cf_section_rules_push(cs, virtual_servers_on_read_config) < 0) goto failure;
-
-	/*
-	 *	Register dictionary autoload callbacks
-	 */
-	dl_symbol_init_cb_register(DL_PRIORITY_DICT_ATTR, "dict_attr", _module_dict_attr_autoload, NULL);
-	dl_symbol_init_cb_register(DL_PRIORITY_DICT, "dict", _module_dict_autoload, NULL);
-	dl_symbol_free_cb_register(DL_PRIORITY_DICT, "dict", _module_dict_autofree, NULL);
 
 	/* Read the configuration file */
 	snprintf(buffer, sizeof(buffer), "%.200s/%.50s.conf", config->raddb_dir, config->name);
@@ -1076,6 +1066,9 @@ do {\
 					goto failure;
 				}
 			} else {
+				void *handle;
+				void **handle_p;
+
 				if (setenv(attr, value, 1) < 0) {
 					cf_log_err(ci, "Failed setting environment variable %s: %s",
 						   attr, fr_syserror(errno));
@@ -1085,11 +1078,21 @@ do {\
 				/*
 				 *	Hacks for LD_PRELOAD.
 				 */
-				if ((strcmp(attr, "LD_PRELOAD") == 0) &&
-				    (dlopen(value, RTLD_NOW | RTLD_GLOBAL) == NULL)) {
+				if (strcmp(attr, "LD_PRELOAD") != 0) continue;
+
+				handle = dlopen(value, RTLD_NOW | RTLD_GLOBAL);
+				if (!handle) {
 					cf_log_err(ci, "Failed loading library %s: %s", value, dlerror());
 					goto failure;
 				}
+
+				/*
+				 *	Wrap the pointer, so we can set a destructor.
+				 */
+				MEM(handle_p = talloc(NULL, void *));
+				*handle_p = handle;
+				talloc_set_destructor(handle_p, _dlhandle_free);
+				(void) cf_data_add(subcs, handle, value, true);
 			}
 		} /* loop over pairs in ENV */
 	} /* there's an ENV subsection */
@@ -1184,6 +1187,7 @@ do {\
 	} else {
 		default_log.colourise = false;
 	}
+	default_log.line_number = config->log_line_number;
 
 	/*
 	 *	Starting the server, WITHOUT "-x" on the
@@ -1201,14 +1205,6 @@ do {\
 	INFO("Switching to configured log settings");
 
 	/*
-	 *	Set default initial request processing delay to 1/3 of a second.
-	 *	Will be updated by the lowest response window across all home servers,
-	 *	if it is less than this.
-	 */
-	config->init_delay.tv_sec = 0;
-	config->init_delay.tv_usec = 2* (1000000 / 3);
-
-	/*
 	 *	Free the old configuration items, and replace them
 	 *	with the new ones.
 	 *
@@ -1218,7 +1214,7 @@ do {\
 	rad_assert(config->root_cs == NULL);
 
 	DEBUG2("%s: #### Loading Clients ####", config->name);
-	if (!client_list_parse_section(cs, false)) goto failure;
+	if (!client_list_parse_section(cs, 0, false)) goto failure;
 
 	/*
 	 *	Register the %{config:section.subsection} xlat function.

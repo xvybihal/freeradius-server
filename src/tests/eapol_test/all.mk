@@ -47,9 +47,6 @@ $(CONFIG_PATH)/methods-enabled:
 $(CONFIG_PATH)/methods-enabled/%: $(BUILD_DIR)/lib/rlm_eap_%.la | $(CONFIG_PATH)/methods-enabled
 	${Q}ln -sf $(CONFIG_PATH)/methods-available/$(notdir $@) $(CONFIG_PATH)/methods-enabled/
 
-.PHONY: eap clean clean.tests.eap
-clean: clean.tests.eap
-
 #
 #   Only run EAP tests if we have a "test" target
 #
@@ -60,8 +57,8 @@ endif
 # This gets called recursively, so has to be outside of the condition below
 # We can't make this depend on radiusd.pid, because then make will create
 # radiusd.pid when we make radiusd.kill, which we don't want.
-.PHONY: radiusd.kill
-radiusd.kill: | $(OUTPUT_DIR)
+.PHONY: test.radiusd.kill
+test.radiusd.kill: | $(OUTPUT_DIR)
 	${Q}if [ -f $(CONFIG_PATH)/radiusd.pid ]; then \
 		ret=0; \
 		if ! ps `cat $(CONFIG_PATH)/radiusd.pid` >/dev/null 2>&1; then \
@@ -80,10 +77,13 @@ radiusd.kill: | $(OUTPUT_DIR)
 		exit $$ret; \
 	fi
 
+.PHONY: clean.tests.eap
 clean.tests.eap:
 	${Q}rm -f $(OUTPUT_DIR)/*.ok $(OUTPUT_DIR)/*.log $(OUTPUT_DIR)/eapol_test.skip
 	${Q}rm -f "$(CONFIG_PATH)/test.conf"
 	${Q}rm -rf "$(CONFIG_PATH)/methods-enabled"
+
+clean.test: clean.tests.eap
 
 ifneq "$(EAPOL_TEST)" ""
 $(CONFIG_PATH)/dictionary:
@@ -120,6 +120,7 @@ $(CONFIG_PATH)/radiusd.pid: $(CONFIG_PATH)/test.conf $(RADDB_PATH)/certs/server.
 		echo "FAILED STARTING RADIUSD"; \
 		tail -n 40 "$(RADIUS_LOG)"; \
 		echo "Last entries in server log ($(RADIUS_LOG)):"; \
+		echo "TEST_PORT=$(PORT) $(JLIBTOOL) --mode=execute $(BIN_PATH)/radiusd -Pxxxl $(RADIUS_LOG) -d $(CONFIG_PATH) -n test -D \"${top_builddir}/share/dictionary/\"" \
 	else \
 		echo "ok"; \
 	fi
@@ -142,7 +143,7 @@ $(foreach x,$(EAPOL_TEST_FILES),$(eval \
 #
 #  Run eapol_test if it exists.  Otherwise do nothing
 #
-$(OUTPUT_DIR)/%.ok: $(DIR)/%.conf | radiusd.kill $(CONFIG_PATH)/radiusd.pid
+$(OUTPUT_DIR)/%.ok: $(DIR)/%.conf | test.radiusd.kill $(CONFIG_PATH)/radiusd.pid
 	${Q}echo EAPOL_TEST $(notdir $(patsubst %.conf,%,$<))
 	${Q}if ( grep 'key_mgmt=NONE' '$<' > /dev/null && $(EAPOL_TEST) -t 2 -c $< -p $(PORT) -s $(SECRET) -n > $(patsubst %.conf,%.log,$@) 2>&1 ) || \
 		$(EAPOL_TEST) -t 2 -c $< -p $(PORT) -s $(SECRET) > $(patsubst %.conf,%.log,$@) 2>&1; then\
@@ -156,12 +157,12 @@ $(OUTPUT_DIR)/%.ok: $(DIR)/%.conf | radiusd.kill $(CONFIG_PATH)/radiusd.pid
 		echo "--------------------------------------------------"; \
 		echo "TEST_PORT=$(PORT) $(JLIBTOOL) --mode=execute $(BIN_PATH)/radiusd -PXxx -d \"$(CONFIG_PATH)\" -n test -D \"${top_builddir}/share/dictionary/\""; \
 		echo "$(EAPOL_TEST) -c \"$<\" -p $(PORT) -s $(SECRET)"; \
-		$(MAKE) radiusd.kill; \
+		$(MAKE) test.radiusd.kill; \
 		exit 1;\
 	fi
 
 tests.eap: $(EAPOL_OK_FILES)
-	${Q}$(MAKE) radiusd.kill
+	${Q}$(MAKE) test.radiusd.kill
 else
 #
 #  Build rules and the make file get evaluated at different times

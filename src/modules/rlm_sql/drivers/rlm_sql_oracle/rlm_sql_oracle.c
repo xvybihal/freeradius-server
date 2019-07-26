@@ -15,8 +15,8 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2000,2006  The FreeRADIUS server project
- * @copyright 2000  David Kerry <davidk@snti.com>
+ * @copyright 2000,2006 The FreeRADIUS server project
+ * @copyright 2000 David Kerry (davidk@snti.com)
  */
 
 RCSID("$Id$")
@@ -56,7 +56,6 @@ typedef struct {
 	char		**row;
 	int		id;
 	int		col_count;	//!< Number of columns associated with the result set
-	struct timeval	tv;
 } rlm_sql_oracle_conn_t;
 
 #define	MAX_DATASTR_LEN	64
@@ -140,7 +139,7 @@ static int _sql_socket_destructor(rlm_sql_oracle_conn_t *conn)
 }
 
 static sql_rcode_t sql_socket_init(rlm_sql_handle_t *handle, rlm_sql_config_t *config,
-				   UNUSED struct timeval const *timeout)
+				   UNUSED fr_time_delta_t timeout)
 {
 	char errbuff[512];
 

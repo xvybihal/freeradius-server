@@ -23,7 +23,7 @@
  *
  * @copyright 2017 The FreeRADIUS project
  */
-#include <freeradius-devel/server/dl.h>
+#include <freeradius-devel/server/dl_module.h>
 #include <freeradius-devel/util/value.h>
 
 #define FR_PROTO_STACK_MAX	10
@@ -155,7 +155,7 @@ typedef int (*fr_proto_set_option_t)(void *proto_ctx, fr_proto_opt_group_t opt_g
  *
  */
 typedef struct {
-	RAD_MODULE_COMMON;					//!< Common fields to all loadable modules.
+	DL_MODULE_COMMON;					//!< Common fields to all loadable modules.
 
 	size_t				proto_ctx_size;		//!< Size required for the packet ctx structure.
 

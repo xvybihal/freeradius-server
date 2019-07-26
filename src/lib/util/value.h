@@ -44,18 +44,17 @@ typedef struct value_box fr_value_box_t;
 #include <freeradius-devel/util/strerror.h>
 #include <freeradius-devel/util/token.h>
 #include <freeradius-devel/util/types.h>
+#include <freeradius-devel/util/time.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-extern const FR_NAME_NUMBER fr_value_box_type_names[];
+extern const FR_NAME_NUMBER fr_value_box_type_table[];
 
 extern size_t const fr_value_box_field_sizes[];
 
 extern size_t const fr_value_box_offsets[];
-
-#define fr_value_box_foreach(_v, _iv) for (fr_value_box_t *_iv = _v; _iv; _iv = _iv->next)
 
 /** Union containing all data types supported by the server
  *
@@ -106,15 +105,11 @@ struct value_box {
 
 		uint32_t		date;			//!< Date (32bit Unix timestamp).
 
-		uint64_t		date_milliseconds;	//!< milliseconds since the epoch.
-		uint64_t		date_microseconds;	//!< microseconds since the epoch.
-		uint64_t		date_nanoseconds;	//!< nanoseconds since the epoch.
-
 		/*
 		 *	System specific - Used for runtime configuration only.
 		 */
 		size_t			size;			//!< System specific file/memory size.
-		struct timeval		timeval;		//!< A time value with usec precision.
+		fr_time_delta_t		time_delta;		//!< a delta time in nanoseconds
 	} datum;
 
 	fr_dict_attr_t const		*enumv;			//!< Enumeration values.
@@ -170,6 +165,7 @@ struct value_box {
 
 #define vb_size					datum.size
 #define vb_timeval				datum.timeval
+#define vb_time_delta				datum.time_delta
 
 #define vb_length				datum.length
 /* @} **/
@@ -186,11 +182,12 @@ struct value_box {
 
 #define fr_box_strvalue(_val)			_fr_box_with_len(FR_TYPE_STRING, .vb_strvalue, _val, strlen(_val))
 #define fr_box_strvalue_len(_val, _len)		_fr_box_with_len(FR_TYPE_STRING, .vb_strvalue, _val, _len)
+
 #define fr_box_octets(_val, _len)		_fr_box_with_len(FR_TYPE_OCTETS, .vb_octets, _val, _len)
 #define fr_box_strvalue_buffer(_val)		_fr_box_with_len(FR_TYPE_STRING, .vb_strvalue, _val, talloc_array_length(_val) - 1)
 #define fr_box_octets_buffer(_val)		_fr_box_with_len(FR_TYPE_OCTETS, .vb_octets, _val, talloc_array_length(_val))
 
-#define _fr_box(_type, _field, _val) &(fr_value_box_t){ .type = _type, _field = (_val) }
+#define _fr_box(_type, _field, _val) (&(fr_value_box_t){ .type = _type, _field = (_val) })
 
 #define fr_box_ipaddr(_val)			_fr_box((((_val).af == AF_INET) ? \
 							(((_val).prefix == 32) ?	FR_TYPE_IPV4_ADDR : \
@@ -221,14 +218,55 @@ struct value_box {
 #define fr_box_float64(_val)			_fr_box(FR_TYPE_FLOAT64, .vb_float64, _val)
 
 #define fr_box_date(_val)			_fr_box(FR_TYPE_DATE, .vb_date, _val)
-#define fr_box_date_milliseconds(_val)		_fr_box(FR_TYPE_DATE_MILLISECONDS, .vb_date_milliseconds, _val)
-#define fr_box_date_microseconds(_val)		_fr_box(FR_TYPE_DATE_MICROSECONDS, .vb_date_microseconds, _val)
-#define fr_box_date_nanoseconds(_val)		_fr_box(FR_TYPE_DATE_NANOSECONDS, .vb_date_nanoseconds, _val)
 
 #define fr_box_size(_val)			_fr_box(FR_TYPE_SIZE, .vb_size, _val)
-#define fr_box_timeval(_val)			_fr_box(FR_TYPE_TIMEVAL, .vb_timeval, _val)
+
+#define fr_box_time_delta(_val)			_fr_box(FR_TYPE_TIME_DELTA, .vb_time_delta, _val)
 /* @} **/
 
+/** @name Convenience functions
+ *
+ * These macros and inline functions simplify working
+ * with lists of value boxes.
+ *
+ * @{
+ */
+#define fr_value_box_foreach(_v, _iv) for (fr_value_box_t *_iv = _v; _iv; _iv = _iv->next)
+
+/** Returns the number of boxes in a list of value boxes
+ *
+ * @param[in] head	of the value box list.
+ * @return Number of boxes in the list.
+ */
+static inline size_t fr_value_box_list_len(fr_value_box_t *head)
+{
+	size_t i;
+
+	for (i = 0; head; head = head->next, i++);
+
+	return i;
+}
+
+/** Determines whether a list contains the number of boxes required
+ *
+ * @note More efficient than fr_value_box_list_len for argument validation as it
+ *	doesn't walk the entire list.
+ *
+ * @param[in] head	of the list of value boxes.
+ * @param[in] min	The number of boxes required to return true.
+ * @return
+ *	- true if the list has at least min boxes.
+ *	- false if the list has fewer than min boxes.
+ */
+static inline bool fr_value_box_list_len_min(fr_value_box_t const *head, size_t min)
+{
+	size_t i;
+
+	for (i = 0; head && i < min; head = head->next, i++);
+
+	return (i == min);
+}
+/* @} **/
 
 /** @name Value box assignment functions
  *
@@ -338,9 +376,6 @@ DEF_BOXING_FUNC(float, float32, FR_TYPE_FLOAT32)
 DEF_BOXING_FUNC(double, float64, FR_TYPE_FLOAT64)
 
 DEF_BOXING_FUNC(uint64_t, date, FR_TYPE_DATE)
-DEF_BOXING_FUNC(uint64_t, date_milliseconds, FR_TYPE_DATE_MILLISECONDS)
-DEF_BOXING_FUNC(uint64_t, date_microseconds, FR_TYPE_DATE_MICROSECONDS)
-DEF_BOXING_FUNC(uint64_t, date_nanoseconds, FR_TYPE_DATE_NANOSECONDS)
 
 /** Automagically fill in a box, determining the value type from the type of the C variable
  *
@@ -394,8 +429,8 @@ static inline int fr_value_unbox_ethernet_addr(uint8_t dst[6], fr_value_box_t *s
 {
 	if (unlikely(src->type != FR_TYPE_ETHERNET)) { \
 		fr_strerror_printf("Unboxing failed.  Needed type %s, had type %s",
-				   fr_int2str(fr_value_box_type_names, FR_TYPE_ETHERNET, "?Unknown?"),
-				   fr_int2str(fr_value_box_type_names, src->type, "?Unknown?"));
+				   fr_int2str(fr_value_box_type_table, FR_TYPE_ETHERNET, "?Unknown?"),
+				   fr_int2str(fr_value_box_type_table, src->type, "?Unknown?"));
 		return -1; \
 	}
 	memcpy(dst, src->vb_ether, sizeof(src->vb_ether));	/* Must be src, dst is a pointer */
@@ -406,8 +441,8 @@ static inline int fr_value_unbox_ethernet_addr(uint8_t dst[6], fr_value_box_t *s
 static inline int fr_value_unbox_##_field(_ctype *var, fr_value_box_t const *src) { \
 	if (unlikely(src->type != _type)) { \
 		fr_strerror_printf("Unboxing failed.  Needed type %s, had type %s", \
-				   fr_int2str(fr_value_box_type_names, _type, "?Unknown?"), \
-				   fr_int2str(fr_value_box_type_names, src->type, "?Unknown?")); \
+				   fr_int2str(fr_value_box_type_table, _type, "?Unknown?"), \
+				   fr_int2str(fr_value_box_type_table, src->type, "?Unknown?")); \
 		return -1; \
 	} \
 	*var = src->vb_##_field; \
@@ -428,9 +463,6 @@ DEF_UNBOXING_FUNC(float, float32, FR_TYPE_FLOAT32)
 DEF_UNBOXING_FUNC(double, float64, FR_TYPE_FLOAT64)
 
 DEF_UNBOXING_FUNC(uint64_t, date, FR_TYPE_DATE)
-DEF_UNBOXING_FUNC(uint64_t, date_milliseconds, FR_TYPE_DATE_MILLISECONDS)
-DEF_UNBOXING_FUNC(uint64_t, date_microseconds, FR_TYPE_DATE_MICROSECONDS)
-DEF_UNBOXING_FUNC(uint64_t, date_nanoseconds, FR_TYPE_DATE_NANOSECONDS)
 
 /** Unbox simple types peforming type checks
  *
@@ -467,7 +499,7 @@ int		fr_value_box_cmp_op(FR_TOKEN op, fr_value_box_t const *a, fr_value_box_t co
 /*
  *	Conversion
  */
-size_t		value_str_unescape(uint8_t *out, char const *in, size_t inlen, char quote);
+size_t		fr_value_str_unescape(uint8_t *out, char const *in, size_t inlen, char quote);
 
 int		fr_value_box_hton(fr_value_box_t *dst, fr_value_box_t const *src);
 
@@ -501,35 +533,46 @@ void		fr_value_box_copy_shallow(TALLOC_CTX *ctx, fr_value_box_t *dst,
 
 int		fr_value_box_steal(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_value_box_t const *src);
 
+int		fr_value_box_vasprintf(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_dict_attr_t const *enumv, bool tainted,
+				       char const *fmt, va_list ap)
+		CC_HINT(format (printf, 5, 0));
+int		fr_value_box_asprintf(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_dict_attr_t const *enumv, bool tainted,
+				      char const *fmt, ...)
+		CC_HINT(format (printf, 5, 6));
+
 int		fr_value_box_strdup(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_dict_attr_t const *enumv,
 				    char const *src, bool tainted);
-int		fr_value_box_bstrndup(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_dict_attr_t const *enumv,
-				      char const *src, size_t len, bool tainted);
-int		fr_value_box_append_bstr(fr_value_box_t *dst,
-					 char const *src, size_t len, bool tainted);
-
 int		fr_value_box_strdup_buffer(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_dict_attr_t const *enumv,
 					   char const *src, bool tainted);
+
+int		fr_value_box_bstrndup(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_dict_attr_t const *enumv,
+				      char const *src, size_t len, bool tainted);
+void		fr_value_box_bstrndup_shallow(fr_value_box_t *dst, fr_dict_attr_t const *enumv,
+					      char const *src, size_t len, bool tainted);
+
 int		fr_value_box_bstrsteal(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_dict_attr_t const *enumv,
 				       char *src, bool tainted);
 int		fr_value_box_bstrsnteal(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_dict_attr_t const *enumv,
 				        char **src, size_t inlen, bool tainted);
-int		fr_value_box_strdup_shallow(fr_value_box_t *dst, fr_dict_attr_t const *enumv,
+
+int		fr_value_box_append_bstr(fr_value_box_t *dst, char const *src, size_t len, bool tainted);
+
+void		fr_value_box_strdup_shallow(fr_value_box_t *dst, fr_dict_attr_t const *enumv,
 					    char const *src, bool tainted);
 int		fr_value_box_strdup_buffer_shallow(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_dict_attr_t const *enumv,
 						   char const *src, bool tainted);
 
-int		fr_value_box_memdup(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_dict_attr_t const *enumv,
+int		fr_value_box_memcpy(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_dict_attr_t const *enumv,
 				    uint8_t const *src, size_t len, bool tainted);
 int		fr_value_box_append_mem(fr_value_box_t *dst,
 				       uint8_t const *src, size_t len, bool tainted);
-int		fr_value_box_memdup_buffer(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_dict_attr_t const *enumv,
+int		fr_value_box_memcpy_buffer(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_dict_attr_t const *enumv,
 					   uint8_t *src, bool tainted);
 void		fr_value_box_memsteal(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_dict_attr_t const *enumv,
 				      uint8_t const *src, bool tainted);
-int		fr_value_box_memdup_shallow(fr_value_box_t *dst, fr_dict_attr_t const *enumv,
+void		fr_value_box_memcpy_shallow(fr_value_box_t *dst, fr_dict_attr_t const *enumv,
 					    uint8_t *src, size_t len, bool tainted);
-int		fr_value_box_memdup_buffer_shallow(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_dict_attr_t const *enumv,
+void		fr_value_box_memcpy_buffer_shallow(TALLOC_CTX *ctx, fr_value_box_t *dst, fr_dict_attr_t const *enumv,
 						   uint8_t *src, bool tainted);
 void		fr_value_box_increment(fr_value_box_t *vb);
 

@@ -1,7 +1,8 @@
 # -*- text -*-
-# Copyright (C) 2015 The FreeRADIUS Server project and contributors
-#
+# Copyright (C) 2019 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
 # Version $Id$
+#
 #
 #	DO NOT EDIT THE FILES IN THIS DIRECTORY
 #
@@ -71,13 +72,17 @@ $INCLUDE dictionary.compat
 
 #
 #	These dictionaries define attributes in the IETF managed space.
-#	(i.e. 1..255). This is wrong.  We include them here to allow them.
-#	The IETF allocated ones are listed below, which gives them priority.
+#	(i.e. 1..255). This is wrong.
 #
-#	i.e. don't do this.  Don't use these attributes
+#	The IETF allocated ones are listed lower down, which gives
+#	them priority.
 #
-$INCLUDE dictionary.usr.illegal
-$INCLUDE dictionary.ascend.illegal
+#	i.e. don't do this.  Don't use these attributes.  If you do
+#	need to use them, list them in the raddb/dictionary, instead
+#	of here.
+#
+#$INCLUDE dictionary.usr.illegal
+#$INCLUDE dictionary.ascend.illegal
 
 #
 #	IETF allocated attributes and values.  Split out into
@@ -118,6 +123,8 @@ $INCLUDE dictionary.rfc7155
 $INCLUDE dictionary.rfc7268
 $INCLUDE dictionary.rfc7499
 $INCLUDE dictionary.rfc7930
+$INCLUDE dictionary.rfc8045
+$INCLUDE dictionary.rfc8559
 
 #
 #	Mostly values which have been allocated by IANA under
@@ -197,6 +204,7 @@ $INCLUDE dictionary.fdxtended
 $INCLUDE dictionary.freeradius
 $INCLUDE dictionary.freeradius.internal
 $INCLUDE dictionary.freeswitch
+$INCLUDE dictionary.force10
 $INCLUDE dictionary.fortinet
 $INCLUDE dictionary.foundry
 $INCLUDE dictionary.gandalf
@@ -251,6 +259,7 @@ $INCLUDE dictionary.packeteer
 $INCLUDE dictionary.paloalto
 $INCLUDE dictionary.patton
 $INCLUDE dictionary.perle
+$INCLUDE dictionary.pfsense
 $INCLUDE dictionary.propel
 $INCLUDE dictionary.prosoft
 $INCLUDE dictionary.proxim
@@ -279,10 +288,15 @@ $INCLUDE dictionary.telebit
 $INCLUDE dictionary.terena
 $INCLUDE dictionary.trapeze
 $INCLUDE dictionary.travelping
+$INCLUDE dictionary.tripplite
 $INCLUDE dictionary.tropos
 $INCLUDE dictionary.t_systems_nova
 $INCLUDE dictionary.ukerna
 $INCLUDE dictionary.unisphere
+
+# This is the same as dictionary.unisphere, but
+# we prefer the "ERX" names.
+$INCLUDE dictionary.erx
 $INCLUDE dictionary.unix
 $INCLUDE dictionary.usr
 $INCLUDE dictionary.utstarcom

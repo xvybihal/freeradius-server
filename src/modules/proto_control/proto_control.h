@@ -21,7 +21,7 @@
  * @file proto_control.h
  * @brief Structures for the CONTROL protocol
  *
- * @copyright 2018 Alan DeKok <aland@freeradius.org>
+ * @copyright 2018 Alan DeKok (aland@freeradius.org)
  */
 #include <freeradius-devel/io/master.h>
 #include <freeradius-devel/server/radmin.h>
@@ -33,8 +33,8 @@
 typedef struct {
 	fr_io_instance_t		io;				//!< wrapper for IO abstraction
 
-	dl_instance_t			**type_submodule;		//!< Instance of the various types
-	dl_instance_t			*dynamic_submodule;		//!< proto_control_dynamic_client
+	dl_module_inst_t			**type_submodule;		//!< Instance of the various types
+	dl_module_inst_t			*dynamic_submodule;		//!< proto_control_dynamic_client
 									//!< only one instance per type allowed.
 	fr_io_process_t			process;			//!< process function
 

@@ -17,9 +17,9 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2000,2006  The FreeRADIUS server project
- * @copyright 2000  Miquel van Smoorenburg <miquels@cistron.nl>
- * @copyright 2000  Alan DeKok <aland@freeradius.org>
+ * @copyright 2000,2006 The FreeRADIUS server project
+ * @copyright 2000 Miquel van Smoorenburg (miquels@cistron.nl)
+ * @copyright 2000 Alan DeKok (aland@freeradius.org)
  */
 
 RCSID("$Id$")
@@ -29,6 +29,7 @@ RCSID("$Id$")
 #include <freeradius-devel/server/users_file.h>
 
 #include <freeradius-devel/util/syserror.h>
+#include <freeradius-devel/util/misc.h>
 
 #include <sys/stat.h>
 
@@ -48,13 +49,13 @@ static void debug_pair_list(PAIR_LIST *pl)
 		printf("** Check:\n");
 		for(vp = pl->check; vp; vp = vp->next) {
 			printf("    ");
-			fr_pair_fprint(stdout, vp);
+			fr_log(&default_log, L_DBG, __FILE__, __LINE__, "%pP", vp);
 			printf("\n");
 		}
 		printf("** Reply:\n");
 		for(vp = pl->reply; vp; vp = vp->next) {
 			printf("    ");
-			fr_pair_fprint(stdout, vp);
+			fr_log(&default_log, L_DBG, __FILE__, __LINE__, "%pP", vp);
 			printf("\n");
 		}
 		pl = pl->next;
@@ -136,7 +137,7 @@ int pairlist_read(TALLOC_CTX *ctx, fr_dict_t const *dict, char const *file, PAIR
 		 *	ignore it.
 		 */
 		ptr = buffer;
-		while (isspace((int) *ptr)) ptr++;
+		fr_skip_spaces(ptr);
 
 		if (*ptr == '#' || *ptr == '\n' || !*ptr) continue;
 
@@ -164,7 +165,7 @@ parse_again:
 			 *	$INCLUDE filename
 			 */
 			if (strcasecmp(entry, "$INCLUDE") == 0) {
-				while (isspace((int) *ptr)) ptr++;
+				fr_skip_spaces(ptr);
 
 				/*
 				 *	If it's an absolute pathname,

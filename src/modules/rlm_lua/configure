@@ -4454,6 +4454,20 @@ $as_echo "$_cv_lua_ldflags" >&6; }
 	lua_cflags="$LUA_INCLUDE"
 	lua_ldflags="$_cv_lua_ldflags"
 
+	if test "x$_ax_found_lua_libs" = 'xyes'; then
+		{ $as_echo "$as_me:${as_lineno-$LINENO}: Lua Library:" >&5
+$as_echo "$as_me: Lua Library:" >&6;}
+		{ $as_echo "$as_me:${as_lineno-$LINENO}:   Using Lua version.......... : $ax_cv_lua_version" >&5
+$as_echo "$as_me:   Using Lua version.......... : $ax_cv_lua_version" >&6;}
+		{ $as_echo "$as_me:${as_lineno-$LINENO}:   Using Lua header version... : $ax_cv_lua_header_version" >&5
+$as_echo "$as_me:   Using Lua header version... : $ax_cv_lua_header_version" >&6;}
+		{ $as_echo "$as_me:${as_lineno-$LINENO}:   Using Lua headers.......... : $lua_cflags" >&5
+$as_echo "$as_me:   Using Lua headers.......... : $lua_cflags" >&6;}
+		{ $as_echo "$as_me:${as_lineno-$LINENO}:   Using Lua lib.............. : $lua_ldflags" >&5
+$as_echo "$as_me:   Using Lua lib.............. : $lua_ldflags" >&6;}
+	fi
+
+
 	targetname=rlm_lua     # keep this!  Don't change!
 else
 	targetname=            # keep this!  Don't change!

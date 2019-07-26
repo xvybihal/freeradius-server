@@ -19,9 +19,9 @@
  * @file unit_test_module.c
  * @brief Module test framework
  *
- * @copyright 2000-2018  The FreeRADIUS server project
- * @copyright 2013  Alan DeKok <aland@freeradius.org>
- * @copyright 2018  Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2000-2018 The FreeRADIUS server project
+ * @copyright 2013 Alan DeKok (aland@freeradius.org)
+ * @copyright 2018 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -171,20 +171,18 @@ static RADCLIENT *client_alloc(TALLOC_CTX *ctx, char const *ip, char const *name
 	return client;
 }
 
-static REQUEST *request_from_file(FILE *fp, fr_event_list_t *el, RADCLIENT *client)
+static REQUEST *request_from_file(TALLOC_CTX *ctx, FILE *fp, fr_event_list_t *el, RADCLIENT *client)
 {
 	VALUE_PAIR	*vp;
 	REQUEST		*request;
 	fr_cursor_t	cursor;
-	struct timeval	now;
 
 	static int	number = 0;
 
 	/*
 	 *	Create and initialize the new request.
 	 */
-	request = request_alloc(NULL);
-	gettimeofday(&now, NULL);
+	request = request_alloc(ctx);
 
 	/*
 	 *	FIXME - Should be less RADIUS centric, but everything
@@ -203,7 +201,7 @@ static REQUEST *request_from_file(FILE *fp, fr_event_list_t *el, RADCLIENT *clie
 		talloc_free(request);
 		return NULL;
 	}
-	request->packet->timestamp = now;
+	request->packet->timestamp = fr_time();
 
 	request->reply = fr_radius_alloc(request, false);
 	if (!request->reply) {
@@ -367,9 +365,8 @@ static REQUEST *request_from_file(FILE *fp, fr_event_list_t *el, RADCLIENT *clie
 				rad_assert(0);
 			}
 
-			fr_pair_fprint(fr_log_fp, vp);
+			fr_log(&default_log, L_DBG, __FILE__, __LINE__, "%pP", vp);
 		}
-		fflush(fr_log_fp);
 	}
 
 	/*
@@ -445,7 +442,7 @@ static void print_packet(FILE *fp, RADIUS_PACKET *packet)
 			rad_assert(0);
 		}
 
-		fr_pair_fprint(fp, vp);
+		fr_log(&default_log, L_DBG, __FILE__, __LINE__, "%pP", vp);
 	}
 	fflush(fp);
 }
@@ -462,13 +459,11 @@ static bool do_xlats(char const *filename, FILE *fp)
 	char		input[8192];
 	char		output[8192];
 	REQUEST		*request;
-	struct timeval	now;
 
 	/*
 	 *	Create and initialize the new request.
 	 */
 	request = request_alloc(NULL);
-	gettimeofday(&now, NULL);
 
 	request->log.dst = talloc_zero(request, log_dst_t);
 	request->log.dst->func = vlog_request;
@@ -484,7 +479,7 @@ static bool do_xlats(char const *filename, FILE *fp)
 		 *	Ignore blank lines and comments
 		 */
 		p = input;
-		while (isspace((int) *p)) p++;
+		fr_skip_spaces(p);
 
 		if (*p < ' ') continue;
 		if (*p == '#') continue;
@@ -597,13 +592,15 @@ int main(int argc, char *argv[])
 	RADCLIENT		*client = NULL;
 	CONF_SECTION		*unlang;
 	char			*auth_type;
-	fr_dict_t		*dict;
+	fr_dict_t		*dict = NULL;
+	char const 		*receipt_file = NULL;
 
 	TALLOC_CTX		*autofree = talloc_autofree_context();
 	TALLOC_CTX		*thread_ctx = talloc_new(autofree);
 
 	char			*p;
 	main_config_t		*config;
+	dl_module_loader_t	*dl_modules = NULL;
 
 	config = main_config_alloc(autofree);
 	if (!config) {
@@ -642,12 +639,11 @@ int main(int argc, char *argv[])
 	/*
 	 *	We always log to stdout.
 	 */
-	fr_log_fp = stdout;
 	default_log.dst = L_DST_STDOUT;
 	default_log.fd = STDOUT_FILENO;
 
 	/*  Process the options.  */
-	while ((c = getopt(argc, argv, "d:D:f:hi:mMn:o:O:xX")) != -1) {
+	while ((c = getopt(argc, argv, "d:D:f:hi:mMn:o:O:r:xX")) != -1) {
 		switch (c) {
 			case 'd':
 				main_config_raddb_dir_set(config, optarg);
@@ -690,6 +686,10 @@ int main(int argc, char *argv[])
 				fprintf(stderr, "Unknown option '%s'\n", optarg);
 				exit(EXIT_FAILURE);
 
+			case 'r':
+				receipt_file = optarg;
+				break;
+
 			case 'X':
 				rad_debug_lvl += 2;
 				break;
@@ -702,6 +702,11 @@ int main(int argc, char *argv[])
 				usage(config, EXIT_FAILURE);
 				break;
 		}
+	}
+
+	if (receipt_file && (fr_file_unlink(receipt_file) < 0)) {
+		fr_perror("%s", config->name);
+		EXIT_WITH_FAILURE;
 	}
 
 #ifdef HAVE_OPENSSL_CRYPTO_H
@@ -733,7 +738,15 @@ int main(int argc, char *argv[])
 		goto cleanup;
 	}
 
-	dl_loader_init(autofree, config->lib_dir);
+	/*
+	 *	Initialize the DL infrastructure, which is used by the
+	 *	config file parser.
+	 */
+	dl_modules = dl_module_loader_init(config->lib_dir);
+	if (!dl_modules) {
+		fr_perror("%s", config->name);
+		EXIT_WITH_FAILURE;
+	}
 
 	if (fr_dict_global_init(autofree, config->dict_dir) < 0) {
 		fr_perror("%s", config->name);
@@ -753,7 +766,7 @@ int main(int argc, char *argv[])
 	 *	Load the custom dictionary
 	 */
 	if (fr_dict_read(dict, config->raddb_dir, FR_DICTIONARY_FILE) == -1) {
-		fr_log_perror(&default_log, L_ERR, "Failed to initialize the dictionaries");
+		PERROR("Failed to initialize the dictionaries");
 		EXIT_WITH_FAILURE;
 	}
 
@@ -776,6 +789,16 @@ int main(int argc, char *argv[])
 
 	/*  Read the configuration files, BEFORE doing anything else.  */
 	if (main_config_init(config) < 0) {
+		EXIT_WITH_FAILURE;
+	}
+
+	if (modules_init() < 0) {
+		fr_perror("%s", config->name);
+		EXIT_WITH_FAILURE;
+	}
+
+	if (virtual_servers_init(config->root_cs) < 0) {
+		fr_perror("%s", config->name);
 		EXIT_WITH_FAILURE;
 	}
 
@@ -814,7 +837,7 @@ int main(int argc, char *argv[])
 					  T_OP_EQ, T_BARE_WORD, T_BARE_WORD);
 		cf_pair_add(server, namespace);
 
-		if (fr_dict_protocol_afrom_file(&ns_dict, cf_pair_value(namespace)) < 0) {
+		if (fr_dict_protocol_afrom_file(&ns_dict, cf_pair_value(namespace), NULL) < 0) {
 			cf_log_perr(server, "Failed initialising namespace \"%s\"", cf_pair_value(namespace));
 			return -1;
 		}
@@ -824,6 +847,11 @@ int main(int argc, char *argv[])
 
 		cf_data_add(server, dict_p, "dictionary", true);
 	}
+
+	/*
+	 *	Initialise the trigger rate limiting tree
+	 */
+	if (trigger_exec_init(config->root_cs) < 0) EXIT_WITH_FAILURE;
 
 	/*
 	 *	Initialise the interpreter, registering operations.
@@ -836,13 +864,6 @@ int main(int argc, char *argv[])
 	if (xlat_init() < 0) EXIT_WITH_FAILURE;
 
 	/*
-	 *	Initialize Auth-Type, etc. in the virtual servers
-	 *	before loading the modules.  Some modules need those
-	 *	to be defined.
-	 */
-	if (virtual_servers_bootstrap(config->root_cs) < 0) EXIT_WITH_FAILURE;
-
-	/*
 	 *	Bootstrap the modules.  This links to them, and runs
 	 *	their "bootstrap" routines.
 	 *
@@ -851,15 +872,16 @@ int main(int argc, char *argv[])
 	if (modules_bootstrap(config->root_cs) < 0) EXIT_WITH_FAILURE;
 
 	/*
-	 *	Instantiate the modules
+	 *	Initialize Auth-Type, etc. in the virtual servers
+	 *	before loading the modules.  Some modules need those
+	 *	to be defined.
 	 */
-	if (modules_instantiate(config->root_cs) < 0) EXIT_WITH_FAILURE;
+	if (virtual_servers_bootstrap(config->root_cs) < 0) EXIT_WITH_FAILURE;
 
 	/*
-	 *	Create a dummy event list
+	 *	Instantiate the modules
 	 */
-	el = fr_event_list_alloc(NULL, NULL, NULL);
-	rad_assert(el != NULL);
+	if (modules_instantiate() < 0) EXIT_WITH_FAILURE;
 
 	/*
 	 *	And then load the virtual servers.
@@ -877,9 +899,15 @@ int main(int argc, char *argv[])
 	if (paircmp_init() < 0) EXIT_WITH_FAILURE;
 
 	/*
+	 *	Create a dummy event list
+	 */
+	el = fr_event_list_alloc(NULL, NULL, NULL);
+	rad_assert(el != NULL);
+
+	/*
 	 *	Simulate thread specific instantiation
 	 */
-	if (modules_thread_instantiate(thread_ctx, config->root_cs, el) < 0) EXIT_WITH_FAILURE;
+	if (modules_thread_instantiate(thread_ctx, el) < 0) EXIT_WITH_FAILURE;
 	if (xlat_thread_instantiate(thread_ctx) < 0) EXIT_WITH_FAILURE;
 
 	state = fr_state_tree_init(autofree, attr_state, false, 256, 10, 0);
@@ -924,7 +952,7 @@ int main(int argc, char *argv[])
 	/*
 	 *	Grab the VPs from stdin, or from the file.
 	 */
-	request = request_from_file(fp, el, client);
+	request = request_from_file(autofree, fp, el, client);
 	if (!request) {
 		fprintf(stderr, "Failed reading input: %s\n", fr_strerror());
 		EXIT_WITH_FAILURE;
@@ -1132,6 +1160,11 @@ cleanup:
 	unlang_free();
 
 	/*
+	 *	Free information associated with the virtual servers.
+	 */
+	virtual_servers_free();
+
+	/*
 	 *	And now nothing should be left anywhere except the
 	 *	parsed configuration items.
 	 */
@@ -1146,6 +1179,25 @@ cleanup:
 	 *	Free our explicitly loaded internal dictionary
 	 */
 	fr_dict_free(&dict);
+
+	if (dl_modules) talloc_free(dl_modules);
+
+	/*
+	 *  Now we're sure no more triggers can fire, free the
+	 *  trigger tree
+	 */
+	trigger_exec_free();
+
+	/*
+	 *	Explicitly cleanup the buffer used for storing syserror messages
+	 *	This cuts down on address sanitiser output on error.
+	 */
+	fr_syserror_free();
+
+	if (receipt_file && (ret == EXIT_SUCCESS) && (fr_file_touch(receipt_file, 0644) < 0)) {
+		fr_perror("unit_test_module");
+		ret = EXIT_FAILURE;
+	}
 
 	/*
 	 *	Call pthread destructors.  Which aren't normally
@@ -1172,14 +1224,16 @@ static void NEVER_RETURNS usage(main_config_t const *config, int status)
 
 	fprintf(output, "Usage: %s [options]\n", config->name);
 	fprintf(output, "Options:\n");
-	fprintf(output, "  -d raddb_dir  Configuration files are in \"raddb_dir/*\".\n");
-	fprintf(output, "  -D dict_dir   Dictionary files are in \"dict_dir/*\".\n");
-	fprintf(output, "  -f file       Filter reply against attributes in 'file'.\n");
-	fprintf(output, "  -h            Print this help message.\n");
-	fprintf(output, "  -i file       File containing request attributes.\n");
-	fprintf(output, "  -m            On SIGINT or SIGQUIT exit cleanly instead of immediately.\n");
-	fprintf(output, "  -n name       Read raddb/name.conf instead of raddb/radiusd.conf.\n");
-	fprintf(output, "  -X            Turn on full debugging.\n");
-	fprintf(output, "  -x            Turn on additional debugging. (-xx gives more debugging).\n");
+	fprintf(output, "  -d <raddb_dir>     Configuration files are in \"raddb_dir/*\".\n");
+	fprintf(output, "  -D <dict_dir>      Dictionary files are in \"dict_dir/*\".\n");
+	fprintf(output, "  -f <file>          Filter reply against attributes in 'file'.\n");
+	fprintf(output, "  -h                 Print this help message.\n");
+	fprintf(output, "  -i <file>          File containing request attributes.\n");
+	fprintf(output, "  -m                 On SIGINT or SIGQUIT exit cleanly instead of immediately.\n");
+	fprintf(output, "  -n <name>          Read raddb/name.conf instead of raddb/radiusd.conf.\n");
+	fprintf(output, "  -X                 Turn on full debugging.\n");
+	fprintf(output, "  -x                 Turn on additional debugging. (-xx gives more debugging).\n");
+	fprintf(output, "  -r <receipt_file>  Create the <receipt_file> as a 'success' exit.\n");
+
 	exit(status);
 }

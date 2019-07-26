@@ -21,8 +21,8 @@
  *
  * @author Arran Cudbard-Bell
  *
- * @copyright 2015 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
- * @copyright 2015 Network RADIUS <info@networkradius.com>
+ * @copyright 2015 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
+ * @copyright 2015 Network RADIUS (info@networkradius.com)
  * @copyright 2015 The FreeRADIUS server project
  *
  * Overview
@@ -183,17 +183,6 @@
 
 #define RELEASED_MIN_WEIGHT	1000			//!< Minimum weight to assign to node.
 
-/** Return values for internal functions
- */
-typedef enum {
-	CLUSTER_OP_IGNORED		= 1,		//!< Operation ignored.
-	CLUSTER_OP_SUCCESS		= 0,		//!< Operation completed successfully.
-	CLUSTER_OP_FAILED		= -1,		//!< Operation failed.
-	CLUSTER_OP_NO_CONNECTION	= -2,		//!< Operation failed because we couldn't find
-							//!< a live connection.
-	CLUSTER_OP_BAD_INPUT		= -3		//!< Validation error.
-} cluster_rcode_t;
-
 /** Live nodes data, used to perform weighted random selection of alternative nodes
  */
 typedef struct {
@@ -236,11 +225,11 @@ struct fr_redis_cluster_node_s {
  * more memory efficient to use 8bit indexes than 64bit pointers for each
  * of the key slot to node mappings.
  */
-typedef struct {
+struct fr_redis_cluster_key_slot_s {
 	uint8_t			slave[MAX_SLAVES];	//!< R/O node (slave) for this key slot.
 	uint8_t			slave_num;		//!< Number of slaves associated with this key slot.
 	uint8_t			master;			//!< R/W node (master) for this key slot.
-} cluster_key_slot_t;
+};
 
 /** A redis cluster
  *
@@ -267,12 +256,20 @@ struct fr_redis_cluster {
 	fr_fifo_t		*free_nodes;		//!< Queue of free nodes (or nodes waiting to be reused).
 	rbtree_t		*used_nodes;		//!< Tree of used nodes.
 
-	cluster_key_slot_t	key_slot[KEY_SLOTS];		//!< Lookup table of slots to pools.
-	cluster_key_slot_t	key_slot_pending[KEY_SLOTS];	//!< Pending key slot table.
+	fr_redis_cluster_key_slot_t	key_slot[KEY_SLOTS];		//!< Lookup table of slots to pools.
+	fr_redis_cluster_key_slot_t	key_slot_pending[KEY_SLOTS];	//!< Pending key slot table.
 
 	pthread_mutex_t		mutex;			//!< Mutex to synchronise cluster operations.
 };
 
+FR_NAME_NUMBER const fr_redis_cluster_rcodes_table[] = {
+	{ "ignored",		FR_REDIS_CLUSTER_RCODE_IGNORED },
+	{ "success",		FR_REDIS_CLUSTER_RCODE_SUCCESS },
+	{ "failed",		FR_REDIS_CLUSTER_RCODE_FAILED },
+	{ "no-connection",	FR_REDIS_CLUSTER_RCODE_NO_CONNECTION },
+	{ "bad-input",		FR_REDIS_CLUSTER_RCODE_BAD_INPUT },
+	{ NULL, 0 }
+};
 
 /** Resolve key to key slot
  *
@@ -354,10 +351,10 @@ static void _cluster_node_conf_apply(fr_pool_t *pool, void *opaque)
  * @param[in] cluster to search in.
  * @param[in] node config.
  * @return
- *	 - CLUSTER_OP_SUCCESS on success.
- *	 - CLUSTER_OP_FAILED if the operation failed.
+ *	 - FR_REDIS_CLUSTER_RCODE_SUCCESS on success.
+ *	 - FR_REDIS_CLUSTER_RCODE_FAILED if the operation failed.
  */
-static cluster_rcode_t cluster_node_connect(fr_redis_cluster_t *cluster, fr_redis_cluster_node_t *node)
+static fr_redis_cluster_rcode_t cluster_node_connect(fr_redis_cluster_t *cluster, fr_redis_cluster_node_t *node)
 {
 	char const *p;
 
@@ -368,7 +365,7 @@ static cluster_rcode_t cluster_node_connect(fr_redis_cluster_t *cluster, fr_redi
 	 */
 	p = inet_ntop(node->pending_addr.ipaddr.af, &node->pending_addr.ipaddr.addr,
 		      node->name, sizeof(node->name));
-	if (!fr_cond_assert(p)) return CLUSTER_OP_FAILED;
+	if (!fr_cond_assert(p)) return FR_REDIS_CLUSTER_RCODE_FAILED;
 
 	/*
 	 *	Node has never been used before, needs a pool allocated for it.
@@ -392,11 +389,11 @@ static cluster_rcode_t cluster_node_connect(fr_redis_cluster_t *cluster, fr_redi
 		error:
 			TALLOC_FREE(node->pool_cs);
 			TALLOC_FREE(node->pool);
-			return CLUSTER_OP_FAILED;
+			return FR_REDIS_CLUSTER_RCODE_FAILED;
 		}
 		fr_pool_reconnect_func(node->pool, _cluster_node_conf_apply);
 
-		if (cluster->triggers_enabled) {
+		if (trigger_enabled() && cluster->triggers_enabled) {
 			args = trigger_args_afrom_server(node->pool, node->name, node->addr.port);
 			if (!args) goto error;
 
@@ -407,7 +404,9 @@ static cluster_rcode_t cluster_node_connect(fr_redis_cluster_t *cluster, fr_redi
 			fr_pair_list_free(&args);
 		}
 
-		return CLUSTER_OP_SUCCESS;
+		if (fr_pool_start(node->pool) < 0) goto error;
+
+		return FR_REDIS_CLUSTER_RCODE_SUCCESS;
 	}
 
 	/*
@@ -415,7 +414,7 @@ static cluster_rcode_t cluster_node_connect(fr_redis_cluster_t *cluster, fr_redi
 	 */
 	if (fr_pool_reconnect(node->pool, NULL) < 0) goto error;
 
-	return CLUSTER_OP_SUCCESS;
+	return FR_REDIS_CLUSTER_RCODE_SUCCESS;
 }
 
 /** Parse a -MOVED or -ASK redirect
@@ -426,10 +425,10 @@ static cluster_rcode_t cluster_node_connect(fr_redis_cluster_t *cluster, fr_redi
  * @param[out] node_addr Redis node ipaddr and port extracted from redirect string.
  * @param[in] redirect to process.
  * @return
- *	- CLUSTER_OP_SUCCESS on success.
- *	- CLUSTER_OP_BAD_INPUT if the server returned an invalid redirect.
+ *	- FR_REDIS_CLUSTER_RCODE_SUCCESS on success.
+ *	- FR_REDIS_CLUSTER_RCODE_BAD_INPUT if the server returned an invalid redirect.
  */
-static cluster_rcode_t cluster_node_conf_from_redirect(uint16_t *key_slot, fr_socket_addr_t *node_addr,
+static fr_redis_cluster_rcode_t cluster_node_conf_from_redirect(uint16_t *key_slot, fr_socket_addr_t *node_addr,
 						       redisReply *redirect)
 {
 	char		*p, *q;
@@ -438,7 +437,7 @@ static cluster_rcode_t cluster_node_conf_from_redirect(uint16_t *key_slot, fr_so
 	fr_ipaddr_t	ipaddr;
 
 	if (!redirect || (redirect->type != REDIS_REPLY_ERROR)) {
-		return CLUSTER_OP_BAD_INPUT;
+		return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 	}
 
 	p = redirect->str;
@@ -448,28 +447,28 @@ static cluster_rcode_t cluster_node_conf_from_redirect(uint16_t *key_slot, fr_so
 		q = p + sizeof(REDIS_ERROR_ASK_STR);	/* not a typo, skip space too */
 	} else {
 		fr_strerror_printf("No '-MOVED' or '-ASK' log_prefix");
-		return CLUSTER_OP_BAD_INPUT;
+		return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 	}
 	if ((size_t)(q - p) >= (size_t)redirect->len) {
 		fr_strerror_printf("Truncated");
-		return CLUSTER_OP_BAD_INPUT;
+		return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 	}
 	p = q;
 	key = strtoul(p, &q, 10);
 	if (key > KEY_SLOTS) {
 		fr_strerror_printf("Key %lu outside of redis slot range", key);
-		return CLUSTER_OP_BAD_INPUT;
+		return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 	}
 	p = q;
 
 	if (*p != ' ') {
 		fr_strerror_printf("Missing key/host separator");
-		return CLUSTER_OP_BAD_INPUT;
+		return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 	}
 	p++;			/* Skip the ' ' */
 
 	if (fr_inet_pton_port(&ipaddr, &port, p, redirect->len - (p - redirect->str), AF_UNSPEC, false, true) < 0) {
-		return CLUSTER_OP_BAD_INPUT;
+		return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 	}
 	rad_assert(ipaddr.af);
 
@@ -479,7 +478,7 @@ static cluster_rcode_t cluster_node_conf_from_redirect(uint16_t *key_slot, fr_so
 		node_addr->port = port;
 	}
 
-	return CLUSTER_OP_SUCCESS;
+	return FR_REDIS_CLUSTER_RCODE_SUCCESS;
 }
 
 /** Apply a cluster map received from a cluster node
@@ -515,17 +514,17 @@ static cluster_rcode_t cluster_node_conf_from_redirect(uint16_t *key_slot, fr_so
  * @param[in,out] cluster to apply map to.
  * @param[in] reply from #cluster_map_get.
  * @return
- *	- CLUSTER_OP_SUCCESS on success.
- *	- CLUSTER_OP_FAILED on failure.
-  *	- CLUSTER_OP_NO_CONNECTION connection failure.
- *	- CLUSTER_OP_BAD_INPUT if the map didn't provide nodes for all keyslots.
+ *	- FR_REDIS_CLUSTER_RCODE_SUCCESS on success.
+ *	- FR_REDIS_CLUSTER_RCODE_FAILED on failure.
+  *	- FR_REDIS_CLUSTER_RCODE_NO_CONNECTION connection failure.
+ *	- FR_REDIS_CLUSTER_RCODE_BAD_INPUT if the map didn't provide nodes for all keyslots.
  */
-static cluster_rcode_t cluster_map_apply(fr_redis_cluster_t *cluster, redisReply *reply)
+static fr_redis_cluster_rcode_t cluster_map_apply(fr_redis_cluster_t *cluster, redisReply *reply)
 {
 	size_t		i;
 	uint8_t		r = 0;
 
-	cluster_rcode_t	rcode;
+	fr_redis_cluster_rcode_t	rcode;
 
 	uint8_t		rollback[UINT8_MAX];		// Set of nodes to re-add to the queue on failure.
 	bool		active[UINT8_MAX];		// Set of nodes active in the new cluster map.
@@ -592,7 +591,7 @@ do { \
 		int			slaves = 0;
 		fr_redis_cluster_node_t		*found, *spare;
 		fr_redis_cluster_node_t		find;
-		cluster_key_slot_t	tmpl_slot;
+		fr_redis_cluster_key_slot_t	tmpl_slot;
 		redisReply		*map = reply->element[i];
 
 		memset(&tmpl_slot, 0, sizeof(tmpl_slot));
@@ -615,7 +614,7 @@ do { \
 		if (!spare) {
 		out_of_nodes:
 			fr_strerror_printf("Reached maximum connected nodes");
-			rcode = CLUSTER_OP_FAILED;
+			rcode = FR_REDIS_CLUSTER_RCODE_FAILED;
 		error:
 			cluster->remapping = false;
 			cluster->last_updated = time(NULL);
@@ -697,7 +696,7 @@ do { \
 	for (i = 0; i < KEY_SLOTS; i++) {
 		if (cluster->key_slot_pending[i].master == 0) {
 			fr_strerror_printf("Cluster is misconfigured, no node assigned for key %zu", i);
-			rcode = CLUSTER_OP_BAD_INPUT;
+			rcode = FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 			goto error;
 		}
 	}
@@ -753,7 +752,7 @@ do { \
 	rad_assert(((talloc_array_length(cluster->node) - 1) - rbtree_num_elements(cluster->used_nodes)) ==
 		   fr_fifo_num_elements(cluster->free_nodes));
 
-	return CLUSTER_OP_SUCCESS;
+	return FR_REDIS_CLUSTER_RCODE_SUCCESS;
 }
 
 /** Validate a cluster map node entry
@@ -765,8 +764,8 @@ do { \
  * @param[in] map_idx we're processing.
  * @param[in] node_idx we're processing.
  * @return
- *	- CLUSTER_OP_SUCCESS on success.
- *	- CLUSTER_OP_BAD_INPUT on validation failure (bad data returned from Redis).
+ *	- FR_REDIS_CLUSTER_RCODE_SUCCESS on success.
+ *	- FR_REDIS_CLUSTER_RCODE_BAD_INPUT on validation failure (bad data returned from Redis).
  */
 static int cluster_map_node_validate(redisReply *node, int map_idx, int node_idx)
 {
@@ -776,7 +775,7 @@ static int cluster_map_node_validate(redisReply *node, int map_idx, int node_idx
 		fr_strerror_printf("Cluster map %i node %i is wrong type, expected array got %s",
 				   map_idx, node_idx,
 				   fr_int2str(redis_reply_types, node->element[1]->type, "<UNKNOWN>"));
-		return CLUSTER_OP_BAD_INPUT;
+		return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 	}
 
 	/*
@@ -794,40 +793,40 @@ static int cluster_map_node_validate(redisReply *node, int map_idx, int node_idx
 	if (node->elements < 2) {
 		fr_strerror_printf("Cluster map %i node %i has incorrect number of elements, expected at least "
 				   "2 got %zu", map_idx, node_idx, node->elements);
-		return CLUSTER_OP_BAD_INPUT;
+		return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 	}
 
 	if (node->element[0]->type != REDIS_REPLY_STRING) {
 		fr_strerror_printf("Cluster map %i node %i ip address is wrong type, expected string got %s",
 				   map_idx, node_idx,
 				   fr_int2str(redis_reply_types, node->element[0]->type, "<UNKNOWN>"));
-		return CLUSTER_OP_BAD_INPUT;
+		return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 	}
 
 	if (fr_inet_pton(&ipaddr, node->element[0]->str, node->element[0]->len, AF_UNSPEC, false, true) < 0) {
-		return CLUSTER_OP_BAD_INPUT;
+		return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 	}
 
 	if (node->element[1]->type != REDIS_REPLY_INTEGER) {
 		fr_strerror_printf("Cluster map %i node %i port is wrong type, expected integer got %s",
 				   map_idx, node_idx,
 				   fr_int2str(redis_reply_types, node->element[1]->type, "<UNKNOWN>"));
-		return CLUSTER_OP_BAD_INPUT;
+		return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 	}
 
 	if (node->element[1]->integer < 0) {
 		fr_strerror_printf("Cluster map %i node %i port is too low, expected >= 0 got %lli",
 				   map_idx, node_idx, node->element[1]->integer);
-		return CLUSTER_OP_BAD_INPUT;
+		return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 	}
 
 	if (node->element[1]->integer > UINT16_MAX) {
 		fr_strerror_printf("Cluster map %i node %i port is too high, expected <= " STRINGIFY(UINT16_MAX)" "
 				   "got %lli", map_idx, node_idx, node->element[1]->integer);
-		return CLUSTER_OP_BAD_INPUT;
+		return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 	}
 
-	return CLUSTER_OP_SUCCESS;
+	return FR_REDIS_CLUSTER_RCODE_SUCCESS;
 }
 
 /** Learn a new cluster layout by querying the node that issued the -MOVE
@@ -840,13 +839,13 @@ static int cluster_map_node_validate(redisReply *node, int map_idx, int node_idx
  * @param[out] out Where to write cluster map.
  * @param[in] conn to use for learning the new cluster map.
  * @return
- *	- CLUSTER_OP_IGNORED if 'cluster slots' returned an error (indicating clustering not supported).
- *	- CLUSTER_OP_SUCCESS on success.
- *	- CLUSTER_OP_FAILED if issuing the command resulted in an error.
- *	- CLUSTER_OP_NO_CONNECTION connection failure.
- *	- CLUSTER_OP_BAD_INPUT on validation failure (bad data returned from Redis).
+ *	- FR_REDIS_CLUSTER_RCODE_IGNORED if 'cluster slots' returned an error (indicating clustering not supported).
+ *	- FR_REDIS_CLUSTER_RCODE_SUCCESS on success.
+ *	- FR_REDIS_CLUSTER_RCODE_FAILED if issuing the command resulted in an error.
+ *	- FR_REDIS_CLUSTER_RCODE_NO_CONNECTION connection failure.
+ *	- FR_REDIS_CLUSTER_RCODE_BAD_INPUT on validation failure (bad data returned from Redis).
  */
-static cluster_rcode_t cluster_map_get(redisReply **out, fr_redis_conn_t *conn)
+static fr_redis_cluster_rcode_t cluster_map_get(redisReply **out, fr_redis_conn_t *conn)
 {
 	redisReply	*reply;
 	size_t		i = 0;
@@ -856,19 +855,19 @@ static cluster_rcode_t cluster_map_get(redisReply **out, fr_redis_conn_t *conn)
 	reply = redisCommand(conn->handle, "cluster slots");
 	switch (fr_redis_command_status(conn, reply)) {
 	case REDIS_RCODE_RECONNECT:
-		fr_redis_reply_free(reply);
+		fr_redis_reply_free(&reply);
 		fr_strerror_printf("No connections available");
-		return CLUSTER_OP_NO_CONNECTION;
+		return FR_REDIS_CLUSTER_RCODE_NO_CONNECTION;
 
 	case REDIS_RCODE_ERROR:
 	default:
 		if (reply && reply->type == REDIS_REPLY_ERROR) {
 			fr_strerror_printf("%.*s", (int)reply->len, reply->str);
-			fr_redis_reply_free(reply);
-			return CLUSTER_OP_IGNORED;
+			fr_redis_reply_free(&reply);
+			return FR_REDIS_CLUSTER_RCODE_IGNORED;
 		}
 		fr_strerror_printf("Unknown client error");
-		return CLUSTER_OP_FAILED;
+		return FR_REDIS_CLUSTER_RCODE_FAILED;
 
 	case REDIS_RCODE_SUCCESS:
 		break;
@@ -877,7 +876,7 @@ static cluster_rcode_t cluster_map_get(redisReply **out, fr_redis_conn_t *conn)
 	if (reply->type != REDIS_REPLY_ARRAY) {
 		fr_strerror_printf("Bad response to \"cluster slots\" command, expected array got %s",
 				   fr_int2str(redis_reply_types, reply->type, "<UNKNOWN>"));
-		return CLUSTER_OP_BAD_INPUT;
+		return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 	}
 
 	/*
@@ -885,7 +884,7 @@ static cluster_rcode_t cluster_map_get(redisReply **out, fr_redis_conn_t *conn)
 	 */
 	if (reply->elements == 0) {
 		fr_strerror_printf("Empty response to \"cluster slots\" command (zero length array)");
-		return CLUSTER_OP_BAD_INPUT;
+		return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 	}
 
 	/*
@@ -900,8 +899,8 @@ static cluster_rcode_t cluster_map_get(redisReply **out, fr_redis_conn_t *conn)
 			fr_strerror_printf("Cluster map %zu is wrong type, expected array got %s",
 				   	   i, fr_int2str(redis_reply_types, map->type, "<UNKNOWN>"));
 		error:
-			fr_redis_reply_free(reply);
-			return CLUSTER_OP_BAD_INPUT;
+			fr_redis_reply_free(&reply);
+			return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 		}
 
 		if (map->elements < 3) {
@@ -973,7 +972,7 @@ static cluster_rcode_t cluster_map_get(redisReply **out, fr_redis_conn_t *conn)
 	}
 	*out = reply;
 
-	return CLUSTER_OP_SUCCESS;
+	return FR_REDIS_CLUSTER_RCODE_SUCCESS;
 }
 
 /** Perform a runtime remap of the cluster
@@ -985,17 +984,17 @@ static cluster_rcode_t cluster_map_get(redisReply **out, fr_redis_conn_t *conn)
  * @param[in,out] cluster to remap.
  * @param[in] conn to use to query the cluster.
  * @return
- *	- CLUSTER_OP_IGNORED if 'cluster slots' returned an error (indicating clustering not supported).
- *	- CLUSTER_OP_SUCCESS on success.
- *	- CLUSTER_OP_FAILED if issuing the 'cluster slots' command resulted in a protocol error.
- *	- CLUSTER_OP_NO_CONNECTION connection failure.
- *	- CLUSTER_OP_BAD_INPUT on validation failure (bad data returned from Redis).
+ *	- FR_REDIS_CLUSTER_RCODE_IGNORED if 'cluster slots' returned an error (indicating clustering not supported).
+ *	- FR_REDIS_CLUSTER_RCODE_SUCCESS on success.
+ *	- FR_REDIS_CLUSTER_RCODE_FAILED if issuing the 'cluster slots' command resulted in a protocol error.
+ *	- FR_REDIS_CLUSTER_RCODE_NO_CONNECTION connection failure.
+ *	- FR_REDIS_CLUSTER_RCODE_BAD_INPUT on validation failure (bad data returned from Redis).
  */
-static cluster_rcode_t cluster_remap(REQUEST *request, fr_redis_cluster_t *cluster, fr_redis_conn_t *conn)
+fr_redis_cluster_rcode_t fr_redis_cluster_remap(REQUEST *request, fr_redis_cluster_t *cluster, fr_redis_conn_t *conn)
 {
 	time_t		now;
 	redisReply	*map;
-	cluster_rcode_t	ret;
+	fr_redis_cluster_rcode_t	ret;
 	size_t		i, j;
 
 	/*
@@ -1004,15 +1003,15 @@ static cluster_rcode_t cluster_remap(REQUEST *request, fr_redis_cluster_t *clust
 	 */
 	if (cluster->remapping) {
 	in_progress:
-		RDEBUG("Cluster remapping in progress, ignoring remap request");
-		return CLUSTER_OP_IGNORED;
+		RDEBUG2("Cluster remapping in progress, ignoring remap request");
+		return FR_REDIS_CLUSTER_RCODE_IGNORED;
 	}
 
 	now = time(NULL);
 	if (now == cluster->last_updated) {
 	too_soon:
-		RDEBUG("Cluster was updated less than a second ago, ignoring remap request");
-		return CLUSTER_OP_IGNORED;
+		RWARN("Cluster was updated less than a second ago, ignoring remap request");
+		return FR_REDIS_CLUSTER_RCODE_IGNORED;
 	}
 
 	RINFO("Initiating cluster remap");
@@ -1022,16 +1021,16 @@ static cluster_rcode_t cluster_remap(REQUEST *request, fr_redis_cluster_t *clust
 	 */
 	ret = cluster_map_get(&map, conn);
 	switch (ret) {
-	case CLUSTER_OP_BAD_INPUT:		/* Validation error */
-	case CLUSTER_OP_NO_CONNECTION:		/* Connection error */
-	case CLUSTER_OP_FAILED:			/* Error issuing command */
+	case FR_REDIS_CLUSTER_RCODE_BAD_INPUT:		/* Validation error */
+	case FR_REDIS_CLUSTER_RCODE_NO_CONNECTION:		/* Connection error */
+	case FR_REDIS_CLUSTER_RCODE_FAILED:			/* Error issuing command */
 		return ret;
 
-	case CLUSTER_OP_IGNORED:		/* Clustering not enabled, or not supported */
+	case FR_REDIS_CLUSTER_RCODE_IGNORED:		/* Clustering not enabled, or not supported */
 		cluster->remap_needed = false;
-		return CLUSTER_OP_IGNORED;
+		return FR_REDIS_CLUSTER_RCODE_IGNORED;
 
-	case CLUSTER_OP_SUCCESS:		/* Success */
+	case FR_REDIS_CLUSTER_RCODE_SUCCESS:		/* Success */
 		break;
 	}
 
@@ -1067,22 +1066,22 @@ static cluster_rcode_t cluster_remap(REQUEST *request, fr_redis_cluster_t *clust
 	pthread_mutex_lock(&cluster->mutex);
 	if (cluster->remapping) {
 		pthread_mutex_unlock(&cluster->mutex);
-		fr_redis_reply_free(map);	/* Free the map */
+		fr_redis_reply_free(&map);	/* Free the map */
 		goto in_progress;
 	}
 	if (now == cluster->last_updated) {
 		pthread_mutex_unlock(&cluster->mutex);
-		fr_redis_reply_free(map);	/* Free the map */
+		fr_redis_reply_free(&map);	/* Free the map */
 		goto too_soon;
 	}
 	ret = cluster_map_apply(cluster, map);
-	if (ret == CLUSTER_OP_SUCCESS) cluster->remap_needed = false;	/* Change on successful remap */
+	if (ret == FR_REDIS_CLUSTER_RCODE_SUCCESS) cluster->remap_needed = false;	/* Change on successful remap */
 	pthread_mutex_unlock(&cluster->mutex);
 
-	fr_redis_reply_free(map);	/* Free the map */
-	if (ret < 0) return CLUSTER_OP_FAILED;
+	fr_redis_reply_free(&map);	/* Free the map */
+	if (ret < 0) return FR_REDIS_CLUSTER_RCODE_FAILED;
 
-	return CLUSTER_OP_SUCCESS;
+	return FR_REDIS_CLUSTER_RCODE_SUCCESS;
 }
 
 /** Retrieve or associate a node with the server indicated in the redirect
@@ -1093,12 +1092,12 @@ static cluster_rcode_t cluster_remap(REQUEST *request, fr_redis_cluster_t *clust
  * @param[in] cluster to draw node from.
  * @param[in] reply Redis reply containing the redirect information.
  * @return
- *	- CLUSTER_OP_SUCCESS on success.
- *	- CLUSTER_OP_FAILED no more nodes available.
- *	- CLUSTER_OP_NO_CONNECTION connection failure.
- *	- CLUSTER_OP_BAD_INPUT on validation failure (bad data returned from Redis).
+ *	- FR_REDIS_CLUSTER_RCODE_SUCCESS on success.
+ *	- FR_REDIS_CLUSTER_RCODE_FAILED no more nodes available.
+ *	- FR_REDIS_CLUSTER_RCODE_NO_CONNECTION connection failure.
+ *	- FR_REDIS_CLUSTER_RCODE_BAD_INPUT on validation failure (bad data returned from Redis).
  */
-static cluster_rcode_t cluster_redirect(fr_redis_cluster_node_t **out, fr_redis_cluster_t *cluster, redisReply *reply)
+static fr_redis_cluster_rcode_t cluster_redirect(fr_redis_cluster_node_t **out, fr_redis_cluster_t *cluster, redisReply *reply)
 {
 	fr_redis_cluster_node_t		find, *found, *spare;
 	fr_redis_conn_t		*rconn;
@@ -1109,7 +1108,7 @@ static cluster_rcode_t cluster_redirect(fr_redis_cluster_node_t **out, fr_redis_
 
 	*out = NULL;
 
-	if (cluster_node_conf_from_redirect(&key, &find.addr, reply) < 0) return CLUSTER_OP_FAILED;
+	if (cluster_node_conf_from_redirect(&key, &find.addr, reply) < 0) return FR_REDIS_CLUSTER_RCODE_FAILED;
 
 	pthread_mutex_lock(&cluster->mutex);
 	/*
@@ -1121,7 +1120,7 @@ static cluster_rcode_t cluster_redirect(fr_redis_cluster_node_t **out, fr_redis_
 		/* We have the new pool, don't need to hold the lock */
 		pthread_mutex_unlock(&cluster->mutex);
 		*out = found;
-		return CLUSTER_OP_SUCCESS;
+		return FR_REDIS_CLUSTER_RCODE_SUCCESS;
 	}
 
 	/*
@@ -1132,12 +1131,12 @@ static cluster_rcode_t cluster_redirect(fr_redis_cluster_node_t **out, fr_redis_
 	if (!spare) {
 		fr_strerror_printf("Reached maximum connected nodes");
 		pthread_mutex_unlock(&cluster->mutex);
-		return CLUSTER_OP_FAILED;
+		return FR_REDIS_CLUSTER_RCODE_FAILED;
 	}
 	spare->pending_addr = find.addr;	/* Set the config to be applied */
 	if (cluster_node_connect(cluster, spare) < 0) {
 		pthread_mutex_unlock(&cluster->mutex);
-		return CLUSTER_OP_NO_CONNECTION;
+		return FR_REDIS_CLUSTER_RCODE_NO_CONNECTION;
 	}
 	rbtree_insert(cluster->used_nodes, spare);
 	fr_fifo_pop(cluster->free_nodes);
@@ -1164,26 +1163,26 @@ static cluster_rcode_t cluster_redirect(fr_redis_cluster_node_t **out, fr_redis_
 		pthread_mutex_unlock(&cluster->mutex);
 
 		fr_strerror_printf("No connections available");
-		return CLUSTER_OP_NO_CONNECTION;
+		return FR_REDIS_CLUSTER_RCODE_NO_CONNECTION;
 	}
 	fr_pool_connection_release(found->pool, NULL, rconn);
 	*out = found;
 
-	return CLUSTER_OP_SUCCESS;
+	return FR_REDIS_CLUSTER_RCODE_SUCCESS;
 }
 
 /** Walk all used pools adding them to the live node list
  *
- * @param context Where to write the node we found.
- * @param data node to check.
+ * @param[in] uctx	Where to write the node we found.
+ * @param[in] data	node to check.
  * @return
  *	- 0 continue walking.
  *	- -1 found suitable node.
  */
-static int _cluster_pool_walk(void *context, void *data)
+static int _cluster_pool_walk(void *data, void *uctx)
 {
-	cluster_nodes_live_t	*live = context;
-	fr_redis_cluster_node_t		*node = data;
+	cluster_nodes_live_t	*live = uctx;
+	fr_redis_cluster_node_t	*node = data;
 
 	rad_assert(node->pool);
 
@@ -1210,34 +1209,27 @@ static int _cluster_pool_walk(void *context, void *data)
  *	- 2-11000 the pool is likely to be good, with a higher number
  *	  indicating higher probability of liveness.
  */
-static int cluster_node_pool_health(struct timeval const *now, fr_pool_state_t const *state)
+static int cluster_node_pool_health(fr_time_t now, fr_pool_state_t const *state)
 {
-	struct timeval diff;
-	uint64_t diff_ms;
-
 	/*
 	 *	Failed spawn recently, probably bad
 	 */
-	if ((((time_t)now->tv_sec - state->last_failed) * 1000) < FAILED_PERIOD) return FAILED_WEIGHT;
+	if (fr_time_delta_to_msec(now - state->last_failed) < FAILED_PERIOD) return FAILED_WEIGHT;
 
 	/*
 	 *	Closed recently, probably bad
 	 */
-	fr_timeval_subtract(&diff, now, &state->last_closed);
-	diff_ms = FR_TIMEVAL_TO_MS(&diff);
-	if (diff_ms < CLOSED_PERIOD) return CLOSED_WEIGHT;
+	if (fr_time_delta_to_msec(now - state->last_closed) < CLOSED_PERIOD) return CLOSED_WEIGHT;
 
 	/*
 	 *	Released too long ago, don't know
 	 */
-	fr_timeval_subtract(&diff, now, &state->last_released);
-	diff_ms = FR_TIMEVAL_TO_MS(&diff);
-	if (diff_ms > RELEASED_PERIOD) return RELEASED_MIN_WEIGHT;
+	if (fr_time_delta_to_msec(now - state->last_released) > RELEASED_PERIOD) return RELEASED_MIN_WEIGHT;
 
 	/*
 	 *	Released not long ago, might be ok.
 	 */
-	return RELEASED_MIN_WEIGHT + (RELEASED_PERIOD - diff_ms);
+	return RELEASED_MIN_WEIGHT + (RELEASED_PERIOD - fr_time_delta_to_msec(now - state->last_released));
 }
 
 /** Issue a ping request against a cluster node
@@ -1248,11 +1240,11 @@ static int cluster_node_pool_health(struct timeval const *now, fr_pool_state_t c
  * @param node to ping.
  * @param conn the connection to ping on.
  * @return
- *	- CLUSTER_OP_BAD_INPUT if we got a bad response.
- *	- CLUSTER_OP_SUCCESS on success.
- *	- CLUSTER_OP_NO_CONNECTION on connection down.
+ *	- FR_REDIS_CLUSTER_RCODE_BAD_INPUT if we got a bad response.
+ *	- FR_REDIS_CLUSTER_RCODE_SUCCESS on success.
+ *	- FR_REDIS_CLUSTER_RCODE_NO_CONNECTION on connection down.
  */
-static cluster_rcode_t cluster_node_ping(REQUEST *request, fr_redis_cluster_node_t *node, fr_redis_conn_t *conn)
+static fr_redis_cluster_rcode_t cluster_node_ping(REQUEST *request, fr_redis_cluster_node_t *node, fr_redis_conn_t *conn)
 {
 	redisReply		*reply;
 	fr_redis_rcode_t	rcode;
@@ -1262,21 +1254,21 @@ static cluster_rcode_t cluster_node_ping(REQUEST *request, fr_redis_cluster_node
 	rcode = fr_redis_command_status(conn, reply);
 	if (rcode != REDIS_RCODE_SUCCESS) {
 		RPERROR("[%i] PING failed to %s:%i", node->id, node->name, node->addr.port);
-		fr_redis_reply_free(reply);
-		return CLUSTER_OP_NO_CONNECTION;
+		fr_redis_reply_free(&reply);
+		return FR_REDIS_CLUSTER_RCODE_NO_CONNECTION;
 	}
 
 	if (reply->type != REDIS_REPLY_STATUS) {
 		RERROR("[%i] Bad PING response from %s:%i, expected status got %s",
 		       node->id, node->name, node->addr.port,
 		       fr_int2str(redis_reply_types, reply->type, "<UNKNOWN>"));
-		fr_redis_reply_free(reply);
-		return CLUSTER_OP_BAD_INPUT;
+		fr_redis_reply_free(&reply);
+		return FR_REDIS_CLUSTER_RCODE_BAD_INPUT;
 	}
 
 	RDEBUG2("[%i] Got response: %s", node->id, reply->str);
-	fr_redis_reply_free(reply);
-	return CLUSTER_OP_SUCCESS;
+	fr_redis_reply_free(&reply);
+	return FR_REDIS_CLUSTER_RCODE_SUCCESS;
 }
 
 /** Attempt to find a live pool in the cluster
@@ -1325,7 +1317,7 @@ static int cluster_node_find_live(fr_redis_cluster_node_t **live_node, fr_redis_
 	uint32_t		i;
 
 	cluster_nodes_live_t	*live;
-	struct timeval		now;
+	fr_time_t		now;
 
 	RDEBUG2("Searching for live cluster nodes");
 
@@ -1345,14 +1337,14 @@ static int cluster_node_find_live(fr_redis_cluster_node_t **live_node, fr_redis_
 	rad_assert(live->next);			/* There should be at least one */
 	if (live->next == 1) goto no_alts;	/* Weird, but conceivable */
 
-	gettimeofday(&now, NULL);
+	now = fr_time();
 
 	/*
 	 *	Weighted random selection
 	 */
 	for (i = 0; (i < cluster->conf->max_alt) && live->next; i++) {
 		fr_redis_conn_t 	*conn;
-		fr_redis_cluster_node_t		*node;
+		fr_redis_cluster_node_t	*node;
 		uint8_t			j;
 		int			first, last, pivot;	/* Must be signed for BS */
 		unsigned int		find, cumulative = 0;
@@ -1362,7 +1354,7 @@ static int cluster_node_find_live(fr_redis_cluster_node_t **live_node, fr_redis_
 		for (j = 0; j < live->next; j++) {
 			int weight;
 
-			weight = cluster_node_pool_health(&now, live->node[j].pool_state);
+			weight = cluster_node_pool_health(now, live->node[j].pool_state);
 			RDEBUG3("Node %i weight: %i", live->node[j].id, weight);
 			live->node[j].cumulative = (cumulative += weight);
 		}
@@ -1421,10 +1413,10 @@ static int cluster_node_find_live(fr_redis_cluster_node_t **live_node, fr_redis_
 		 *	PING! PONG?
 		 */
 		switch (cluster_node_ping(request, node, conn)) {
-		case CLUSTER_OP_SUCCESS:
+		case FR_REDIS_CLUSTER_RCODE_SUCCESS:
 			break;
 
-		case CLUSTER_OP_NO_CONNECTION:
+		case FR_REDIS_CLUSTER_RCODE_NO_CONNECTION:
 			fr_pool_connection_close(node->pool, request, conn);
 			goto next;
 
@@ -1467,7 +1459,7 @@ static int _cluster_conn_free(fr_redis_conn_t *conn)
  *	- New #fr_redis_conn_t on success.
  *	- NULL on failure.
  */
-void *fr_redis_cluster_conn_create(TALLOC_CTX *ctx, void *instance, struct timeval const *timeout)
+void *fr_redis_cluster_conn_create(TALLOC_CTX *ctx, void *instance, fr_time_delta_t timeout)
 {
 	fr_redis_cluster_node_t		*node = instance;
 	fr_redis_conn_t		*conn = NULL;
@@ -1475,25 +1467,25 @@ void *fr_redis_cluster_conn_create(TALLOC_CTX *ctx, void *instance, struct timev
 	redisReply		*reply = NULL;
 	char const		*log_prefix = node->cluster->log_prefix;
 
-	DEBUG2("%s [%i]: Connecting node to %s:%i", log_prefix, node->id, node->name, node->addr.port);
+	DEBUG2("%s - [%i] Connecting to node %s:%i", log_prefix, node->id, node->name, node->addr.port);
 
-	handle = redisConnectWithTimeout(node->name, node->addr.port, *timeout);
+	handle = redisConnectWithTimeout(node->name, node->addr.port, fr_time_delta_to_timeval(timeout));
 	if ((handle != NULL) && handle->err) {
-		ERROR("%s [%i]: Connection failed: %s", log_prefix, node->id, handle->errstr);
+		ERROR("%s - [%i] Connection failed: %s", log_prefix, node->id, handle->errstr);
 		redisFree(handle);
 		return NULL;
 	} else if (!handle) {
-		ERROR("%s [%i]: Connection failed", log_prefix, node->id);
+		ERROR("%s - [%i] Connection failed", log_prefix, node->id);
 		return NULL;
 	}
 
 	if (node->cluster->conf->password) {
-		DEBUG3("%s [%i]: Executing: AUTH %s", log_prefix, node->id, node->cluster->conf->password);
+		DEBUG3("%s - [%i] Executing: AUTH %s", log_prefix, node->id, node->cluster->conf->password);
 		reply = redisCommand(handle, "AUTH %s", node->cluster->conf->password);
 		if (!reply) {
-			ERROR("%s [%i]: Failed authenticating: %s", log_prefix, node->id, handle->errstr);
+			ERROR("%s - [%i] Failed authenticating: %s", log_prefix, node->id, handle->errstr);
 		error:
-			if (reply) fr_redis_reply_free(reply);
+			if (reply) fr_redis_reply_free(&reply);
 			redisFree(handle);
 			return NULL;
 		}
@@ -1501,29 +1493,29 @@ void *fr_redis_cluster_conn_create(TALLOC_CTX *ctx, void *instance, struct timev
 		switch (reply->type) {
 		case REDIS_REPLY_STATUS:
 			if (strcmp(reply->str, "OK") != 0) {
-				ERROR("%s [%i]: Failed authenticating: %s", log_prefix,
+				ERROR("%s - [%i] Failed authenticating: %s", log_prefix,
 				      node->id, reply->str);
 				goto error;
 			}
-			fr_redis_reply_free(reply);
+			fr_redis_reply_free(&reply);
 			break;	/* else it's OK */
 
 		case REDIS_REPLY_ERROR:
-			ERROR("%s [%i]: Failed authenticating: %s", log_prefix, node->id, reply->str);
+			ERROR("%s - [%i] Failed authenticating: %s", log_prefix, node->id, reply->str);
 			goto error;
 
 		default:
-			ERROR("%s [%i]: Unexpected reply of type %s to AUTH", log_prefix, node->id,
+			ERROR("%s - [%i] Unexpected reply of type %s to AUTH", log_prefix, node->id,
 			      fr_int2str(redis_reply_types, reply->type, "<UNKNOWN>"));
 			goto error;
 		}
 	}
 
 	if (node->cluster->conf->database) {
-		DEBUG3("%s [%i]: Executing: SELECT %i", log_prefix, node->id, node->cluster->conf->database);
+		DEBUG3("%s - [%i] Executing: SELECT %i", log_prefix, node->id, node->cluster->conf->database);
 		reply = redisCommand(handle, "SELECT %i", node->cluster->conf->database);
 		if (!reply) {
-			ERROR("%s [%i]: Failed selecting database %i: %s", log_prefix, node->id,
+			ERROR("%s - [%i] Failed selecting database %i: %s", log_prefix, node->id,
 			      node->cluster->conf->database, handle->errstr);
 			goto error;
 		}
@@ -1531,20 +1523,20 @@ void *fr_redis_cluster_conn_create(TALLOC_CTX *ctx, void *instance, struct timev
 		switch (reply->type) {
 		case REDIS_REPLY_STATUS:
 			if (strcmp(reply->str, "OK") != 0) {
-				ERROR("%s [%i]: Failed selecting database %i: %s", log_prefix, node->id,
+				ERROR("%s - [%i] Failed selecting database %i: %s", log_prefix, node->id,
 				      node->cluster->conf->database, reply->str);
 				goto error;
 			}
-			fr_redis_reply_free(reply);
+			fr_redis_reply_free(&reply);
 			break;	/* else it's OK */
 
 		case REDIS_REPLY_ERROR:
-			ERROR("%s [%i]: Failed selecting database %i: %s", log_prefix, node->id,
+			ERROR("%s - [%i] Failed selecting database %i: %s", log_prefix, node->id,
 			      node->cluster->conf->database, reply->str);
 			goto error;
 
 		default:
-			ERROR("%s [%i]: Unexpected reply of type %s, to SELECT", log_prefix, node->id,
+			ERROR("%s - [%i] Unexpected reply of type %s, to SELECT", log_prefix, node->id,
 			      fr_int2str(redis_reply_types, reply->type, "<UNKNOWN>"));
 			goto error;
 		}
@@ -1571,10 +1563,10 @@ void *fr_redis_cluster_conn_create(TALLOC_CTX *ctx, void *instance, struct timev
  * @param key_len the length of the key.
  * @return pointer to key slot key resolves to.
  */
-static cluster_key_slot_t *cluster_slot_by_key(fr_redis_cluster_t *cluster, REQUEST *request,
-					       uint8_t const *key, size_t key_len)
+fr_redis_cluster_key_slot_t const *fr_redis_cluster_slot_by_key(fr_redis_cluster_t *cluster, REQUEST *request,
+								uint8_t const *key, size_t key_len)
 {
-	cluster_key_slot_t *key_slot;
+	fr_redis_cluster_key_slot_t *key_slot;
 
 	if (!key || (key_len == 0)) {
 		key_slot = &cluster->key_slot[(uint16_t)(fr_rand() & (KEY_SLOTS - 1))];
@@ -1597,6 +1589,73 @@ static cluster_key_slot_t *cluster_slot_by_key(fr_redis_cluster_t *cluster, REQU
 	RDEBUG3("Single node available, skipping key selection");
 
 	return &cluster->key_slot[0];
+}
+
+/** Return the master node that would be used for a particular key
+ *
+ * @param[in] cluster		To resolve key in.
+ * @param[in] key_slot		to resolve to node.
+ * @return
+ *      - The current master node.
+ *	- NULL if no master node is currently assigned to a particular key slot.
+ */
+fr_redis_cluster_node_t const *fr_redis_cluster_master(fr_redis_cluster_t *cluster,
+						       fr_redis_cluster_key_slot_t const *key_slot)
+{
+	return &cluster->node[key_slot->master];
+}
+
+/** Return the slave node that would be used for a particular key
+ *
+ * @param[in] cluster		To resolve key in.
+ * @param[in] key_slot		To resolve to node.
+ * @param[in] slave_num		0..n.
+ * @return
+ *	- A slave node.
+ *	- NULL if no slave node is assigned, or is at the specific key slot.
+ *
+ */
+fr_redis_cluster_node_t const *fr_redis_cluster_slave(fr_redis_cluster_t *cluster,
+						      fr_redis_cluster_key_slot_t const *key_slot,
+						      uint8_t slave_num)
+{
+	if (slave_num >= key_slot->slave_num) return NULL;	/* No slave available */
+
+	return &cluster->node[key_slot->slave[slave_num]];
+}
+
+/** Return the ipaddr of a particular node
+ *
+ * @param[out] out	Ipaddr of the node.
+ * @param[in] node	to get ip address from.
+ * @return
+ *	- 0 on success.
+ *	- -1 on failure (node is NULL).
+ */
+int fr_redis_cluster_ipaddr(fr_ipaddr_t *out, fr_redis_cluster_node_t const *node)
+{
+	if (!node) return -1;
+
+	memcpy(out, &node->addr.ipaddr, sizeof(*out));
+
+	return 0;
+}
+
+/** Return the port of a particular node
+ *
+ * @param[out] out	Port of the node.
+ * @param[in] node	to get ip address from.
+ * @return
+ *	- 0 on success.
+ *	- -1 on failure (node is NULL).
+ */
+int fr_redis_cluster_port(uint16_t *out, fr_redis_cluster_node_t const *node)
+{
+	if (!node) return -1;
+
+	*out = node->addr.port;
+
+	return 0;
 }
 
 /** Resolve a key to a pool, and reserve a connection in that pool
@@ -1622,7 +1681,7 @@ static cluster_key_slot_t *cluster_slot_by_key(fr_redis_cluster_t *cluster, REQU
     }
     // Reply is freed if ret == REDIS_RCODE_TRY_AGAIN, but left in all other cases to allow error
     // processing, or extraction of results.
-    fr_redis_reply_free(reply);
+    fr_redis_reply_free(&reply);
     if (s_ret != REDIS_RCODE_SUCCESS) {
     	// Error
     }
@@ -1646,10 +1705,10 @@ fr_redis_rcode_t fr_redis_cluster_state_init(fr_redis_cluster_state_t *state, fr
 					     fr_redis_cluster_t *cluster, REQUEST *request,
 					     uint8_t const *key, size_t key_len, bool read_only)
 {
-	fr_redis_cluster_node_t		*node;
-	cluster_key_slot_t	*key_slot;
-	uint8_t			first, i;
-	int			used_nodes;
+	fr_redis_cluster_node_t			*node;
+	fr_redis_cluster_key_slot_t const	*key_slot;
+	uint8_t					first, i;
+	int					used_nodes;
 
 	rad_assert(cluster);
 	rad_assert(state);
@@ -1664,7 +1723,7 @@ fr_redis_rcode_t fr_redis_cluster_state_init(fr_redis_cluster_state_t *state, fr
 	}
 
 again:
-	key_slot = cluster_slot_by_key(cluster, request, key, key_len);
+	key_slot = fr_redis_cluster_slot_by_key(cluster, request, key, key_len);
 
 	/*
 	 *	1. Try each of the slaves for the key slot
@@ -1711,7 +1770,7 @@ finish:
 	 *	Something set the remap_needed flag, and we have a live connection
 	 */
 	if (cluster->remap_needed) {
-		if (cluster_remap(request, cluster, *conn) == CLUSTER_OP_SUCCESS) {
+		if (fr_redis_cluster_remap(request, cluster, *conn) == FR_REDIS_CLUSTER_RCODE_SUCCESS) {
 			fr_pool_connection_release(node->pool, request, *conn);
 			goto again;	/* New map, try again */
 		}
@@ -1798,7 +1857,7 @@ fr_redis_rcode_t fr_redis_cluster_state_next(fr_redis_cluster_state_t *state, fr
 		 *	Remap the cluster. On success, will clear the
 		 *	remap_needed flag.
 		 */
-		if (cluster_remap(request, cluster, *conn) != CLUSTER_OP_SUCCESS) RDEBUG2("%s", fr_strerror());
+		if (fr_redis_cluster_remap(request, cluster, *conn) != FR_REDIS_CLUSTER_RCODE_SUCCESS) RDEBUG2("%s", fr_strerror());
 	}
 
 	/*
@@ -1834,13 +1893,7 @@ fr_redis_rcode_t fr_redis_cluster_state_next(fr_redis_cluster_state_t *state, fr
 
 		if (!*conn) *conn = fr_pool_connection_get(state->node->pool, request);
 
-		if (FR_TIMEVAL_TO_MS(&cluster->conf->retry_delay)) {
-			struct timespec ts;
-
-			ts.tv_sec = cluster->conf->retry_delay.tv_sec;
-			ts.tv_nsec = cluster->conf->retry_delay.tv_usec * 1000;
-			nanosleep(&ts, NULL);
-		}
+		if (cluster->conf->retry_delay) nanosleep(&fr_time_delta_to_timespec(cluster->conf->retry_delay), NULL);
 		goto try_again;
 
 	/*
@@ -1849,7 +1902,7 @@ fr_redis_rcode_t fr_redis_cluster_state_next(fr_redis_cluster_state_t *state, fr
 	 */
 	case REDIS_RCODE_RECONNECT:
 	{
-		cluster_key_slot_t *key_slot;
+		fr_redis_cluster_key_slot_t const *key_slot;
 
 		RERROR("[%i] Failed communicating with %s:%i: %s", state->node->id, state->node->name,
 		       state->node->addr.port, fr_strerror());
@@ -1865,7 +1918,7 @@ fr_redis_rcode_t fr_redis_cluster_state_next(fr_redis_cluster_state_t *state, fr
 		/*
 		 *	Refresh the key slot
 		 */
-		key_slot = cluster_slot_by_key(cluster, request, state->key, state->key_len);
+		key_slot = fr_redis_cluster_slot_by_key(cluster, request, state->key, state->key_len);
 		state->node = &cluster->node[key_slot->master];
 
 		*conn = fr_pool_connection_get(state->node->pool, request);
@@ -1873,7 +1926,11 @@ fr_redis_rcode_t fr_redis_cluster_state_next(fr_redis_cluster_state_t *state, fr
 			REDEBUG("[%i] No connections available for %s:%i", state->node->id, state->node->name,
 				state->node->addr.port);
 			cluster->remap_needed = true;
-			return REDIS_RCODE_RECONNECT;
+
+			if (cluster_node_find_live(&state->node, conn, request,
+						   cluster, state->node) < 0) return REDIS_RCODE_RECONNECT;
+
+			return REDIS_RCODE_TRY_AGAIN;
 		}
 
 		state->retries = 0;
@@ -1887,7 +1944,7 @@ fr_redis_rcode_t fr_redis_cluster_state_next(fr_redis_cluster_state_t *state, fr
 	case REDIS_RCODE_MOVE:
 		rad_assert(*reply);
 
-		if (*conn && (cluster_remap(request, cluster, *conn) != CLUSTER_OP_SUCCESS)) {
+		if (*conn && (fr_redis_cluster_remap(request, cluster, *conn) != FR_REDIS_CLUSTER_RCODE_SUCCESS)) {
 			RDEBUG2("%s", fr_strerror());
 		}
 		/* FALL-THROUGH */
@@ -1903,22 +1960,22 @@ fr_redis_rcode_t fr_redis_cluster_state_next(fr_redis_cluster_state_t *state, fr
 
 		if (!fr_cond_assert(*reply)) return REDIS_RCODE_ERROR;
 
-		RDEBUG("[%i] Processing redirect \"%s\"", state->node->id, (*reply)->str);
+		RDEBUG2("[%i] Processing redirect \"%s\"", state->node->id, (*reply)->str);
 		if (state->redirects++ >= cluster->conf->max_redirects) {
 			REDEBUG("[%i] Reached max_redirects (%i)", state->node->id, state->redirects);
 			return REDIS_RCODE_ERROR;
 		}
 
 		switch (cluster_redirect(&new, cluster, *reply)) {
-		case CLUSTER_OP_SUCCESS:
+		case FR_REDIS_CLUSTER_RCODE_SUCCESS:
 			if (new == state->node) {
 				REDEBUG("[%i] %s:%i issued redirect to itself", state->node->id,
 					state->node->name, state->node->addr.port);
 				return REDIS_RCODE_ERROR;
 			}
 
-			RDEBUG("[%i] Redirected from %s:%i to [%i] %s:%i", state->node->id, state->node->name,
-			       state->node->addr.port, new->id, new->name, new->addr.port);
+			RDEBUG2("[%i] Redirected from %s:%i to [%i] %s:%i", state->node->id, state->node->name,
+			        state->node->addr.port, new->id, new->name, new->addr.port);
 			state->node = new;
 
 			*conn = fr_pool_connection_get(state->node->pool, request);
@@ -1933,7 +1990,7 @@ fr_redis_rcode_t fr_redis_cluster_state_next(fr_redis_cluster_state_t *state, fr
 			state->in_pool = fr_pool_state(state->node->pool)->num;
 			goto try_again;
 
-		case CLUSTER_OP_NO_CONNECTION:
+		case FR_REDIS_CLUSTER_RCODE_NO_CONNECTION:
 			cluster->remap_needed = true;
 			return REDIS_RCODE_RECONNECT;
 
@@ -1946,7 +2003,7 @@ fr_redis_rcode_t fr_redis_cluster_state_next(fr_redis_cluster_state_t *state, fr
 try_again:
 	RDEBUG2("[%i] >>> Sending command(s) to %s:%i", state->node->id, state->node->name, state->node->addr.port);
 
-	fr_redis_reply_free(*reply);
+	fr_redis_reply_free(&*reply);
 	*reply = NULL;
 
 	return REDIS_RCODE_TRY_AGAIN;
@@ -2030,15 +2087,15 @@ typedef struct {
 
 /** Walk all used pools, recording the IP addresses of ones matching the filter
  *
- * @param context Where to write the node we found.
- * @param data node to check.
+ * @param[in] uctx	Where to write the node we found.
+ * @param[in] data	node to check.
  * @return
  *	- 0 continue walking.
  *	- -1 found suitable node.
  */
-static int _cluster_role_walk(void *context, void *data)
+static int _cluster_role_walk(void *data, void *uctx)
 {
-	addr_by_role_ctx_t	*ctx = context;
+	addr_by_role_ctx_t		*ctx = uctx;
 	fr_redis_cluster_node_t		*node = data;
 
 	if ((ctx->is_master && node->is_master) || (ctx->is_slave && !node->is_master)) {
@@ -2109,16 +2166,16 @@ static int _fr_redis_cluster_free(fr_redis_cluster_t *cluster)
 
 /** Walk all used pools checking their versions
  *
- * @param context Where to write the node we found.
- * @param data node to check.
+ * @param[in] uctx	Where to write the node we found.
+ * @param[in] data	node to check.
  * @return
  *	- 0 continue walking.
  *	- -1 found suitable node.
  */
-static int _cluster_version_walk(void *context, void *data)
+static int _cluster_version_walk(void *data, void *uctx)
 {
-	char const 		*min_version = context;
-	fr_redis_cluster_node_t		*node = data;
+	char const 		*min_version = uctx;
+	fr_redis_cluster_node_t	*node = data;
 	fr_redis_conn_t		*conn;
 	int			ret;
 	char			buffer[40];
@@ -2212,7 +2269,7 @@ fr_redis_cluster_t *fr_redis_cluster_alloc(TALLOC_CTX *ctx,
 
 	cluster = talloc_zero(NULL, fr_redis_cluster_t);
 	if (!cluster) {
-		ERROR("%s: Out of memory", log_prefix);
+		ERROR("%s - Out of memory", log_prefix);
 		return NULL;
 	}
 
@@ -2254,20 +2311,20 @@ fr_redis_cluster_t *fr_redis_cluster_alloc(TALLOC_CTX *ctx,
 	}
 
 	if (conf->max_nodes == UINT8_MAX) {
-		ERROR("%s: Maximum number of connected nodes allowed is %i", cluster->log_prefix, UINT8_MAX - 1);
+		ERROR("%s - Maximum number of connected nodes allowed is %i", cluster->log_prefix, UINT8_MAX - 1);
 		talloc_free(cluster);
 		return NULL;
 	}
 
 	if (conf->max_nodes == 0) {
-		ERROR("%s: Minimum number of nodes allowed is 1", cluster->log_prefix);
+		ERROR("%s - Minimum number of nodes allowed is 1", cluster->log_prefix);
 		talloc_free(cluster);
 		return NULL;
 	}
 
 	cp = cf_pair_find(module, "server");
 	if (!cp) {
-		ERROR("%s: No servers configured", cluster->log_prefix);
+		ERROR("%s - No servers configured", cluster->log_prefix);
 		talloc_free(cluster);
 		return NULL;
 	}
@@ -2284,7 +2341,7 @@ fr_redis_cluster_t *fr_redis_cluster_alloc(TALLOC_CTX *ctx,
 	 */
 	if (talloc_link_ctx(ctx, cluster) < 0) {
 	oom:
-		ERROR("%s: Out of memory", cluster->log_prefix);
+		ERROR("%s - Out of memory", cluster->log_prefix);
 
 	error:
 		talloc_free(cluster);
@@ -2343,25 +2400,25 @@ fr_redis_cluster_t *fr_redis_cluster_alloc(TALLOC_CTX *ctx,
 
 		node = fr_fifo_peek(cluster->free_nodes);
 		if (!node) {
-			ERROR("%s: Number of bootstrap servers exceeds 'max_nodes'", cluster->log_prefix);
+			ERROR("%s - Number of bootstrap servers exceeds 'max_nodes'", cluster->log_prefix);
 			goto error;
 		}
 
 		server = cf_pair_value(cp);
 		if (fr_inet_pton_port(&node->pending_addr.ipaddr, &node->pending_addr.port, server,
 				 talloc_array_length(server) - 1, af, true, true) < 0) {
-			PERROR("%s: Failed parsing server \"%s\"", cluster->log_prefix, server);
+			PERROR("%s - Failed parsing server \"%s\"", cluster->log_prefix, server);
 			goto error;
 		}
 		if (!node->pending_addr.port) node->pending_addr.port = conf->port;
 
 		if (cluster_node_connect(cluster, node) < 0) {
-			WARN("%s: Connecting to %s:%i failed", cluster->log_prefix, node->name, node->pending_addr.port);
+			WARN("%s - Connecting to %s:%i failed", cluster->log_prefix, node->name, node->pending_addr.port);
 			continue;
 		}
 
 		if (!rbtree_insert(cluster->used_nodes, node)) {
-			WARN("%s: Skipping duplicate bootstrap server \"%s\"", cluster->log_prefix, server);
+			WARN("%s - Skipping duplicate bootstrap server \"%s\"", cluster->log_prefix, server);
 			continue;
 		}
 		node->is_active = true;
@@ -2375,14 +2432,14 @@ fr_redis_cluster_t *fr_redis_cluster_alloc(TALLOC_CTX *ctx,
 		/*
 		 * 	Only get cluster map config if required
 		 */
-		if (fr_pool_start(node->pool) > 0) {
+		if (fr_pool_start_num(node->pool) > 0) {
 			/*
 			 *	Fine to leave this node configured, if we do find
 			 *	a live node, and it's not in the map, it'll be cleared out.
 			 */
 			conn = fr_pool_connection_get(node->pool, NULL);
 			if (!conn) {
-				WARN("%s: Can't contact bootstrap server \"%s\"", cluster->log_prefix, server);
+				WARN("%s - Can't contact bootstrap server \"%s\"", cluster->log_prefix, server);
 				continue;
 			}
 		} else {
@@ -2393,21 +2450,21 @@ fr_redis_cluster_t *fr_redis_cluster_alloc(TALLOC_CTX *ctx,
 		/*
 		 *	We got a valid map! See if we can apply it...
 		 */
-		case CLUSTER_OP_SUCCESS:
+		case FR_REDIS_CLUSTER_RCODE_SUCCESS:
 			fr_pool_connection_release(node->pool, NULL, conn);
 
-			DEBUG("%s: Cluster map consists of %zu key ranges", cluster->log_prefix, map->elements);
+			DEBUG("%s - Cluster map consists of %zu key ranges", cluster->log_prefix, map->elements);
 			for (j = 0; j < map->elements; j++) {
 				redisReply *map_node = map->element[j];
 
-				DEBUG("%s: %zu - keys %lli-%lli", cluster->log_prefix, j,
+				DEBUG("%s - %zu - keys %lli-%lli", cluster->log_prefix, j,
 				      map_node->element[0]->integer,
 				      map_node->element[1]->integer);
-				DEBUG("%s:  master: %s:%lli", cluster->log_prefix,
+				DEBUG("%s -  master: %s:%lli", cluster->log_prefix,
 				      map_node->element[2]->element[0]->str,
 				      map_node->element[2]->element[1]->integer);
 				for (k = 3; k < map_node->elements; k++) {
-					DEBUG("%s:  slave%zu: %s:%lli", cluster->log_prefix, k - 3,
+					DEBUG("%s -  slave%zu: %s:%lli", cluster->log_prefix, k - 3,
 					      map_node->element[k]->element[0]->str,
 					      map_node->element[k]->element[1]->integer);
 				}
@@ -2415,24 +2472,24 @@ fr_redis_cluster_t *fr_redis_cluster_alloc(TALLOC_CTX *ctx,
 
 			if (cluster_map_apply(cluster, map) < 0) {
 				WARN("%s: Applying cluster map failed: %s", cluster->log_prefix, fr_strerror());
-				fr_redis_reply_free(map);
+				fr_redis_reply_free(&map);
 				continue;
 			}
-			fr_redis_reply_free(map);
+			fr_redis_reply_free(&map);
 
 			return cluster;
 
 		/*
 		 *	Unusable bootstrap node
 		 */
-		case CLUSTER_OP_BAD_INPUT:
-			WARN("%s: Bootstrap server \"%s\" returned invalid data: %s",
+		case FR_REDIS_CLUSTER_RCODE_BAD_INPUT:
+			WARN("%s - Bootstrap server \"%s\" returned invalid data: %s",
 			     cluster->log_prefix, server, fr_strerror());
 			fr_pool_connection_release(node->pool, NULL, conn);
 			continue;
 
-		case CLUSTER_OP_NO_CONNECTION:
-			WARN("%s: Can't contact bootstrap server \"%s\": %s",
+		case FR_REDIS_CLUSTER_RCODE_NO_CONNECTION:
+			WARN("%s - Can't contact bootstrap server \"%s\": %s",
 			     cluster->log_prefix, server, fr_strerror());
 			fr_pool_connection_close(node->pool, NULL, conn);
 			continue;
@@ -2441,9 +2498,9 @@ fr_redis_cluster_t *fr_redis_cluster_alloc(TALLOC_CTX *ctx,
 		 *	Clustering not enabled, or not supported,
 		 *	by this node, skip it and check the others.
 		 */
-		case CLUSTER_OP_FAILED:
-		case CLUSTER_OP_IGNORED:
-			DEBUG2("%s: Bootstrap server \"%s\" returned: %s",
+		case FR_REDIS_CLUSTER_RCODE_FAILED:
+		case FR_REDIS_CLUSTER_RCODE_IGNORED:
+			DEBUG2("%s - Bootstrap server \"%s\" returned: %s",
 			       cluster->log_prefix, server, fr_strerror());
 			fr_pool_connection_release(node->pool, NULL, conn);
 			break;
@@ -2455,7 +2512,7 @@ fr_redis_cluster_t *fr_redis_cluster_alloc(TALLOC_CTX *ctx,
 	 */
 	num_nodes = rbtree_num_elements(cluster->used_nodes);
 	if (!num_nodes) {
-		ERROR("%s: Can't contact any bootstrap servers", cluster->log_prefix);
+		ERROR("%s - Can't contact any bootstrap servers", cluster->log_prefix);
 		goto error;
 	}
 

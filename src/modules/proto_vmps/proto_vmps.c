@@ -29,7 +29,7 @@
 #include <freeradius-devel/unlang/base.h>
 #include <freeradius-devel/server/rad_assert.h>
 
-#include <freeradius-devel/protocol/vqp/vqp.h>
+#include <freeradius-devel/protocol/vmps/vmps.h>
 
 #include "proto_vmps.h"
 
@@ -40,17 +40,17 @@ static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 			   CONF_ITEM *ci, CONF_PARSER const *rule);
 
 static const CONF_PARSER priority_config[] = {
-	{ FR_CONF_OFFSET("VMPS-Join-Request", FR_TYPE_UINT32, proto_vmps_t, priorities[FR_VMPS_PACKET_TYPE_VALUE_VMPS_JOIN_REQUEST]),
+	{ FR_CONF_OFFSET("Join-Request", FR_TYPE_UINT32, proto_vmps_t, priorities[FR_PACKET_TYPE_VALUE_JOIN_REQUEST]),
 	   .func = cf_table_parse_uint32, .uctx = channel_packet_priority, .dflt = "low" },
-	{ FR_CONF_OFFSET("VMPS-Reconfirm-Request", FR_TYPE_UINT32, proto_vmps_t, priorities[FR_VMPS_PACKET_TYPE_VALUE_VMPS_RECONFIRM_REQUEST]),
+	{ FR_CONF_OFFSET("Reconfirm-Request", FR_TYPE_UINT32, proto_vmps_t, priorities[FR_PACKET_TYPE_VALUE_RECONFIRM_REQUEST]),
 	   .func = cf_table_parse_uint32, .uctx = channel_packet_priority, .dflt = "low" },
 
 	CONF_PARSER_TERMINATOR
 };
 
 static CONF_PARSER const limit_config[] = {
-	{ FR_CONF_OFFSET("idle_timeout", FR_TYPE_TIMEVAL, proto_vmps_t, io.idle_timeout), .dflt = "30.0" } ,
-	{ FR_CONF_OFFSET("nak_lifetime", FR_TYPE_TIMEVAL, proto_vmps_t, io.nak_lifetime), .dflt = "30.0" } ,
+	{ FR_CONF_OFFSET("idle_timeout", FR_TYPE_TIME_DELTA, proto_vmps_t, io.idle_timeout), .dflt = "30.0" } ,
+	{ FR_CONF_OFFSET("nak_lifetime", FR_TYPE_TIME_DELTA, proto_vmps_t, io.nak_lifetime), .dflt = "30.0" } ,
 
 	{ FR_CONF_OFFSET("max_connections", FR_TYPE_UINT32, proto_vmps_t, io.max_connections), .dflt = "1024" } ,
 	{ FR_CONF_OFFSET("max_clients", FR_TYPE_UINT32, proto_vmps_t, io.max_clients), .dflt = "256" } ,
@@ -83,22 +83,22 @@ static fr_dict_t *dict_vmps;
 
 extern fr_dict_autoload_t proto_vmps_dict[];
 fr_dict_autoload_t proto_vmps_dict[] = {
-	{ .out = &dict_vmps, .proto = "vqp" },
+	{ .out = &dict_vmps, .proto = "vmps" },
 	{ NULL }
 };
 
-static fr_dict_attr_t const *attr_vmps_packet_type;
+static fr_dict_attr_t const *attr_packet_type;
 
 extern fr_dict_attr_autoload_t proto_vmps_dict_attr[];
 fr_dict_attr_autoload_t proto_vmps_dict_attr[] = {
-	{ .out = &attr_vmps_packet_type, .name = "VMPS-Packet-Type", .type = FR_TYPE_UINT32, .dict = &dict_vmps},
+	{ .out = &attr_packet_type, .name = "Packet-Type", .type = FR_TYPE_UINT32, .dict = &dict_vmps},
 	{ NULL }
 };
 
 /** Wrapper around dl_instance which translates the packet-type into a submodule name
  *
  * @param[in] ctx	to allocate data in (instance of proto_vmps).
- * @param[out] out	Where to write a dl_instance_t containing the module handle and instance.
+ * @param[out] out	Where to write a dl_module_inst_t containing the module handle and instance.
  * @param[in] parent	Base structure address.
  * @param[in] ci	#CONF_PAIR specifying the name of the type module.
  * @param[in] rule	unused.
@@ -112,8 +112,9 @@ static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 	char const		*type_str = cf_pair_value(cf_item_to_pair(ci));
 	CONF_SECTION		*listen_cs = cf_item_to_section(cf_parent(ci));
 	CONF_SECTION		*server = cf_item_to_section(cf_parent(listen_cs));
+	CONF_SECTION		*process_app_cs;
 	proto_vmps_t		*inst;
-	dl_instance_t		*parent_inst;
+	dl_module_inst_t		*parent_inst;
 	fr_dict_enum_t const	*type_enum;
 	uint32_t		code;
 
@@ -123,7 +124,7 @@ static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 	 *	Allow the process module to be specified by
 	 *	packet type.
 	 */
-	type_enum = fr_dict_enum_by_alias(attr_vmps_packet_type, type_str, -1);
+	type_enum = fr_dict_enum_by_alias(attr_packet_type, type_str, -1);
 	if (!type_enum) {
 		cf_log_err(ci, "Invalid type \"%s\"", type_str);
 		return -1;
@@ -133,8 +134,8 @@ static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 
 	code = type_enum->value->vb_uint32;
 
-	if ((code != FR_VMPS_PACKET_TYPE_VALUE_VMPS_JOIN_REQUEST) &&
-	    (code != FR_VMPS_PACKET_TYPE_VALUE_VMPS_RECONFIRM_REQUEST)) {
+	if ((code != FR_PACKET_TYPE_VALUE_JOIN_REQUEST) &&
+	    (code != FR_PACKET_TYPE_VALUE_RECONFIRM_REQUEST)) {
 		cf_log_err(ci, "Unsupported 'type = %s'", type_str);
 		return -1;
 	}
@@ -149,7 +150,7 @@ static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 		return -1;
 	}
 
-	parent_inst = cf_data_value(cf_data_find(listen_cs, dl_instance_t, "proto_vmps"));
+	parent_inst = cf_data_value(cf_data_find(listen_cs, dl_module_inst_t, "proto_vmps"));
 	rad_assert(parent_inst);
 
 	/*
@@ -160,18 +161,28 @@ static int type_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 
 	inst->code_allowed[code] = true;
 
+	process_app_cs = cf_section_find(listen_cs, type_enum->alias, NULL);
+
 	/*
-	 *	Parent dl_instance_t added in virtual_servers.c (listen_parse)
+	 *	Allocate an empty section if one doesn't exist
+	 *	this is so defaults get parsed.
+	 */
+	if (!process_app_cs) {
+		MEM(process_app_cs = cf_section_alloc(listen_cs, listen_cs, type_enum->alias, NULL));
+	}
+
+	/*
+	 *	Parent dl_module_inst_t added in virtual_servers.c (listen_parse)
 	 *
 	 *	We allow "type = foo", but we just load proto_vmps_all.a
 	 */
-	return dl_instance(ctx, out, listen_cs,	parent_inst, "all", DL_TYPE_SUBMODULE);
+	return dl_module_instance(ctx, out, process_app_cs, parent_inst, "all", DL_MODULE_TYPE_SUBMODULE);
 }
 
 /** Wrapper around dl_instance
  *
  * @param[in] ctx	to allocate data in (instance of proto_vmps).
- * @param[out] out	Where to write a dl_instance_t containing the module handle and instance.
+ * @param[out] out	Where to write a dl_module_inst_t containing the module handle and instance.
  * @param[in] parent	Base structure address.
  * @param[in] ci	#CONF_PAIR specifying the name of the type module.
  * @param[in] rule	unused.
@@ -183,7 +194,7 @@ static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 			   CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
 {
 	char const	*name = cf_pair_value(cf_item_to_pair(ci));
-	dl_instance_t	*parent_inst;
+	dl_module_inst_t	*parent_inst;
 	proto_vmps_t	*inst;
 	CONF_SECTION	*listen_cs = cf_item_to_section(cf_parent(ci));
 	CONF_SECTION	*transport_cs;
@@ -196,7 +207,7 @@ static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 	 */
 	if (!transport_cs) transport_cs = cf_section_alloc(listen_cs, listen_cs, name, NULL);
 
-	parent_inst = cf_data_value(cf_data_find(listen_cs, dl_instance_t, "proto_vmps"));
+	parent_inst = cf_data_value(cf_data_find(listen_cs, dl_module_inst_t, "proto_vmps"));
 	rad_assert(parent_inst);
 
 	/*
@@ -206,7 +217,7 @@ static int transport_parse(TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 	inst = talloc_get_type_abort(parent_inst->data, proto_vmps_t);
 	inst->io.transport = name;
 
-	return dl_instance(ctx, out, transport_cs, parent_inst, name, DL_TYPE_SUBMODULE);
+	return dl_module_instance(ctx, out, transport_cs, parent_inst, name, DL_MODULE_TYPE_SUBMODULE);
 }
 
 /** Decode the packet
@@ -219,19 +230,16 @@ static int mod_decode(void const *instance, REQUEST *request, uint8_t *const dat
 	fr_io_address_t *address = track->address;
 	RADCLIENT const *client;
 
-	rad_assert(data[0] < FR_MAX_PACKET_CODE);
+	rad_assert(data[0] < FR_RADIUS_MAX_PACKET_CODE);
 
-	if (DEBUG_ENABLED3) {
-		RDEBUG("proto_vmps decode packet");
-		fr_vmps_print_hex(fr_log_fp, data, data_len);
-	}
+	RHEXDUMP3(data, data_len, "proto_vmps decode packet");
 
 	/*
 	 *	Set the request dictionary so that we can do
 	 *	generic->protocol attribute conversions as
 	 *	the request runs through the server.
 	 */
-	request->dict = dict_vqp;
+	request->dict = dict_vmps;
 
 	client = address->radclient;
 
@@ -304,7 +312,7 @@ static ssize_t mod_encode(void const *instance, REQUEST *request, uint8_t *buffe
 	 *	"Do not respond"
 	 */
 	if ((request->reply->code == FR_CODE_DO_NOT_RESPOND) ||
-	    (request->reply->code == 0) || (request->reply->code >= FR_MAX_PACKET_CODE)) {
+	    (request->reply->code == 0) || (request->reply->code >= FR_RADIUS_MAX_PACKET_CODE)) {
 		*buffer = false;
 		return 1;
 	}
@@ -369,10 +377,7 @@ static ssize_t mod_encode(void const *instance, REQUEST *request, uint8_t *buffe
 		return -1;
 	}
 
-	if (DEBUG_ENABLED3) {
-		RDEBUG("proto_vmps encode packet");
-		fr_vmps_print_hex(fr_log_fp, buffer, data_len);
-	}
+	RHEXDUMP3(buffer, data_len, "proto_vmps encode packet");
 
 	return data_len;
 }
@@ -380,11 +385,11 @@ static ssize_t mod_encode(void const *instance, REQUEST *request, uint8_t *buffe
 static void mod_entry_point_set(void const *instance, REQUEST *request)
 {
 	proto_vmps_t const	*inst = talloc_get_type_abort_const(instance, proto_vmps_t);
-	dl_instance_t		*type_submodule;
+	dl_module_inst_t		*type_submodule;
 	fr_io_track_t		*track = request->async->packet_ctx;
 
 	rad_assert(request->packet->code != 0);
-	rad_assert(request->packet->code <= FR_MAX_VMPS_CODE);
+	rad_assert(request->packet->code <= FR_VMPS_MAX_CODE);
 
 	request->server_cs = inst->io.server_cs;
 
@@ -468,95 +473,11 @@ static int mod_open(void *instance, fr_schedule_t *sc, UNUSED CONF_SECTION *conf
 static int mod_instantiate(void *instance, CONF_SECTION *conf)
 {
 	proto_vmps_t		*inst = talloc_get_type_abort(instance, proto_vmps_t);
-	size_t			i;
-
-	CONF_ITEM		*ci;
-	CONF_SECTION		*server = cf_item_to_section(cf_parent(conf));
-	vp_tmpl_rules_t		parse_rules;
-
-	memset(&parse_rules, 0, sizeof(parse_rules));
-	parse_rules.dict_def = dict_vmps;
-
-	/*
-	 *	Compile each "send/recv + VMPS packet type" section.
-	 *	This is so that the submodules don't need to do this.
-	 */
-	i = 0;
-	for (ci = cf_item_next(server, NULL);
-	     ci != NULL;
-	     ci = cf_item_next(server, ci)) {
-		fr_dict_enum_t const *dv;
-		char const *name, *packet_type;
-		CONF_SECTION *subcs;
-		rlm_components_t component = MOD_AUTHORIZE;
-
-		if (!cf_item_is_section(ci)) continue;
-
-		subcs = cf_item_to_section(ci);
-		name = cf_section_name1(subcs);
-
-		/*
-		 *	We only process recv/send sections.
-		 *	proto_vmps_auth will handle the
-		 *	"authenticate" sections.
-		 */
-		if ((strcmp(name, "recv") != 0) &&
-		    (strcmp(name, "send") != 0)) {
-			continue;
-		}
-
-		/*
-		 *	One more "recv" or "send" section has been
-		 *	found.
-		 */
-		i++;
-
-		/*
-		 *	Skip a section if it was already compiled.
-		 */
-		if (cf_data_find(subcs, unlang_group_t, NULL) != NULL) continue;
-
-		/*
-		 *	Check that the packet type is known.
-		 */
-		packet_type = cf_section_name2(subcs);
-		dv = fr_dict_enum_by_alias(attr_vmps_packet_type, packet_type, -1);
-		if (!dv ||
-		    ((dv->value->vb_uint32 != FR_VMPS_PACKET_TYPE_VALUE_VMPS_JOIN_REQUEST) &&
-		     (dv->value->vb_uint32 != FR_VMPS_PACKET_TYPE_VALUE_VMPS_JOIN_RESPONSE) &&
-		     (dv->value->vb_uint32 != FR_VMPS_PACKET_TYPE_VALUE_VMPS_RECONFIRM_REQUEST) &&
-		     (dv->value->vb_uint32 != FR_VMPS_PACKET_TYPE_VALUE_VMPS_RECONFIRM_RESPONSE) &&
-		     (dv->value->vb_uint32 != FR_VMPS_PACKET_TYPE_VALUE_DO_NOT_RESPOND))) {
-			cf_log_err(subcs, "Invalid VMPS packet type in '%s %s {...}'",
-				   name, packet_type);
-			return -1;
-		}
-
-		/*
-		 *	Try to compile it, and fail if it doesn't work.
-		 */
-		cf_log_debug(subcs, "compiling - %s %s {...}", name, packet_type);
-
-		if (strcmp(name, "send") == 0) component = MOD_POST_AUTH;
-
-		if (unlang_compile(subcs, component, &parse_rules) < 0) {
-			cf_log_err(subcs, "Failed compiling '%s %s { ... }' section", name, packet_type);
-			return -1;
-		}
-	}
-
-	/*
-	 *	No 'recv' or 'send' sections.  That's an error.
-	 */
-	if (!i) {
-		cf_log_err(server, "Virtual servers cannot be empty.");
-		return -1;
-	}
 
 	/*
 	 *	Instantiate the process modules
 	 */
-	if (fr_app_process_instantiate(inst->type_submodule, inst->type_submodule_by_code,
+	if (fr_app_process_instantiate(inst->io.server_cs, inst->type_submodule, inst->type_submodule_by_code,
 				       sizeof(inst->type_submodule_by_code) / sizeof(inst->type_submodule_by_code[0]),
 				       conf) < 0) {
 		return -1;
@@ -608,12 +529,12 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 	inst->io.server_cs = cf_item_to_section(cf_parent(conf));
 
 	rad_assert(dict_vmps != NULL);
-	rad_assert(attr_vmps_packet_type != NULL);
+	rad_assert(attr_packet_type != NULL);
 
 	/*
 	 *	Bootstrap the app_process modules.
 	 */
-	if (fr_app_process_bootstrap(inst->type_submodule, conf, inst->io.server_cs) < 0) return -1;
+	if (fr_app_process_bootstrap(inst->io.server_cs, inst->type_submodule, conf) < 0) return -1;
 
 	/*
 	 *	No IO module, it's an empty listener.
@@ -623,11 +544,11 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 	/*
 	 *	These timers are usually protocol specific.
 	 */
-	FR_TIMEVAL_BOUND_CHECK("idle_timeout", &inst->io.idle_timeout, >=, 1, 0);
-	FR_TIMEVAL_BOUND_CHECK("idle_timeout", &inst->io.idle_timeout, <=, 600, 0);
+	FR_TIME_DELTA_BOUND_CHECK("idle_timeout", inst->io.idle_timeout, >=, fr_time_delta_from_sec(1));
+	FR_TIME_DELTA_BOUND_CHECK("idle_timeout", inst->io.idle_timeout, <=, fr_time_delta_from_sec(600));
 
-	FR_TIMEVAL_BOUND_CHECK("nak_lifetime", &inst->io.nak_lifetime, >=, 1, 0);
-	FR_TIMEVAL_BOUND_CHECK("nak_lifetime", &inst->io.nak_lifetime, <=, 600, 0);
+	FR_TIME_DELTA_BOUND_CHECK("nak_lifetime", inst->io.nak_lifetime, >=, fr_time_delta_from_sec(1));
+	FR_TIME_DELTA_BOUND_CHECK("nak_lifetime", inst->io.nak_lifetime, <=, fr_time_delta_from_sec(600));
 
 	/*
 	 *	Tell the master handler about the main protocol instance.
@@ -638,7 +559,7 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 	/*
 	 *	We will need this for dynamic clients and connected sockets.
 	 */
-	inst->io.dl_inst = dl_instance_find(inst);
+	inst->io.dl_inst = dl_module_instance_by_data(inst);
 	rad_assert(inst != NULL);
 
 	/*
@@ -649,7 +570,10 @@ static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 
 static int mod_load(void)
 {
-	if (fr_vqp_init() < 0) return -1;
+	if (fr_vqp_init() < 0) {
+		ERROR("Failed initializing the VMPS dictionaries: %s", fr_strerror());
+		return -1;
+	}
 
 	return 0;
 }

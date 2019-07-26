@@ -1,6 +1,5 @@
 #  -*- text -*-
 #
-#  :toc:
 #
 #  $Id$
 
@@ -29,9 +28,29 @@ couchbase {
 	bucket = "radius"
 
 	#
+	#  username:: Couchbase bucket username (optional).
+	#
+#	username = "radius"
+
+	#
 	#  password:: Couchbase bucket password (optional).
 	#
 #	password = "password"
+
+	#
+	#  opts { ... }:: flags for libcouchbase (see Couchbase documentation).
+	#
+	#  Set this to enable debugging, view timeouts, and all options
+	#  supported by `lcb_cntl_string()` from libcouchbase API.
+	#
+	#  NOTE: These debugging options can produce significant amounts of logging output.
+	#
+	opts {
+#		console_log_level = "5"
+#		console_log_file = "${logdir}/libcouchbase.log"
+#		send_hello = "false"
+#		detailed_errcodes = "true"
+	}
 
 	#
 	#  acct_key:: Couchbase accounting document key.

@@ -18,10 +18,10 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2001,2006  The FreeRADIUS server project
- * @copyright 2000  Mike Machado <mike@innercite.com>
- * @copyright 2000  Alan DeKok <aland@freeradius.org>
- * @copyright 2001  Chad Miller <cmiller@surfsouth.com>
+ * @copyright 2001,2006 The FreeRADIUS server project
+ * @copyright 2000 Mike Machado (mike@innercite.com)
+ * @copyright 2000 Alan DeKok (aland@freeradius.org)
+ * @copyright 2001 Chad Miller (cmiller@surfsouth.com)
  */
 
 RCSID("$Id$")
@@ -43,7 +43,7 @@ RCSID("$Id$")
  *	Translate rlm_sql rcodes to humanly
  *	readable reason strings.
  */
-const FR_NAME_NUMBER sql_rcode_table[] = {
+const FR_NAME_NUMBER sql_rcode_description_table[] = {
 	{ "success",		RLM_SQL_OK		},
 	{ "need alt query",	RLM_SQL_ALT_QUERY	},
 	{ "server error",	RLM_SQL_ERROR		},
@@ -53,7 +53,17 @@ const FR_NAME_NUMBER sql_rcode_table[] = {
 	{ NULL, 0 }
 };
 
-void *mod_conn_create(TALLOC_CTX *ctx, void *instance, struct timeval const *timeout)
+const FR_NAME_NUMBER sql_rcode_table[] = {
+	{ "ok",			RLM_SQL_OK		},
+	{ "alternate",		RLM_SQL_ALT_QUERY	},
+	{ "error",		RLM_SQL_ERROR		},
+	{ "invalid",		RLM_SQL_QUERY_INVALID	},
+	{ "reconnect",		RLM_SQL_RECONNECT	},
+	{ "empty",		RLM_SQL_NO_MORE_ROWS	},
+	{ NULL, 0 }
+};
+
+void *mod_conn_create(TALLOC_CTX *ctx, void *instance, fr_time_delta_t timeout)
 {
 	int rcode;
 	rlm_sql_t *inst = instance;
@@ -299,7 +309,7 @@ void rlm_sql_print_error(rlm_sql_t const *inst, REQUEST *request, rlm_sql_handle
 		case L_DBG:
 		default:
 		debug:
-			ROPTIONAL(RDEBUG, DEBUG, "%s: %s", driver, log[i].msg);
+			ROPTIONAL(RDEBUG2, DEBUG2, "%s: %s", driver, log[i].msg);
 			break;
 		}
 	}

@@ -15,7 +15,7 @@
  * See README for more details.
  *
  * @copyright 2017 The FreeRADIUS server project
- * @copyright 2006-2007 <j@w1.fi>
+ * @copyright 2006-2007 (j@w1.fi)
  */
 #include <stddef.h>
 #include <string.h>
@@ -314,7 +314,7 @@ int milenage_umts_generate(uint8_t autn[MILENAGE_AUTN_SIZE],
 
 /** Milenage AUTS validation
  *
- * @param[out] sqn	Buffer for SQN = 48-bit sequence number (host byte order).
+ * @param[out] sqn	SQN = 48-bit sequence number (host byte order).
  * @param[in] opc	128-bit operator variant algorithm configuration field (encr.).
  * @param[in] ki	128-bit subscriber key.
  * @param[in] rand	128-bit random challenge.
@@ -323,7 +323,7 @@ int milenage_umts_generate(uint8_t autn[MILENAGE_AUTN_SIZE],
  *	- 0 on success with sqn filled.
  *	- -1 on failure.
  */
-int milenage_auts(uint64_t sqn,
+int milenage_auts(uint64_t *sqn,
 		  uint8_t const opc[MILENAGE_OPC_SIZE],
 		  uint8_t const ki[MILENAGE_KI_SIZE],
 		  uint8_t const rand[MILENAGE_RAND_SIZE],
@@ -334,12 +334,13 @@ int milenage_auts(uint64_t sqn,
 	uint8_t		sqn_buff[MILENAGE_SQN_SIZE];
 	size_t		i;
 
-	uint48_to_buff(sqn_buff, sqn);
-
 	if (milenage_f2345(NULL, NULL, NULL, NULL, ak, opc, ki, rand)) return -1;
 	for (i = 0; i < sizeof(sqn_buff); i++) sqn_buff[i] = auts[i] ^ ak[i];
 
 	if (milenage_f1(NULL, mac_s, opc, ki, rand, sqn_buff, amf) || CRYPTO_memcmp(mac_s, auts + 6, 8) != 0) return -1;
+
+	*sqn = uint48_from_buff(sqn_buff);
+
 	return 0;
 }
 
@@ -442,7 +443,7 @@ int milenage_check(uint8_t ik[MILENAGE_IK_SIZE],
 	for (i = 0; i < 6; i++) rx_sqn[i] = autn[i] ^ ak[i];
 	FR_PROTO_HEX_DUMP(rx_sqn, MILENAGE_SQN_SIZE, "SQN");
 
-	if (memcmp(rx_sqn, sqn_buff, sizeof(rx_sqn)) <= 0) {
+	if (CRYPTO_memcmp(rx_sqn, sqn_buff, sizeof(rx_sqn)) <= 0) {
 		uint8_t auts_amf[MILENAGE_AMF_SIZE] = { 0x00, 0x00 }; /* TS 33.102 v7.0.0, 6.3.3 */
 
 		if (milenage_f2345(NULL, NULL, NULL, NULL, ak, opc, ki, rand)) return -1;
@@ -524,7 +525,6 @@ void test_set_1(void)
 	int ret = 0;
 
 /*
-	fr_log_fp = stdout;
 	fr_debug_lvl = 4;
 */
 	ret = milenage_opc_generate(opc_out, op, ki);
@@ -603,7 +603,6 @@ void test_set_19(void)
 	int ret = 0;
 
 /*
-	fr_log_fp = stdout;
 	fr_debug_lvl = 4;
 */
 

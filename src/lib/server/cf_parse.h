@@ -21,7 +21,7 @@
  * @file lib/server/cf_parse.h
  * @brief API to parse internal format configuration items into native C types.
  *
- * @copyright 2015  The FreeRADIUS server project
+ * @copyright 2015 The FreeRADIUS server project
  */
 RCSIDH(cf_parse_h, "$Id$")
 
@@ -37,11 +37,6 @@ RCSIDH(cf_parse_h, "$Id$")
 #ifdef __cplusplus
 extern "C" {
 #endif
-/*
- * Dumb hack for GCC which explodes with lots of errors masking the real
- * error cause, if we don't use typdefs for these structures.
- */
-typedef struct timeval _timeval_t;
 
 #ifdef HAVE_BUILTIN_CHOOSE_EXPR
 typedef void _mismatch_vp_tmpl;		//!< Dummy type used to indicate FR_TYPE_*/C type mismatch.
@@ -73,8 +68,8 @@ typedef void _mismatch_uint64;		//!< Dummy type used to indicate FR_TYPE_*/C typ
 typedef void _mismatch_uint64_m;	//!< Dummy type used to indicate FR_TYPE_*/C type mismatch.
 typedef void _mismatch_size;		//!< Dummy type used to indicate FR_TYPE_*/C type mismatch.
 typedef void _mismatch_size_m;		//!< Dummy type used to indicate FR_TYPE_*/C type mismatch.
-typedef void _mismatch_timeval;		//!< Dummy type used to indicate FR_TYPE_*/C type mismatch.
-typedef void _mismatch_timeval_m;	//!< Dummy type used to indicate FR_TYPE_*/C type mismatch.
+typedef void _mismatch_time_delta;     	//!< Dummy type used to indicate FR_TYPE_*/C type mismatch.
+typedef void _mismatch_time_delta_m;	//!< Dummy type used to indicate FR_TYPE_*/C type mismatch.
 typedef void _mismatch_void;		//!< Dummy type used to indicate FR_TYPE_*/C type mismatch.
 typedef void _mismatch_void_m;		//!< Dummy type used to indicate FR_TYPE_*/C type mismatch.
 typedef void _mismatch_default;		//!< Dummy type used to indicate FR_TYPE_*/C type mismatch.
@@ -115,6 +110,10 @@ __builtin_choose_expr((FR_BASE_TYPE(_t) == FR_TYPE_DATE) && !((_t) & FR_TYPE_MUL
 	__builtin_choose_expr(is_compatible((_ct), time_t *), _p, (_mismatch_time) 0), \
 __builtin_choose_expr((FR_BASE_TYPE(_t) == FR_TYPE_DATE) && ((_t) & FR_TYPE_MULTI), \
 	__builtin_choose_expr(is_compatible((_ct), time_t **), _p, (_mismatch_time_m) 0), \
+__builtin_choose_expr((FR_BASE_TYPE(_t) == FR_TYPE_TIME_DELTA) && !((_t) & FR_TYPE_MULTI), \
+	__builtin_choose_expr(is_compatible((_ct), fr_time_delta_t *), _p, (_mismatch_time_delta) 0), \
+__builtin_choose_expr((FR_BASE_TYPE(_t) == FR_TYPE_TIME_DELTA) && ((_t) & FR_TYPE_MULTI), \
+	__builtin_choose_expr(is_compatible((_ct), fr_time_delta_t **), _p, (_mismatch_time_delta_m) 0), \
 _Generic((_ct), \
 	vp_tmpl_t **	: __builtin_choose_expr(((_t) & FR_TYPE_TMPL) && !((_t) & FR_TYPE_MULTI), \
 			_p, (_mismatch_vp_tmpl) 0), \
@@ -147,9 +146,9 @@ _Generic((_ct), \
 						(FR_BASE_TYPE(_t) == FR_TYPE_COMBO_IP_ADDR)) && \
 						((_t) & FR_TYPE_MULTI), _p, (_mismatch_fripaddr_m) 0), \
 	size_t[32/sizeof(size_t)] : __builtin_choose_expr((FR_BASE_TYPE(_t) == FR_TYPE_ABINARY) && !((_t) & FR_TYPE_MULTI), \
-			_p, (_mismatch_abinary) 0), \
+			(_mismatch_abinary) 0, (_mismatch_abinary) 0), \
 	size_t*[32/sizeof(size_t)] : __builtin_choose_expr((FR_BASE_TYPE(_t) == FR_TYPE_ABINARY) && ((_t) & FR_TYPE_MULTI), \
-			_p, (_mismatch_abinary_m) 0), \
+		       (_mismatch_abinary) 0, (_mismatch_abinary_m) 0), \
 	uint8_t const *	: __builtin_choose_expr((FR_BASE_TYPE(_t) == FR_TYPE_OCTETS) && !((_t) & FR_TYPE_MULTI), \
 			_p, (_mismatch_uint8) 0), \
 	uint8_t const **: __builtin_choose_expr((FR_BASE_TYPE(_t) == FR_TYPE_OCTETS) && ((_t) & FR_TYPE_MULTI), \
@@ -178,15 +177,11 @@ _Generic((_ct), \
 			_p, (_mismatch_uint64) 0), \
 	uint64_t **	: __builtin_choose_expr((FR_BASE_TYPE(_t) == FR_TYPE_UINT64) && ((_t) & FR_TYPE_MULTI), \
 			_p, (_mismatch_uint64_m) 0), \
-	_timeval_t *	: __builtin_choose_expr((FR_BASE_TYPE(_t) == FR_TYPE_TIMEVAL) && !((_t) & FR_TYPE_MULTI), \
-			_p, (_mismatch_timeval) 0), \
-	_timeval_t **	: __builtin_choose_expr((FR_BASE_TYPE(_t) == FR_TYPE_TIMEVAL) && ((_t) & FR_TYPE_MULTI), \
-			_p, (_mismatch_timeval_m) 0), \
 	void *		: __builtin_choose_expr((FR_BASE_TYPE(_t) == FR_TYPE_VOID) && !((_t) & FR_TYPE_MULTI), \
 			_p, (_mismatch_void) 0), \
 	void **		: __builtin_choose_expr((FR_BASE_TYPE(_t) == FR_TYPE_VOID) && ((_t) & FR_TYPE_MULTI), \
 			_p, (_mismatch_void_m) 0), \
-	default: (conf_type_mismatch)0))))))
+	default: (conf_type_mismatch)0))))))))
 
 #  define FR_CONF_OFFSET(_n, _t, _s, _f) \
 	.name = _n, \
@@ -336,14 +331,22 @@ do {\
 
 #define FR_INTEGER_BOUND_CHECK(_name, _var, _op, _bound) FR_INTEGER_COND_CHECK(_name, _var, (_var _op _bound), _bound)
 
-#define FR_TIMEVAL_BOUND_CHECK(_name, _var, _op, _bound_sec, _bound_usec)\
+#define FR_TIME_DELTA_COND_CHECK(_name, _var, _cond, _new)\
 do {\
-	struct timeval _bound = {_bound_sec, _bound_usec};\
-	if (!timercmp(_var, &_bound, _op)) {\
-		WARN("Ignoring \"" _name " = %d.%.06d\", forcing to \"" _name " = %d.%06d\"",\
-		     (int)(_var)->tv_sec, (int)(_var)->tv_usec,\
-		     (int)_bound.tv_sec, (int)_bound.tv_usec);\
-		*_var = _bound;\
+	if (!(_cond)) {\
+		WARN("Ignoring \"" _name " = %pV\", forcing to \"" _name " = %pV\"", \
+		     fr_box_time_delta(_var), fr_box_time_delta(_new));\
+		_var = _new;\
+	}\
+} while (0)
+
+#define FR_TIME_DELTA_BOUND_CHECK(_name, _var, _op, _bound)\
+do {\
+	if (!(_var _op _bound)) { \
+		WARN("Ignoring \"" _name " = %pV\", forcing to \"" _name " = %pV\"",\
+		     fr_box_time_delta(_var),\
+		     fr_box_time_delta(_bound));\
+		_var = _bound;\
 	}\
 } while (0)
 
@@ -474,6 +477,9 @@ int		_cf_section_rules_push(CONF_SECTION *cs, CONF_PARSER const *rules, char con
 /*
  *	Generic parsing callback functions
  */
+int		cf_table_parse_int(UNUSED TALLOC_CTX *ctx, void *out, UNUSED void *parent,
+			 	   CONF_ITEM *ci, CONF_PARSER const *rule);
+
 int		cf_table_parse_uint32(UNUSED TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 				      CONF_ITEM *ci, CONF_PARSER const *rule);
 

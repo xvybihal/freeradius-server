@@ -26,6 +26,7 @@
 
 #define SIM_3GPP_PSEUDONYM_LEN			23	//!< Length of a base64 encoded 3gpp pseudonym.
 #define SIM_IMSI_MAX_LEN			15	//!< Length of an IMSI number in ASCII.
+#define SIM_IMSI_MIN_LEN			14	//!< Minimum length of an IMSI number in ASCII.
 
 /** SIM/AKA method hints
  *
@@ -70,8 +71,8 @@ typedef enum {
 typedef enum {
 	SIM_NO_ID_REQ = 0,			//!< We're not requesting any ID.
 	SIM_ANY_ID_REQ,				//!< Request IMSI, Pseudonym or Fast-reauth.
+	SIM_FULLAUTH_ID_REQ,			//!< Request IMSI or Pseudonym.
 	SIM_PERMANENT_ID_REQ,			//!< Request IMSI.
-	SIM_FULLAUTH_ID_REQ			//!< Request IMSI or Pseudonym.
 } fr_sim_id_req_type_t;
 
 extern FR_NAME_NUMBER const sim_id_request_table[];

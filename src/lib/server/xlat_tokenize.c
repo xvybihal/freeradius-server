@@ -20,8 +20,8 @@
  * @file xlat_tokenize.c
  * @brief String expansion ("translation").  Tokenizes xlat expansion strings.
  *
- * @copyright 2000,2006  The FreeRADIUS server project
- * @copyright 2000  Alan DeKok <aland@freeradius.org>
+ * @copyright 2000,2006 The FreeRADIUS server project
+ * @copyright 2000 Alan DeKok (aland@freeradius.org)
  */
 
 RCSID("$Id$")
@@ -40,6 +40,25 @@ RCSID("$Id$")
 #  define XLAT_DEBUG(...)
 #endif
 
+/** Allocate an xlat node
+ *
+ * @param[in] ctx	to allocate node in.
+ * @param[in] type	of the node.
+ * @param[in] fmt	original fmt string.
+ * @param[in] len	Portion of the fmt string this node represents.
+ * @return A new xlat node.
+ */
+static inline xlat_exp_t *xlat_exp_alloc(TALLOC_CTX *ctx, xlat_type_t type, char const *fmt, size_t len)
+{
+	xlat_exp_t *node;
+
+	MEM(node = talloc_zero(ctx, xlat_exp_t));
+	node->type = type;
+	if (fmt) node->fmt = talloc_bstrndup(node, fmt, len);
+
+	return node;
+}
+
 /** Try to convert an xlat to a tmpl for efficiency
  *
  * @param ctx to allocate new vp_tmpl_t in.
@@ -52,7 +71,7 @@ vp_tmpl_t *xlat_to_tmpl_attr(TALLOC_CTX *ctx, xlat_exp_t *node)
 {
 	vp_tmpl_t *vpt;
 
-	if (node->next || (node->type != XLAT_ATTRIBUTE) || (node->attr->type != TMPL_TYPE_ATTR)) return NULL;
+	if (node->next || (node->type != XLAT_ATTRIBUTE) || !tmpl_is_attr(node->attr)) return NULL;
 
 	/*
 	 *   Concat means something completely different as an attribute reference
@@ -81,28 +100,26 @@ xlat_exp_t *xlat_from_tmpl_attr(TALLOC_CTX *ctx, vp_tmpl_t *vpt)
 {
 	xlat_exp_t *node;
 
-	if (vpt->type != TMPL_TYPE_ATTR) return NULL;
+	if (!tmpl_is_attr(vpt)) return NULL;
 
-	node = talloc_zero(ctx, xlat_exp_t);
-	node->type = XLAT_ATTRIBUTE;
-	node->fmt = talloc_bstrndup(node, vpt->name, vpt->len);
+	node = xlat_exp_alloc(ctx, XLAT_ATTRIBUTE, vpt->name, vpt->len);
 	node->attr = tmpl_alloc(node, TMPL_TYPE_ATTR, node->fmt, talloc_array_length(node->fmt) - 1, T_BARE_WORD);
 	memcpy(&node->attr->data, &vpt->data, sizeof(vpt->data));
 
 	return node;
 }
 
-static ssize_t xlat_tokenize_expansion(TALLOC_CTX *ctx, xlat_exp_t **head, char const **error, char *fmt,
+static ssize_t xlat_tokenize_expansion(TALLOC_CTX *ctx, xlat_exp_t **head, char const *fmt,
 				       vp_tmpl_rules_t const *rules);
-static ssize_t xlat_tokenize_literal(TALLOC_CTX *ctx, xlat_exp_t **head, char const **error, char *fmt,
+static ssize_t xlat_tokenize_literal(TALLOC_CTX *ctx, xlat_exp_t **head, char const *fmt,
 				     bool brace, vp_tmpl_rules_t const *rules);
 
-static ssize_t xlat_tokenize_alternation(TALLOC_CTX *ctx, xlat_exp_t **head, char const **error, char *fmt,
+static ssize_t xlat_tokenize_alternation(TALLOC_CTX *ctx, xlat_exp_t **head, char const *fmt,
 					 vp_tmpl_rules_t const *rules)
 {
-	ssize_t slen;
-	char *p;
-	xlat_exp_t *node;
+	ssize_t		slen;
+	char const	*p = fmt;
+	xlat_exp_t	*node;
 
 	rad_assert(fmt[0] == '%');
 	rad_assert(fmt[1] == '{');
@@ -111,11 +128,9 @@ static ssize_t xlat_tokenize_alternation(TALLOC_CTX *ctx, xlat_exp_t **head, cha
 
 	XLAT_DEBUG("ALTERNATE <-- %s", fmt);
 
-	node = talloc_zero(ctx, xlat_exp_t);
-	node->type = XLAT_ALTERNATE;
-
-	p = fmt + 2;
-	slen = xlat_tokenize_expansion(node, &node->child, error, p, rules);
+	node = xlat_exp_alloc(ctx, XLAT_ALTERNATE, NULL, 0);
+	p += 2;
+	slen = xlat_tokenize_expansion(node, &node->child, p, rules);
 	if (slen <= 0) {
 		talloc_free(node);
 		return slen - (p - fmt);
@@ -124,14 +139,15 @@ static ssize_t xlat_tokenize_alternation(TALLOC_CTX *ctx, xlat_exp_t **head, cha
 
 	if (p[0] != ':') {
 		talloc_free(node);
-		*error = "Expected ':' after first expansion";
+		fr_strerror_printf("Expected ':' after first expansion, got '%pV'",
+				   fr_box_strvalue_len(p, 1));
 		return -(p - fmt);
 	}
 	p++;
 
 	if (p[0] != '-') {
 		talloc_free(node);
-		*error = "Expected '-' after ':'";
+		fr_strerror_printf("Expected '-' after ':'");
 		return -(p - fmt);
 	}
 	p++;
@@ -139,46 +155,156 @@ static ssize_t xlat_tokenize_alternation(TALLOC_CTX *ctx, xlat_exp_t **head, cha
 	/*
 	 *	Allow the RHS to be empty as a special case.
 	 */
-	if (*p == '}') {
-		/*
-		 *	Hack up an empty string.
-		 */
-		node->alternate = talloc_zero(node, xlat_exp_t);
-		node->alternate->type = XLAT_LITERAL;
-		node->alternate->fmt = talloc_typed_strdup(node->alternate, "");
-		*(p++) = '\0';
+	switch (*p) {
+	case '}':
+		node->alternate = xlat_exp_alloc(node, XLAT_LITERAL, "", 0);
+		node->async_safe = node->child->async_safe;
+		*head = node;
+		return (p + 1) - fmt;
 
-	} else {
-		slen = xlat_tokenize_literal(node, &node->alternate, error, p, true, rules);
-		if (slen <= 0) {
-			talloc_free(node);
-			return slen - (p - fmt);
-		}
-
-		if (!node->alternate) {
-			talloc_free(node);
-			*error = "Empty expansion is invalid";
-			return -(p - fmt);
-		}
-		p += slen;
+	case '\0':
+		fr_strerror_printf("No matching closing brace");
+		talloc_free(node);
+		return -2;
 	}
 
-	node->async_safe = (node->child->async_safe && node->alternate->async_safe);
+	/*
+	 *	Parse the alternate expansion.
+	 */
+	slen = xlat_tokenize_literal(node, &node->alternate, p, true, rules);
+	if (slen <= 0) {
+		talloc_free(node);
+		return slen - (p - fmt);
+	}
 
+	if (!node->alternate) {
+		talloc_free(node);
+		fr_strerror_printf("Empty expansion is invalid");
+		return -(p - fmt);
+	}
+	p += slen;
+
+	node->async_safe = (node->child->async_safe && node->alternate->async_safe);
 	*head = node;
+
 	return p - fmt;
 }
 
-static ssize_t xlat_tokenize_expansion(TALLOC_CTX *ctx, xlat_exp_t **head, char const **error,
-				       char *fmt, vp_tmpl_rules_t const *rules)
-{
-	ssize_t slen;
-	char *p, *q;
-	char *start;
-	xlat_exp_t *node;
 #ifdef HAVE_REGEX
-	long num;
+/** Parse an xlat reference
+ *
+ * Allows access to a subcapture groups
+ * @verbatim %{<num>} @endverbatim
+ *
+ */
+static inline ssize_t xlat_tokenize_regex(TALLOC_CTX *ctx, xlat_exp_t **head, char const *fmt)
+{
+	unsigned long	num;
+	char const	*p;
+	char		*q;
+	xlat_exp_t	*node;
+
+	rad_assert(fmt[0] == '%');
+	rad_assert(fmt[1] == '{');
+
+	p = fmt + 2;
+
+	num = strtoul(p, &q, 10);
+	if (num > REQUEST_MAX_REGEX) {
+		fr_strerror_printf("Invalid regex reference.  Must be in range 0-%u", REQUEST_MAX_REGEX);
+		return -(p - fmt);		/* error */
+	}
+
+	if (*q != '}') return 0;			/* Not a regex */
+
+	XLAT_DEBUG("REGEX <-- %pV", fr_box_strvalue_len(fmt, (q - p) + 1));
+
+	node = xlat_exp_alloc(ctx, XLAT_REGEX, p, (q - p));	/* fmt is the integer value */
+	node->regex_index = num;
+	*head = node;
+
+	q++;	/* Skip over '}' */
+
+	return q - fmt;
+}
 #endif
+
+/** Parse an xlat function and its child arguments
+ *
+ * Parses a function call string in the format
+ * @verbatim %{<func>:<arguments} @endverbatim
+ *
+ */
+static inline ssize_t xlat_tokenize_function(TALLOC_CTX *ctx, xlat_exp_t **head, char const *fmt,
+					     vp_tmpl_rules_t const *rules)
+{
+	ssize_t		slen;
+	char const	*p;
+	char		*q;
+	xlat_exp_t	*node;
+	xlat_t		*func;
+
+	rad_assert(fmt[0] == '%');
+	rad_assert(fmt[1] == '{');
+
+	p = fmt + 2;
+
+	q = strchr(p, ':');
+	if (!q) return 0;
+
+	/*
+	 *	Avoid using a temporary buffer to search
+	 *	for the function.
+	 */
+	*q = '\0';
+	func = xlat_func_find(p);
+	*q = ':';
+
+	if (!func) return 0;
+
+	/*
+	 *	Allocate a node to hold the function
+	 */
+	node = xlat_exp_alloc(ctx, XLAT_FUNC, p, q - p);
+	node->xlat = func;
+
+	p = q + 1;
+	XLAT_DEBUG("FUNC <-- %s ... %s", node->fmt, p);
+
+	/*
+	 *	Now parse the child nodes that form the
+	 *	function's arguments.
+	 */
+	slen = xlat_tokenize_literal(node, &node->child, p, true, rules);
+	if (slen < 0) {
+		talloc_free(node);
+		return slen - (p - fmt);	/* error */
+	}
+	p += slen;
+	if (*(p - 1) != '}') {	/* @fixme: xlat_tokenize_literal should not consume the closing brace */
+		fr_strerror_printf("No matching closing brace");
+		return -1;						/* error @ second character of format string */
+	}
+
+	node->async_safe = (func->async_safe && (!node->child || node->child->async_safe));
+	*head = node;
+
+	return p - fmt;
+}
+
+/** Parse an attribute ref or a virtual attribute
+ *
+ */
+static inline ssize_t xlat_tokenize_attribute(TALLOC_CTX *ctx, xlat_exp_t **head, char const *fmt,
+					      vp_tmpl_rules_t const *rules)
+{
+	ssize_t			slen;
+	char const		*p, *q;
+	attr_ref_error_t	err;
+	vp_tmpl_t		*vpt = NULL;
+	xlat_exp_t		*node;
+	xlat_t			*func;
+
 	/*
 	 *	We need a local copy as we always allow unknowns.
 	 *	This is because not all attribute references
@@ -188,11 +314,81 @@ static ssize_t xlat_tokenize_expansion(TALLOC_CTX *ctx, xlat_exp_t **head, char 
 	 */
 	vp_tmpl_rules_t our_rules;
 
+	rad_assert(fmt[0] == '%');
+	rad_assert(fmt[1] == '{');
+
 	if (rules) {
 		memcpy(&our_rules, rules, sizeof(our_rules));
 	} else {
 		memset(&our_rules, 0, sizeof(our_rules));
 	}
+
+	p = fmt + 2;
+
+	our_rules.allow_undefined = true;		/* So we can check for virtual attributes later */
+  	our_rules.prefix = VP_ATTR_REF_PREFIX_NO;	/* Must be NO to stop %{&User-Name} */
+	slen = tmpl_afrom_attr_substr(NULL, &err, &vpt, p, &our_rules);
+	if (slen <= 0) {
+		/*
+		 *	If the parse error occurred before the ':'
+		 *	then the error is changed to 'Unknown module',
+		 *	as it was more likely to be a bad module name,
+		 *	than a request qualifier.
+		 */
+		if (err == ATTR_REF_ERROR_INVALID_LIST_QUALIFIER) {
+			fr_strerror_printf("Unknown expansion function or invalid list qualifier");
+		}
+		return slen - (p - fmt);		/* error somewhere after second character */
+	}
+	q = p + slen;
+
+	if (*q != '}') {
+		fr_strerror_printf("No matching closing brace");
+		return -1;						/* error @ second character of format string */
+	}
+
+	q++;	/* Skip over the closing brace */
+
+	/*
+	 *	Might be a virtual XLAT attribute, which is identical
+	 *	to a normal function but called without an argument
+	 *	list.
+	 */
+	if (tmpl_is_attr_undefined(vpt)) {
+		func = xlat_func_find(vpt->tmpl_unknown_name);
+		if (func) {
+			node = xlat_exp_alloc(ctx, XLAT_VIRTUAL,
+					      vpt->tmpl_unknown_name, talloc_array_length(vpt->tmpl_unknown_name) - 1);
+			talloc_free(vpt);	/* Free the tmpl, we don't need it */
+
+			XLAT_DEBUG("VIRTUAL <-- %s", node->fmt);
+			node->xlat = func;
+			node->async_safe = func->async_safe;
+			*head = node;
+
+			return q - fmt;
+		}
+		talloc_free(vpt);
+
+		fr_strerror_printf("Unknown attribute");
+		return -2;						/* error @ third character of format string */
+	}
+
+	node = xlat_exp_alloc(ctx, XLAT_ATTRIBUTE, vpt->name, vpt->len);
+	node->attr = talloc_steal(node, vpt);
+	node->async_safe = true; /* attribute expansions are always async-safe */
+	*head = node;
+
+	return q - fmt;
+}
+
+static ssize_t xlat_tokenize_expansion(TALLOC_CTX *ctx, xlat_exp_t **head,
+				       char const *fmt, vp_tmpl_rules_t const *rules)
+{
+	ssize_t		slen;
+	char const	*p = fmt, *q;
+
+	XLAT_DEBUG("EXPANSION <-- %s", fmt);
 
 	rad_assert(fmt[0] == '%');
 	rad_assert(fmt[1] == '{');
@@ -200,38 +396,23 @@ static ssize_t xlat_tokenize_expansion(TALLOC_CTX *ctx, xlat_exp_t **head, char 
 	/*
 	 *	%{%{...}:-bar}
 	 */
-	if ((fmt[2] == '%') && (fmt[3] == '{')) return xlat_tokenize_alternation(ctx, head, error, fmt, rules);
+	if ((fmt[2] == '%') && (fmt[3] == '{')) return xlat_tokenize_alternation(ctx, head, fmt, rules);
 
-	XLAT_DEBUG("EXPANSION <-- %s", fmt);
-	node = talloc_zero(ctx, xlat_exp_t);
-	node->fmt = start = talloc_typed_strdup(node, fmt + 2);
-	node->len = 0;
+	/*
+	 *	%{:-bar}
+	 */
+	if ((fmt[2] == ':') && (fmt[3] == '-')) {
+		fr_strerror_printf("First item in alternation cannot be empty");
+		return -2;
+	}
 
 #ifdef HAVE_REGEX
 	/*
-	 *	Handle regex's specially.
+	 *	Handle regex's %{<num>} specially.
 	 */
-	p = start;
-	num = strtol(p, &q, 10);
-	if (p != q && (*q == '}')) {
-		XLAT_DEBUG("REGEX <-- %s", fmt);
-		*q = '\0';
-
-		if ((num > REQUEST_MAX_REGEX) || (num < 0)) {
-			talloc_free(node);
-			*error = "Invalid regex reference.  Must be in range 0-" STRINGIFY(REQUEST_MAX_REGEX);
-			return -2;					/* error */
-		}
-		node->regex_index = num;
-
-		node->type = XLAT_REGEX;
-		*head = node;
-
-		node->len = (q - start);
-		MEM(start = talloc_realloc_bstr(start, node->len));
-		q++;	/* Skip closing brace */
-
-		return 2 + (q - start);
+	if (isdigit(fmt[2])) {
+		slen = xlat_tokenize_regex(ctx, head, fmt);
+		if (slen != 0) return slen;	/* If slen == 0 means this wasn't a regex */
 	}
 #endif /* HAVE_REGEX */
 
@@ -250,151 +431,101 @@ static ssize_t xlat_tokenize_expansion(TALLOC_CTX *ctx, xlat_exp_t **head, char 
 	 *	This is for efficiency, so we don't search for an xlat,
 	 *	when what's being referenced is obviously an attribute.
 	 */
-	p = start;
-	for (q = p; *q != '\0'; q++) {
-		if (*q == ':') break;
+	p = fmt;
+	for (q = p; *q; q++) {
+		if (*q == ':') break;			/* First special token is a ':' i.e. '%{func:' */
 
-		if (isspace((int) *q)) break;
+		if (isspace((int) *q)) break;		/* First special token is a ' ' - Likely a syntax error */
 
-		if (*q == '[') continue;
+		if (*q == '[') break;			/* First special token is a '[' i.e. '%{attr[<idx>]}' */
 
-		if (*q == '}') break;
+		if (*q == '}') break;			/* First special token is a '}' i.e. '%{<attrref>}' */
 	}
 
-	/*
-	 *	Check for empty expressions %{}
-	 */
-	if ((*q == '}') && (q == p)) {
-		talloc_free(node);
-		*error = "Empty expression is invalid";
-		return (-(p - start)) - 2;				/* error */
-	}
+	XLAT_DEBUG("EXPANSION HINT TOKEN '%c'", *q);
 
 	/*
-	 *	Might be a module name reference.
-	 *
-	 *	If it's not, it's an attribute or parse error.
+	 *	Check for empty expressions %{} %{: %{[
 	 */
-	if (*q == ':') {
-		*q = '\0';
-		node->xlat = xlat_func_find(node->fmt);
-		if (node->xlat) {
-			/*
-			 *	%{mod:foo}
-			 */
-			node->type = XLAT_FUNC;
+	if (q == (p + 2)) {
+		switch (*q) {
+		case '}':
+			fr_strerror_printf("Empty expression is invalid");
+			return -2;				/* error @ third character of format string */
 
-			p = q + 1;
-			XLAT_DEBUG("MOD <-- %s ... %s", node->fmt, p);
+		case ':':
+			fr_strerror_printf("Missing expansion function or list qualifier");
+			return -2;
 
-			slen = xlat_tokenize_literal(node, &node->child, error, p, true, rules);
-			if (slen < 0) {
-				talloc_free(node);
-				return (slen - (p - start)) - 2;	/* error */
-			}
-			p += slen;
+		case '[':
+			fr_strerror_printf("Missing attribute name");
+			return -2;
 
-			node->async_safe = (node->xlat->async_safe && node->child->async_safe);
-			*head = node;
-			rad_assert(node->next == NULL);
-
-			node->len = p - start;
-			MEM(start = talloc_realloc_bstr(start, node->len));
-
-			return 2 + node->len;
+		default:
+			break;
 		}
-		*q = ':';	/* Avoids a talloc_strdup */
 	}
 
 	/*
-	 *	The first token ends with:
+	 *      Hint token is a ':' it's either:
+	 *	- An xlat function %{<func>:<args}
+	 *	- An attribute reference with a list separator %{<list>:<attr>}
+	 */
+	switch (*q) {
+	case ':':
+		slen = xlat_tokenize_function(ctx, head, fmt, rules);
+		if (slen != 0) return slen;
+		/* FALL-THROUGH */
+
+	/*
+	 *	Hint token is a:
 	 *	- '[' - Which is an attribute index, so it must be an attribute.
 	 *      - '}' - The end of the expansion, which means it was a bareword.
 	 */
-	our_rules.allow_undefined = true;		/* So we can check for virtual attributes later */
-  	our_rules.prefix = VP_ATTR_REF_PREFIX_NO;	/* Must be NO to stop %{&User-Name} */
-	slen = tmpl_afrom_attr_substr(node, &node->attr, p, &our_rules);
-	if (slen <= 0) {
+	case '}':
+	case '[':
+		slen = xlat_tokenize_attribute(ctx, head, fmt, rules);
+		if (slen < 0) return slen;
+		rad_assert(slen != 0);
+
+		p += slen;
+		break;
+
+	/*
+	 *	Hint token is a '\0'
+	 *
+	 *      This means the end of a string not containing any of the other
+	 *	tokens was reached.
+	 *
+	 *	e.g. '%{myfirstxlat'
+	 */
+	case '\0':
+		fr_strerror_printf("No matching closing brace");
+		return -1;					/* error @ second character of format string */
+
+	/*
+	 *	Hint token was whitespace
+	 *
+	 *	e.g. '%{my '
+	 */
+	default:
 		/*
-		 *	If the parse error occurred before the ':'
-		 *	then the error is changed to 'Unknown module',
-		 *	as it was more likely to be a bad module name,
-		 *	than a request qualifier.
+		 *	Box is so we get \t \n etc..
 		 */
-		if ((*q == ':') && ((p + (slen * -1)) < q)) {
-			*error = "Unknown module";
-		} else {
-			*error = fr_strerror();
-		}
-
-		talloc_free(node);
-		return (slen - (p - start)) - 2;			/* error */
+		fr_strerror_printf("Invalid char '%pV' in expression", fr_box_strvalue_len(q, 1));
+		return -(q - fmt);
 	}
 
-	/*
-	 *	Might be a virtual XLAT attribute
-	 */
-	if (node->attr->type == TMPL_TYPE_ATTR_UNDEFINED) {
-		node->xlat = xlat_func_find(node->attr->tmpl_unknown_name);
-		if (node->xlat && node->xlat->mod_inst && !node->xlat->internal) {
-			talloc_free(node);
-			*error = "Missing content in expansion";
-			return (-(p - start) - slen) - 2;		/* error */
-		}
-
-		if (node->xlat) {
-			node->type = XLAT_VIRTUAL;
-			node->fmt = node->attr->tmpl_unknown_name;
-
-			XLAT_DEBUG("VIRTUAL <-- %s", node->fmt);
-			node->async_safe = node->xlat->async_safe;
-			*head = node;
-			rad_assert(node->next == NULL);
-			q++;
-
-			node->len = (q - start);
-			MEM(start = talloc_realloc_bstr(start, node->len));
-
-			return 2 + node->len;
-		}
-
-		talloc_free(node);
-		*error = "Unknown attribute";
-		return (-(p - start)) - 2;				/* error */
-	}
-
-	node->type = XLAT_ATTRIBUTE;
-	p += slen;
-
-	if (*p != '}') {
-		talloc_free(node);
-		*error = "No matching closing brace";
-		return -1;						/* error @ second character of format string */
-	}
-
-	node->len = (p - start);
-	node->async_safe = true; /* attribute expansions are always async-safe */
-	*head = node;
-	rad_assert(node->next == NULL);
-
-	/*
-	 *	Shrink the buffer to the right size
-	 */
-	MEM(start = talloc_realloc_bstr(start, node->len));
-	p++;
-
-	return 2 + (p - start);
+	return (p - fmt);
 }
 
 
-static ssize_t xlat_tokenize_literal(TALLOC_CTX *ctx, xlat_exp_t **head, char const **error, char *fmt,
+static ssize_t xlat_tokenize_literal(TALLOC_CTX *ctx, xlat_exp_t **head, char const *fmt,
 				     bool brace, vp_tmpl_rules_t const *rules)
 {
-	char *p;
-	xlat_exp_t *node;
-	char *start;
-
-	*error = "";		/* quiet gcc */
+	char const	*p;
+	xlat_exp_t	*node;
+	char		*start;
 
 	if (!*fmt) return 0;
 
@@ -411,7 +542,7 @@ static ssize_t xlat_tokenize_literal(TALLOC_CTX *ctx, xlat_exp_t **head, char co
 		if (*p == '\\') {
 			if (!p[1]) {
 				talloc_free(node);
-				*error = "Invalid escape at end of string";
+				fr_strerror_printf("Invalid escape at end of string");
 				return -(p - fmt);
 			}
 
@@ -428,12 +559,11 @@ static ssize_t xlat_tokenize_literal(TALLOC_CTX *ctx, xlat_exp_t **head, char co
 
 			XLAT_DEBUG("EXPANSION-2 <-- %s", node->fmt);
 
-			slen = xlat_tokenize_expansion(node, &node->next, error, p, rules);
+			slen = xlat_tokenize_expansion(node, &node->next, p, rules);
 			if (slen <= 0) {
 				talloc_free(node);
 				return slen - (p - fmt);
 			}
-			*p = '\0'; /* end the literal */
 			p += slen;
 
 			rad_assert(node->next != NULL);
@@ -451,7 +581,7 @@ static ssize_t xlat_tokenize_literal(TALLOC_CTX *ctx, xlat_exp_t **head, char co
 			 *	EXPANSION	User-Name
 			 *	LITERAL		" bar"
 			 */
-			slen = xlat_tokenize_literal(node->next, &(node->next->next), error, p, brace, rules);
+			slen = xlat_tokenize_literal(node->next, &(node->next->next), p, brace, rules);
 			rad_assert(slen != 0);
 			if (slen < 0) {
 				talloc_free(node);
@@ -472,7 +602,7 @@ static ssize_t xlat_tokenize_literal(TALLOC_CTX *ctx, xlat_exp_t **head, char co
 
 			if (!p[1] || !strchr("%}cdlmnsetCDGHIMSTYv", p[1])) {
 				talloc_free(node);
-				*error = "Invalid variable expansion";
+				fr_strerror_printf("Invalid variable expansion");
 				p++;
 				return -(p - fmt);
 			}
@@ -498,7 +628,6 @@ static ssize_t xlat_tokenize_literal(TALLOC_CTX *ctx, xlat_exp_t **head, char co
 			}
 
 			node->next = next;
-			*p = '\0';
 			p += 2;
 
 			if (!*p) break;
@@ -506,7 +635,7 @@ static ssize_t xlat_tokenize_literal(TALLOC_CTX *ctx, xlat_exp_t **head, char co
 			/*
 			 *	And recurse.
 			 */
-			slen = xlat_tokenize_literal(node->next, &(node->next->next), error, p, brace, rules);
+			slen = xlat_tokenize_literal(node->next, &(node->next->next), p, brace, rules);
 			rad_assert(slen != 0);
 			if (slen < 0) {
 				talloc_free(node);
@@ -523,7 +652,6 @@ static ssize_t xlat_tokenize_literal(TALLOC_CTX *ctx, xlat_exp_t **head, char co
 		 */
 		if (brace && (*p == '}')) {
 			brace = false;
-			*p = '\0';
 			p++;
 			break;
 		}
@@ -537,7 +665,7 @@ static ssize_t xlat_tokenize_literal(TALLOC_CTX *ctx, xlat_exp_t **head, char co
 	 *	the end of the string before we found one.
 	 */
 	if (brace) {
-		*error = "Missing closing brace at end of string";
+		fr_strerror_printf("Missing closing brace at end of string");
 		return -(p - fmt);
 	}
 
@@ -557,7 +685,7 @@ static ssize_t xlat_tokenize_literal(TALLOC_CTX *ctx, xlat_exp_t **head, char co
 	/*
 	 *	Shrink the buffer to the right size
 	 */
-	MEM(start = talloc_realloc_bstr(start, node->len));
+	MEM(start = talloc_bstr_realloc(ctx, start, node->len));
 	node->fmt = start;
 
 	return p - fmt;
@@ -703,9 +831,10 @@ size_t xlat_snprint(char *out, size_t outlen, xlat_exp_t const *node)
 			*(p++) = ':';
 			CHECK_SPACE(p, end);
 
-			rad_assert(node->child != NULL);
-			p += xlat_snprint(p, end - p, node->child);
-			CHECK_SPACE(p, end);
+			if (node->child) {
+				p += xlat_snprint(p, end - p, node->child);
+				CHECK_SPACE(p, end);
+			}
 			break;
 
 		case XLAT_ALTERNATE:
@@ -757,7 +886,6 @@ ssize_t xlat_tokenize_ephemeral(TALLOC_CTX *ctx, xlat_exp_t **head, REQUEST *req
 {
 	ssize_t		slen;
 	char		*tokens;
-	char const	*error = NULL;
 
 	*head = NULL;
 
@@ -769,7 +897,8 @@ ssize_t xlat_tokenize_ephemeral(TALLOC_CTX *ctx, xlat_exp_t **head, REQUEST *req
 	tokens = talloc_typed_strdup(ctx, fmt);
 	if (!tokens) return -1;
 
-	slen = xlat_tokenize_literal(request, head, &error, tokens, false, rules);
+	fr_strerror();	/* Clear error buffer */
+	slen = xlat_tokenize_literal(request, head, tokens, false, rules);
 
 	/*
 	 *	Zero length expansion, return a zero length node.
@@ -787,9 +916,6 @@ ssize_t xlat_tokenize_ephemeral(TALLOC_CTX *ctx, xlat_exp_t **head, REQUEST *req
 	 */
 	if (slen < 0) {
 		talloc_free(tokens);
-		rad_assert(error != NULL);
-
-		REMARKER(fmt, -slen, error);
 		return slen;
 	}
 
@@ -812,7 +938,7 @@ ssize_t xlat_tokenize_ephemeral(TALLOC_CTX *ctx, xlat_exp_t **head, REQUEST *req
 	if (xlat_instantiate_ephemeral(*head) < 0) {
 		talloc_free(*head);
 
-		REDEBUG("Failed performing ephemeral instantiation for xlat");
+		fr_strerror_printf("Failed performing ephemeral instantiation for xlat");
 		return -1;
 	}
 
@@ -823,18 +949,20 @@ ssize_t xlat_tokenize_ephemeral(TALLOC_CTX *ctx, xlat_exp_t **head, REQUEST *req
  *
  * @param[in] ctx	to allocate dynamic buffers in.
  * @param[out] head	the head of the xlat list / tree structure.
- * @param[out] error	where to write a point to error messages.
  * @param[in] fmt	the format string to expand.
  * @param[in] rules	controlling how attribute references are parsed.
  * @return
  *	- <0 on error.
  *	- 0 on success.
  */
-ssize_t xlat_tokenize(TALLOC_CTX *ctx, xlat_exp_t **head, char const **error, char *fmt, vp_tmpl_rules_t const *rules)
+ssize_t xlat_tokenize(TALLOC_CTX *ctx, xlat_exp_t **head, char *fmt, vp_tmpl_rules_t const *rules)
 {
 	int ret;
 
-	ret = xlat_tokenize_literal(ctx, head, error, fmt, false, rules);
+	*head = NULL;
+
+	fr_strerror();	/* Clear error buffer */
+	ret = xlat_tokenize_literal(ctx, head, fmt, false, rules);
 	if (ret < 0) return ret;
 
 	/*

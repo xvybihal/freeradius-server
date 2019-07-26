@@ -18,7 +18,7 @@
  *
  * @file src/lib/util/pair_cursor.h
  *
- * @copyright 2016  The FreeRADIUS server project
+ * @copyright 2016 The FreeRADIUS server project
  */
 RCSIDH(pair_cursor_h, "$Id$")
 
@@ -56,6 +56,7 @@ void		fr_pair_cursor_merge(vp_cursor_t *cursor, VALUE_PAIR *vp);
 VALUE_PAIR	*fr_pair_cursor_remove(vp_cursor_t *cursor);
 VALUE_PAIR	*fr_pair_cursor_replace(vp_cursor_t *cursor, VALUE_PAIR *new);
 void		fr_pair_cursor_free(vp_cursor_t *cursor);
+vp_cursor_t	*fr_pair_cursor_recurse_child(TALLOC_CTX *ctx, vp_cursor_t *cursor) CC_HINT(nonnull(2));
 
 #ifdef __cplusplus
 }

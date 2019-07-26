@@ -19,7 +19,7 @@
  *
  * @file src/lib/util/dict.h
  *
- * @copyright 2015  The FreeRADIUS server project
+ * @copyright 2015 The FreeRADIUS server project
  */
 
 #ifdef __cplusplus
@@ -28,6 +28,7 @@ extern "C" {
 
 #include <freeradius-devel/build.h>
 #include <freeradius-devel/missing.h>
+#include <freeradius-devel/util/dl.h>
 #include <freeradius-devel/util/token.h>
 #include <freeradius-devel/util/types.h>
 
@@ -67,7 +68,7 @@ typedef struct {
 
 	unsigned int		virtual : 1;			//!< for dynamic expansion
 
-	unsigned int		named : 1;			//!< compare attributes by name.
+	unsigned int		extra : 1;			//!< for LONG extended attributes
 
 	enum {
 		FLAG_ENCRYPT_NONE = 0,				//!< Don't encrypt the attribute.
@@ -248,7 +249,7 @@ fr_dict_attr_t const	*fr_dict_attr_known(fr_dict_t *dict, fr_dict_attr_t const *
  *
  * @{
  */
-ssize_t			fr_dict_snprint_flags(char *out, size_t outlen, fr_dict_attr_flags_t const *flags);
+ssize_t			fr_dict_snprint_flags(char *out, size_t outlen, fr_type_t type, fr_dict_attr_flags_t const *flags);
 
 void			fr_dict_print(fr_dict_attr_t const *da, int depth);
 
@@ -260,7 +261,7 @@ size_t			fr_dict_print_attr_oid(char *buffer, size_t outlen,
 					       fr_dict_attr_t const *ancestor, fr_dict_attr_t const *da);
 
 ssize_t			fr_dict_attr_by_oid(fr_dict_t *dict, fr_dict_attr_t const **parent,
-			   		    unsigned int *attr, char const *oid);
+					    unsigned int *attr, char const *oid) CC_HINT(nonnull);
 /** @} */
 
 /** @name Attribute, vendor and dictionary lookup
@@ -355,7 +356,7 @@ fr_dict_enum_t		*fr_dict_enum_by_alias(fr_dict_attr_t const *da, char const *ali
  */
 int			fr_dict_internal_afrom_file(fr_dict_t **out, char const *internal_name);
 
-int			fr_dict_protocol_afrom_file(fr_dict_t **out, char const *proto_name);
+int			fr_dict_protocol_afrom_file(fr_dict_t **out, char const *proto_name, char const *proto_dir);
 
 int			fr_dict_read(fr_dict_t *dict, char const *dict_dir, char const *filename);
 /** @} */
@@ -369,6 +370,12 @@ int			fr_dict_attr_autoload(fr_dict_attr_autoload_t const *to_load);
 int			fr_dict_autoload(fr_dict_autoload_t const *to_load);
 
 void			fr_dict_autofree(fr_dict_autoload_t const *to_free);
+
+int			fr_dl_dict_autoload(dl_t const *module, void *symbol, void *user_ctx);
+
+void			fr_dl_dict_autofree(dl_t const *module, void *symbol, void *user_ctx);
+
+int			fr_dl_dict_attr_autoload(dl_t const *module, void *symbol, void *user_ctx);
 /** @} */
 
 void			fr_dict_free(fr_dict_t **dict);
@@ -390,6 +397,8 @@ int			fr_dict_parse_str(fr_dict_t *dict, char *buf,
 					  fr_dict_attr_t const *parent, unsigned int vendor);
 
 ssize_t			fr_dict_valid_name(char const *name, ssize_t len);
+
+ssize_t			fr_dict_valid_oid_str(char const *name, ssize_t len);
 
 void			fr_dict_verify(char const *file, int line, fr_dict_attr_t const *da);
 /** @} */

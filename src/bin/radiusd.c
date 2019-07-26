@@ -21,11 +21,11 @@
  * @brief Main loop of the radius server.
  *
  * @copyright 2000-2018 The FreeRADIUS server project
- * @copyright 1999,2000 Miquel van Smoorenburg <miquels@cistron.nl>
- * @copyright 2000 Alan DeKok <aland@freeradius.org>
- * @copyright 2000 Alan Curry <pacman-radius@cqc.com>
- * @copyright 2000 Jeff Carneal <jeff@apex.net>
- * @copyright 2000 Chad Miller <cmiller@surfsouth.com>
+ * @copyright 1999,2000 Miquel van Smoorenburg (miquels@cistron.nl)
+ * @copyright 2000 Alan DeKok (aland@freeradius.org)
+ * @copyright 2000 Alan Curry (pacman-radius@cqc.com)
+ * @copyright 2000 Jeff Carneal (jeff@apex.net)
+ * @copyright 2000 Chad Miller (cmiller@surfsouth.com)
  */
 RCSID("$Id$")
 
@@ -126,11 +126,9 @@ static int talloc_config_set(main_config_t *config)
 /** Create module and xlat per-thread instances
  *
  */
-static int thread_instantiate(TALLOC_CTX *ctx, fr_event_list_t *el, void *uctx)
+static int thread_instantiate(TALLOC_CTX *ctx, fr_event_list_t *el, UNUSED void *uctx)
 {
-	CONF_SECTION *root = talloc_get_type_abort(uctx, CONF_SECTION);
-
-	if (modules_thread_instantiate(ctx, root, el) < 0) return -1;
+	if (modules_thread_instantiate(ctx, el) < 0) return -1;
 	if (xlat_thread_instantiate(ctx) < 0) return -1;
 
 	return 0;
@@ -158,7 +156,7 @@ int main(int argc, char *argv[])
 	bool		display_version = false;
 	bool		radmin = false;
 	int		from_child[2] = {-1, -1};
-	char		*p;
+	char		*program;
 	fr_schedule_t	*sc = NULL;
 	int		ret = EXIT_SUCCESS;
 
@@ -169,6 +167,7 @@ int main(int argc, char *argv[])
 	size_t		pool_size = 0;
 	void		*pool_page_start = NULL, *pool_page_end = NULL;
 	bool		do_mprotect;
+	dl_module_loader_t *dl_modules = NULL;
 
 	/*
 	 *	Setup talloc callbacks so we get useful errors
@@ -231,12 +230,13 @@ int main(int argc, char *argv[])
 	/*
 	 *	Set some default values
 	 */
-	p = strrchr(argv[0], FR_DIR_SEP);
-	if (!p) {
-		main_config_name_set_default(config, argv[0], false);
+	program = strrchr(argv[0], FR_DIR_SEP);
+	if (!program) {
+		program = argv[0];
 	} else {
-		main_config_name_set_default(config, p + 1, false);
+		program++;
 	}
+	main_config_name_set_default(config, program, false);
 
 	config->daemonize = true;
 	config->spawn_workers = true;
@@ -308,7 +308,6 @@ int main(int argc, char *argv[])
 					config->name, config->log_file, fr_syserror(errno));
 				EXIT_WITH_FAILURE;
 			}
-			fr_log_fp = fdopen(default_log.fd, "a");
 			break;
 
 		case 'L':
@@ -369,7 +368,6 @@ int main(int argc, char *argv[])
 			config->daemonize = false;
 			rad_debug_lvl += 2;
 	do_stdout:
-			fr_log_fp = stdout;
 			default_log.dst = L_DST_STDOUT;
 			default_log.fd = STDOUT_FILENO;
 			break;
@@ -429,7 +427,6 @@ int main(int argc, char *argv[])
 	 */
 	if (display_version) {
 		if (rad_debug_lvl == 0) rad_debug_lvl = 1;
-		fr_log_fp = stdout;
 		default_log.dst = L_DST_STDOUT;
 		default_log.fd = STDOUT_FILENO;
 
@@ -452,24 +449,29 @@ int main(int argc, char *argv[])
 	 */
 	if (config->daemonize) config->write_pid = true;
 
-	/*
-	 *	Initialize the DL infrastructure, which is used by the
-	 *	config file parser.
+        /*
+	 *      Initialize the DL infrastructure, which is used by the
+	 *      config file parser.  Note that we pass an empty path
+	 *      here, as we haven't yet read the configuration file.
 	 */
-	dl_loader_init(global_ctx, config->lib_dir);
+	dl_modules = dl_module_loader_init(NULL);
+	if (!dl_modules) {
+		fr_perror("%s", program);
+		EXIT_WITH_FAILURE;
+	}
 
 	/*
 	 *	Initialise the top level dictionary hashes which hold
 	 *	the protocols.
 	 */
 	if (fr_dict_global_init(global_ctx, config->dict_dir) < 0) {
-		fr_perror("radiusd");
+		fr_perror("%s", program);
 		EXIT_WITH_FAILURE;
 	}
 
 #ifdef HAVE_OPENSSL_CRYPTO_H
 	if (tls_dict_init() < 0) {
-		fr_perror("radiusd");
+		fr_perror("%s", program);
 		EXIT_WITH_FAILURE;
 	}
 #endif
@@ -478,6 +480,16 @@ int main(int argc, char *argv[])
 	 *  Read the configuration files, BEFORE doing anything else.
 	 */
 	if (main_config_init(config) < 0) EXIT_WITH_FAILURE;
+
+	if (modules_init() < 0) {
+		fr_perror("%s", program);
+		EXIT_WITH_FAILURE;
+	}
+
+	if (virtual_servers_init(config->root_cs) < 0) {
+		fr_perror("%s", program);
+		EXIT_WITH_FAILURE;
+	}
 
 	/*
 	 *  Set panic_action from the main config if one wasn't specified in the
@@ -529,21 +541,23 @@ int main(int argc, char *argv[])
 
 	/*
 	 *  The systemd watchdog enablement must be checked before we
-	 *  daemonize, but the notifications can come from any process.
+	 *  daemonize, but the watchdog notifications can come from any
+	 *  process.
 	 */
 #ifdef HAVE_SYSTEMD_WATCHDOG
-	if (!check_config) {
-		uint64_t usec;
-
-		if ((sd_watchdog_enabled(0, &usec) > 0) && (usec > 0)) {
-			usec /= 2;
-			fr_timeval_from_usec(&sd_watchdog_interval, usec);
-
-			INFO("systemd watchdog interval is %pT secs", &sd_watchdog_interval);
-		} else {
-			INFO("systemd watchdog is disabled");
-		}
-	}
+	if (!check_config) main_loop_set_sd_watchdog_interval();
+#else
+	/*
+	 *	If the default systemd unit file is used, but the server wasn't
+	 *	built with support for systemd, the status returned by systemctl
+	 *	will stay permanently as "activating".
+	 *
+	 *	We detect this condition and warn about it here, using the
+	 *	presence of the NOTIFY_SOCKET envrionmental variable to determine
+	 *	whether we're running under systemd.
+	 */
+	if (getenv("NOTIFY_SOCKET"))
+		INFO("Built without support for systemd watchdog, but running under systemd");
 #endif
 
 	/*
@@ -612,14 +626,18 @@ int main(int argc, char *argv[])
 			/* Don't turn children into zombies */
 			if (child_ret == 0) {
 				waitpid(pid, &stat_loc, WNOHANG);
-				exit(EXIT_FAILURE);
+				EXIT_WITH_FAILURE;
 			}
 
 #ifdef HAVE_SYSTEMD
-			sd_notify(0, "READY=1");
+			/*
+			 *	Update the systemd MAINPID to be our child,
+			 *	as the parent is about to exit.
+			 */
+			sd_notifyf(0, "MAINPID=%lu", (unsigned long)pid);
 #endif
 
-			exit(EXIT_SUCCESS);
+			goto cleanup;
 		}
 
 		/* so the pipe is correctly widowed if the parent exits?! */
@@ -670,7 +688,7 @@ int main(int argc, char *argv[])
 	 *	Call the module's initialisation methods.  These create
 	 *	connection pools and open connections to external resources.
 	 */
-	if (modules_instantiate(config->root_cs) < 0) EXIT_WITH_FAILURE;
+	if (modules_instantiate() < 0) EXIT_WITH_FAILURE;
 
 	/*
 	 *	Instantiate "permanent" xlats
@@ -700,12 +718,15 @@ int main(int argc, char *argv[])
 
 	/*
 	 *  Initialize the global event loop which handles things like
-	 *  systemd, and single-server mode.
+	 *  systemd.
 	 *
 	 *  This has to be done post-fork in case we're using kqueue, where the
 	 *  queue isn't inherited by the child process.
 	 */
-	if (!radius_event_init()) EXIT_WITH_FAILURE;
+	if (main_loop_init() < 0) {
+		PERROR("Failed initialising main event loop");
+		EXIT_WITH_FAILURE;
+	}
 
 	/*
 	 *  Redirect stderr/stdout as appropriate.
@@ -728,7 +749,7 @@ int main(int argc, char *argv[])
 		if (!config->spawn_workers) {
 			networks = 0;
 			workers = 0;
-			el = fr_global_event_list();
+			el = main_loop_event_list();
 		}
 
 		sc = fr_schedule_create(NULL, el, &default_log, rad_debug_lvl,
@@ -761,12 +782,16 @@ int main(int argc, char *argv[])
 #endif
 
 	/*
-	 *  Start the main event loop.
+	 *	At this point, no one has any business *ever* going
+	 *	back to root uid.
 	 */
-	if (radius_event_start(config->spawn_workers) < 0) {
-		ERROR("Failed starting event loop");
-		EXIT_WITH_FAILURE;
-	}
+	rad_suid_down_permanent();
+
+	/*
+	 *	Dropping down may change the RLIMIT_CORE value, so
+	 *	reset it back to what to should be here.
+	 */
+	fr_reset_dumpable();
 
 	/*
 	 *  If we're debugging, then a CTRL-C will cause the server to die
@@ -855,7 +880,7 @@ int main(int argc, char *argv[])
 	/*
 	 *  Process requests until HUP or exit.
 	 */
-	while ((status = radius_event_process()) == 0x80) {
+	while ((status = main_loop_start()) == 0x80) {
 #ifdef WITH_STATS
 		radius_stats_init(1);
 #endif
@@ -921,7 +946,7 @@ int main(int argc, char *argv[])
 	 *  with destructors that may cause double frees and
 	 *  SEGVs.
 	 */
-	radius_event_free();		/* Free the requests */
+	main_loop_free();		/* Free the requests */
 
 cleanup:
 	/*
@@ -964,6 +989,11 @@ cleanup:
 	 */
 	unlang_free();
 
+	/*
+	 *	Free information associated with the virtual servers.
+	 */
+	virtual_servers_free();
+
 #ifdef HAVE_OPENSSL_CRYPTO_H
 	tls_free();		/* Cleanup any memory alloced by OpenSSL and placed into globals */
 #endif
@@ -975,6 +1005,11 @@ cleanup:
 	 *  parsed configuration items.
 	 */
 	main_config_free(&config);
+
+	/*
+	 *	Free the modules that we loaded.
+	 */
+	if (dl_modules) talloc_free(dl_modules);
 
 	/*
 	 *  Cleanup everything else
@@ -1052,14 +1087,14 @@ static void sig_fatal(int sig)
 
 	switch (sig) {
 	case SIGTERM:
-		radius_signal_self(RADIUS_SIGNAL_SELF_TERM);
+		main_loop_signal_self(RADIUS_SIGNAL_SELF_TERM);
 		break;
 
 	case SIGINT:
 #ifdef SIGQUIT
 	case SIGQUIT:
 #endif
-		radius_signal_self(RADIUS_SIGNAL_SELF_TERM);
+		main_loop_signal_self(RADIUS_SIGNAL_SELF_TERM);
 		break;
 		/* FALL-THROUGH */
 
@@ -1077,6 +1112,6 @@ static void sig_hup(UNUSED int sig)
 {
 	reset_signal(SIGHUP, sig_hup);
 
-	radius_signal_self(RADIUS_SIGNAL_SELF_HUP);
+	main_loop_signal_self(RADIUS_SIGNAL_SELF_HUP);
 }
 #endif

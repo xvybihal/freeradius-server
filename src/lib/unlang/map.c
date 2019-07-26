@@ -18,12 +18,12 @@
  * $Id$
  *
  * @brief map and unlang integration.
- * @file unlang/map.c
+ * @brief Unlang "map" keyword evaluation.
  *
  * @ingroup AVP
  *
  * @copyright 2018 The FreeRADIUS server project
- * @copyright 2018 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * @copyright 2018 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
 RCSID("$Id$")
 
@@ -144,8 +144,6 @@ static unlang_action_t unlang_update(REQUEST *request, rlm_rcode_t *presult, int
 			/* FALL-THROUGH */
 
 		case UNLANG_UPDATE_MAP_EXPANDED_LHS:
-			update_state->state = UNLANG_UPDATE_MAP_EXPANDED_RHS;
-
 			/*
 			 *	Concat the top level results together
 			 */
@@ -155,6 +153,10 @@ static unlang_action_t unlang_update(REQUEST *request, rlm_rcode_t *presult, int
 				RPEDEBUG("Failed concatenating LHS expansion results");
 				goto error;
 			}
+
+			if (!map->rhs) goto next;
+
+			update_state->state = UNLANG_UPDATE_MAP_EXPANDED_RHS;
 
 			switch (map->rhs->type) {
 			default:
@@ -190,8 +192,10 @@ static unlang_action_t unlang_update(REQUEST *request, rlm_rcode_t *presult, int
 					    request, map,
 					    &update_state->lhs_result, &update_state->rhs_result) < 0) goto error;
 
-			talloc_list_free(&update_state->lhs_result);
 			talloc_list_free(&update_state->rhs_result);
+
+		next:
+			talloc_list_free(&update_state->lhs_result);
 
 			/*
 			 *	Wind to the end...
@@ -298,14 +302,14 @@ static unlang_action_t unlang_map(REQUEST *request, rlm_rcode_t *presult, int *p
 
 void unlang_map_init(void)
 {
-	unlang_op_register(UNLANG_TYPE_UPDATE,
+	unlang_register(UNLANG_TYPE_UPDATE,
 			   &(unlang_op_t){
 				.name = "update",
 				.func = unlang_update,
 				.debug_braces = true
 			   });
 
-	unlang_op_register(UNLANG_TYPE_MAP,
+	unlang_register(UNLANG_TYPE_MAP,
 			   &(unlang_op_t){
 				.name = "map",
 				.func = unlang_map,

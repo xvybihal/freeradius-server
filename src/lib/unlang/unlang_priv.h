@@ -21,7 +21,9 @@
  * @file unlang/unlang_priv.h
  * @brief Private interpreter structures and functions
  *
- * @author Alan DeKok <aland@freeradius.org>
+ * @author Alan DeKok (aland@freeradius.org)
+ *
+ * @copyright 2016-2019 The FreeRADIUS server project
  */
 #include <freeradius-devel/server/cf_util.h> /* Need CONF_* definitions */
 #include <freeradius-devel/server/cond_eval.h>
@@ -29,6 +31,7 @@
 #include <freeradius-devel/server/modpriv.h>
 #include <freeradius-devel/server/rad_assert.h>
 #include <freeradius-devel/unlang/base.h>
+#include <freeradius-devel/io/listen.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -87,7 +90,7 @@ typedef enum {
 typedef enum {
 	UNLANG_FRAME_ACTION_POP = 1,		//!< Pop the current frame, and check the next one further
 						///< up in the stack for what to do next.
-	UNLANG_FRAME_ACTION_CONTINUE,		//!< Process the next instruction at this level.
+	UNLANG_FRAME_ACTION_NEXT,		//!< Process the next instruction at this level.
 	UNLANG_FRAME_ACTION_YIELD		//!< Temporarily return control back to the caller on the C
 						///< stack.
 } unlang_frame_action_t;
@@ -100,8 +103,8 @@ typedef enum {
 	UNLANG_GROUP_TYPE_MAX			//!< Number of group types.
 } unlang_group_type_t;
 
-#define UNLANG_NEXT_STOP (false)
-#define UNLANG_NEXT_CONTINUE (true)
+#define UNLANG_NEXT_STOP	(false)
+#define UNLANG_NEXT_SIBLING	(true)
 
 #define UNLANG_DETACHABLE (true)
 #define UNLANG_NORMAL_CHILD (false)
@@ -121,7 +124,7 @@ typedef struct unlang_s unlang_t;
  */
 struct unlang_s {
 	unlang_t		*parent;	//!< Previous node.
-	unlang_t		*next;		//!< Next node (executed on #UNLANG_ACTION_CONTINUE et al).
+	unlang_t		*next;		//!< Next node (executed on #UNLANG_ACTION_EXECUTE_NEXT et al).
 	char const		*name;		//!< Unknown...
 	char const 		*debug_name;	//!< Printed in log messages when the node is executed.
 	unlang_type_t		type;		//!< The specialisation of this node.
@@ -147,7 +150,7 @@ typedef struct {
 	 */
 	union {
 		struct {
-			vp_tmpl_t		*vpt;		//!< #UNLANG_TYPE_SWITCH, #UNLANG_TYPE_MAP, #UNLANG_TYPE_CALL
+			vp_tmpl_t		*vpt;		//!< #UNLANG_TYPE_SWITCH, #UNLANG_TYPE_MAP
 
 			union {
 				struct {
@@ -155,8 +158,12 @@ typedef struct {
 					map_proc_inst_t		*proc_inst;	//!< Instantiation data for #UNLANG_TYPE_MAP.
 				};
 				struct {
-					void const		*process;	//!< #UNLANG_TYPE_CALL
 					CONF_SECTION		*server_cs;	//!< #UNLANG_TYPE_CALL
+				};
+				struct {
+					fr_dict_t const		*dict;		//!< #UNLANG_TYPE_SUBREQUEST
+					fr_dict_attr_t const	*attr_packet_type;
+					fr_dict_enum_t const	*type_enum;
 				};
 			};
 		};
@@ -166,25 +173,20 @@ typedef struct {
 	};
 } unlang_group_t;
 
-/** A call to a module method
- *
- */
-typedef struct {
-	unlang_t		self;
-	module_instance_t	*module_instance;	//!< Instance of the module we're calling.
-	module_method_t		method;
-} unlang_module_t;
-
-/** Pushed onto the interpreter stack by a yielding module, indicates the resumption point
+/** Pushed onto the interpreter stack by a yielding module, xlat, or keyword to indicate a resumption point
  *
  * Unlike normal coroutines in other languages, we represent resumption points as states in a state
  * machine made up of function pointers.
  *
- * When a module yields, it specifies the function to call when whatever condition is
- * required for resumption is satisfied, it also specifies the ctx for that function,
+ * When a module, xlat or keyword yields, it specifies the function to call when whatever
+ * condition is required for resumption is satisfied, it also specifies the ctx for that function,
  * which represents the internal state of the module at the time of yielding.
  *
- * If you want normal coroutine behaviour... ctx is arbitrary and could include a state enum,
+ * Because we occasionally want to cancel requests that are waiting on a resumption condition
+ * a signal function may also be specified.  This is provided so that whatever yielded can cancel
+ * any pending I/O operations, and cleanup any memory that was temporarily allocated.
+ *
+ * If you want normal coroutine behaviour... rctx is arbitrary and could include a state enum,
  * in which case the function pointer could be the same as the function that yielded, and something
  * like Duff's device could be used to jump back to the yield point.
  *
@@ -196,16 +198,16 @@ typedef struct {
 
 	unlang_t		*parent;			//!< The original instruction.
 
-	void    		*callback;			//!< Function the yielding code indicated should
+	void    		*resume;			//!< Function the yielding code indicated should
 								//!< be called when the request could be resumed.
 
 	void			*signal;			//!< Function the yielding code indicated should
 								///< be called if the request is destroyed in
 								///< the middle of an async operation.
 
-	void			*rctx;   			//!< Context data for the callback.  Usually represents
-								///< the function's internal state at the time of
-								///< yielding.
+	void			*rctx;   			//!< Context data for the resume and signal functions.
+								///< Usually represents the internal state at the
+								///< time of yielding.
 } unlang_resume_t;
 
 /** A naked xlat
@@ -218,29 +220,6 @@ typedef struct {
 	char			*xlat_name;
 	xlat_exp_t		*exp;				//!< First xlat node to execute.
 } unlang_xlat_inline_t;
-
-/** A module stack entry
- *
- * Represents a single module
- */
-typedef struct {
-	module_thread_instance_t *thread;			//!< thread-local data for this module
-} unlang_frame_state_module_t;
-
-/** State of a foreach loop
- *
- */
-typedef struct {
-	fr_cursor_t		cursor;				//!< Used to track our place in the list
-								///< we're iterating over.
-	VALUE_PAIR 		*vps;				//!< List containing the attribute(s) we're
-								///< iterating over.
-	VALUE_PAIR		*variable;			//!< Attribute we update the value of.
-	int			depth;				//!< Level of nesting of this foreach loop.
-#ifndef NDEBUG
-	int			indent;				//!< for catching indentation issues
-#endif
-} unlang_frame_state_foreach_t;
 
 /** State of a redundant operation
  *
@@ -284,12 +263,15 @@ typedef struct {
 								///< result stored in the lower stack frame should
 								///< be replaced.
 
-	unlang_type_t		unwind;				//!< Unwind to this one if it exists.
+	unlang_type_t		unwind;				//!< Unwind to this frame if it exists.
 								///< This is used for break and return.
 
 	bool			repeat : 1;			//!< Call the action callback again on our way
 								//!< back up the stack.
 	bool			top_frame : 1;			//!< are we the top frame of the stack?
+								///< If true, causes the interpreter to stop
+								///< interpreting and return, control then passes
+								///< to whatever called the interpreter.
 } unlang_stack_frame_t;
 
 /** An unlang stack associated with a request
@@ -316,22 +298,11 @@ extern char const *const comp2str[];
  *
  * @{
  */
-static inline unlang_module_t *unlang_generic_to_module(unlang_t *p)
-{
-	rad_assert(p->type == UNLANG_TYPE_MODULE);
-	return talloc_get_type_abort(p, unlang_module_t);
-}
-
 static inline unlang_group_t *unlang_generic_to_group(unlang_t *p)
 {
 	rad_assert((p->type > UNLANG_TYPE_MODULE) && (p->type <= UNLANG_TYPE_POLICY));
 
 	return (unlang_group_t *)p;
-}
-
-static inline unlang_t *unlang_module_to_generic(unlang_module_t *p)
-{
-	return (unlang_t *)p;
 }
 
 static inline unlang_t *unlang_group_to_generic(unlang_group_t *p)
@@ -362,20 +333,68 @@ static inline unlang_t *unlang_resume_to_generic(unlang_resume_t *p)
 }
 /* @} **/
 
-/*
- *	Internal interpreter functions needed by ops
+/** @name Internal interpreter functions needed by ops
+ *
+ * @{
  */
-void		unlang_push(unlang_stack_t *stack, unlang_t *program, rlm_rcode_t result,
-			    bool do_next_sibling, bool top_frame);
-rlm_rcode_t	unlang_run(REQUEST *request);
+uint64_t	unlang_interpret_active_callers(unlang_t *instruction);
 
-unlang_resume_t *unlang_resume_alloc(REQUEST *request, void *callback, void *signal, void *rctx);
+unlang_resume_t *unlang_interpret_resume_alloc(REQUEST *request, void *callback, void *signal, void *rctx);
 
-void		unlang_map_init(void);
+void		unlang_interpret_push(REQUEST *request, unlang_t *instruction,
+				      rlm_rcode_t default_rcode, bool do_next_sibling, bool top_frame);
+rlm_rcode_t	unlang_interpret_run(REQUEST *request);
 
 int		unlang_op_init(void);
 
 void		unlang_op_free(void);
+/* @} **/
+
+/** @name io shims
+ *
+ * Functions to simulate a 'proto' module when we're running 'fake'
+ * requests. i.e. those created by parallel and subrequest.
+ *
+ * @{
+ */
+fr_io_final_t	unlang_io_process_interpret(UNUSED void const *instance, REQUEST *request);
+
+REQUEST		*unlang_io_subrequest_alloc(REQUEST *parent, fr_dict_t const *namespace, bool detachable);
+
+/* @} **/
+
+/** @name op init functions
+ *
+ * Functions to trigger registration of the various unlang ops.
+ *
+ * @{
+ */
+void		unlang_call_init(void);
+
+void		unlang_condition_init(void);
+
+void		unlang_foreach_init(void);
+
+void		unlang_function_init(void);
+
+void		unlang_group_init(void);
+
+void		unlang_load_balance_init(void);
+
+void		unlang_map_init(void);
+
+void		unlang_module_init(void);
+
+void		unlang_return_init(void);
+
+void		unlang_parallel_init(void);
+
+int		unlang_subrequest_op_init(void);
+
+void		unlang_subrequest_op_free(void);
+
+void		unlang_switch_init(void);
+ /* @} **/
 
 #ifdef __cplusplus
 }

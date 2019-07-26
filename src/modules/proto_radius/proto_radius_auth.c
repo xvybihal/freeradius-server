@@ -27,14 +27,11 @@
 #include <freeradius-devel/server/module.h>
 #include <freeradius-devel/unlang/base.h>
 #include <freeradius-devel/util/dict.h>
+#include <freeradius-devel/util/time.h>
 #include <freeradius-devel/server/state.h>
 #include <freeradius-devel/server/rad_assert.h>
 
 #include <freeradius-devel/protocol/freeradius/freeradius.internal.h>
-
-#ifndef USEC
-#define USEC (1000000)
-#endif
 
 typedef struct {
 	bool		log_stripped_names;
@@ -229,7 +226,7 @@ static void CC_HINT(format (printf, 4, 5)) auth_message(proto_radius_auth_t cons
 	msg = fr_vasprintf(request, fmt, ap);
 	va_end(ap);
 
-	RAUTH("%s: [%pV%s%pV] (%s)%s",
+	RINFO("%s: [%pV%s%pV] (%s)%s",
 	      msg,
 	      username ? &username->data : fr_box_strvalue("<no User-Name attribute>"),
 	      logit ? "/" : "",
@@ -240,7 +237,7 @@ static void CC_HINT(format (printf, 4, 5)) auth_message(proto_radius_auth_t cons
 	talloc_free(msg);
 }
 
-static fr_io_final_t mod_process(void const *instance, REQUEST *request, fr_io_action_t action)
+static fr_io_final_t mod_process(void const *instance, REQUEST *request)
 {
 	proto_radius_auth_t const	*inst = instance;
 	VALUE_PAIR			*vp, *auth_type;
@@ -250,15 +247,6 @@ static fr_io_final_t mod_process(void const *instance, REQUEST *request, fr_io_a
 	fr_cursor_t			cursor;
 
 	REQUEST_VERIFY(request);
-
-	/*
-	 *	Pass this through asynchronously to the module which
-	 *	is waiting for something to happen.
-	 */
-	if (action != FR_IO_ACTION_RUN) {
-		unlang_signal(request, (fr_state_signal_t) action);
-		return FR_IO_DONE;
-	}
 
 	switch (request->request_state) {
 	case REQUEST_INIT:
@@ -291,13 +279,13 @@ static fr_io_final_t mod_process(void const *instance, REQUEST *request, fr_io_a
 		 *	Push the conf section into the unlang stack.
 		 */
 		RDEBUG("Running 'recv Access-Request' from file %s", cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_REJECT, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_REJECT, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_RECV;
 		/* FALL-THROUGH */
 
 	case REQUEST_RECV:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
 
@@ -412,13 +400,13 @@ static fr_io_final_t mod_process(void const *instance, REQUEST *request, fr_io_a
 		}
 
 		RDEBUG("Running 'authenticate %s' from file %s", cf_section_name2(unlang), cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOTFOUND, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOTFOUND, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_PROCESS;
 		/* FALL-THROUGH */
 
 	case REQUEST_PROCESS:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
 
@@ -531,17 +519,17 @@ static fr_io_final_t mod_process(void const *instance, REQUEST *request, fr_io_a
 			fr_rand_buffer(buffer, sizeof(buffer));
 
 			MEM(pair_update_reply(&vp, attr_state) >= 0);
-			fr_pair_value_memcpy(vp, buffer, sizeof(buffer));
+			fr_pair_value_memcpy(vp, buffer, sizeof(buffer), false);
 		}
 
 		RDEBUG("Running 'send %s' from file %s", cf_section_name2(unlang), cf_filename(unlang));
-		unlang_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
+		unlang_interpret_push_section(request, unlang, RLM_MODULE_NOOP, UNLANG_TOP_FRAME);
 
 		request->request_state = REQUEST_SEND;
 		/* FALL-THROUGH */
 
 	case REQUEST_SEND:
-		rcode = unlang_interpret_continue(request);
+		rcode = unlang_interpret_resume(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
 
@@ -561,7 +549,8 @@ static fr_io_final_t mod_process(void const *instance, REQUEST *request, fr_io_a
 			 */
 			if (request->reply->code != FR_CODE_ACCESS_REJECT) {
 				dv = fr_dict_enum_by_value(attr_packet_type, fr_box_uint32(request->reply->code));
-				RWDEBUG("Failed running 'send %s', trying 'send Access-Reject'", dv->alias);
+
+				RWDEBUG("Failed running 'send %s', trying 'send Access-Reject'", dv ? dv->alias : "???" );
 
 				request->reply->code = FR_CODE_ACCESS_REJECT;
 
@@ -590,7 +579,7 @@ static fr_io_final_t mod_process(void const *instance, REQUEST *request, fr_io_a
 		}
 
 	send_reply:
-		gettimeofday(&request->reply->timestamp, NULL);
+		request->reply->timestamp = fr_time();
 
 		/*
 		 *	Save session-state list for Access-Challenge from a NAS.
@@ -631,38 +620,49 @@ static fr_io_final_t mod_process(void const *instance, REQUEST *request, fr_io_a
 	return FR_IO_REPLY;
 }
 
-static int mod_instantiate(void *instance, CONF_SECTION *process_app_cs)
+static virtual_server_compile_t compile_list[] = {
+	{
+		.name = "recv",
+		.name2 = "Access-Request",
+		.component = MOD_AUTHORIZE,
+	},
+	{
+		.name = "send",
+		.name2 = "Access-Accept",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "send",
+		.name2 = "Access-Challenge",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "send",
+		.name2 = "Access-Reject",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "send",
+		.name2 = "Do-Not-Respond",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "send",
+		.name2 = "Protocol-Error",
+		.component = MOD_POST_AUTH,
+	},
+	{
+		.name = "authenticate",
+		.name2 = CF_IDENT_ANY,
+		.component = MOD_AUTHENTICATE,
+	},
+
+	COMPILE_TERMINATOR
+};
+
+static int mod_instantiate(void *instance, UNUSED CONF_SECTION *process_app_cs)
 {
 	proto_radius_auth_t	*inst = instance;
-	CONF_SECTION		*listen_cs = cf_item_to_section(cf_parent(process_app_cs));
-	CONF_SECTION		*server_cs;
-	CONF_SECTION		*subcs = NULL;
-	vp_tmpl_rules_t		parse_rules;
-
-	memset(&parse_rules, 0, sizeof(parse_rules));
-	parse_rules.dict_def = dict_radius;
-
-	rad_assert(listen_cs);
-
-	server_cs = cf_item_to_section(cf_parent(listen_cs));
-	rad_assert(strcmp(cf_section_name1(server_cs), "server") == 0);
-
-	while ((subcs = cf_section_find_next(server_cs, subcs, "authenticate", CF_IDENT_ANY))) {
-		int rcode;
-		char const	*name2;
-
-		name2 = cf_section_name2(subcs);
-		if (!name2) {
-			cf_log_err(subcs, "Invalid 'authenticate { ... }' section, it must have a name");
-			return -1;
-		}
-
-		rcode = unlang_compile_subsection(server_cs, "authenticate", name2, MOD_AUTHENTICATE, &parse_rules);
-		if (rcode < 0) {
-			cf_log_err(subcs, "Failed compiling 'authenticate %s { ... }' section", name2);
-			return -1;
-		}
-	}
 
 	inst->state_tree = fr_state_tree_init(inst, attr_state, main_config->spawn_workers, inst->max_session,
 					      inst->session_timeout, inst->state_server_id);
@@ -696,4 +696,5 @@ fr_app_worker_t proto_radius_auth = {
 	.bootstrap	= mod_bootstrap,
 	.instantiate	= mod_instantiate,
 	.entry_point	= mod_process,
+	.compile_list	= compile_list,
 };

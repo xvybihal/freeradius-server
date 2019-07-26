@@ -20,14 +20,14 @@
  * @file src/lib/server/cond_eval.c
  * @brief Evaluate complex conditions
  *
- * @copyright 2007  The FreeRADIUS server project
- * @copyright 2007  Alan DeKok <aland@deployingradius.com>
+ * @copyright 2007 The FreeRADIUS server project
+ * @copyright 2007 Alan DeKok (aland@deployingradius.com)
  */
 RCSID("$Id$")
 
 #include <freeradius-devel/server/cond_eval.h>
 #include <freeradius-devel/server/module.h>
-#include <freeradius-devel/server/parser.h>
+#include <freeradius-devel/server/cond.h>
 #include <freeradius-devel/server/regex.h>
 #include <freeradius-devel/server/rad_assert.h>
 
@@ -162,9 +162,7 @@ static int cond_do_regex(REQUEST *request, fr_cond_t const *c,
 	if (!fr_cond_assert(lhs != NULL)) return -1;
 	if (!fr_cond_assert(lhs->type == FR_TYPE_STRING)) return -1;
 
-	EVAL_DEBUG("CMP WITH REGEX %s %s",
-		   map->rhs->tmpl_iflag ? "CASE INSENSITIVE" : "CASE SENSITIVE",
-		   map->rhs->tmpl_mflag ? "MULTILINE" : "SINGLELINE");
+	EVAL_DEBUG("CMP WITH REGEX");
 
 	switch (map->rhs->type) {
 	case TMPL_TYPE_REGEX_STRUCT: /* pre-compiled to a regex */
@@ -175,9 +173,9 @@ static int cond_do_regex(REQUEST *request, fr_cond_t const *c,
 		if (!fr_cond_assert(rhs && rhs->type == FR_TYPE_STRING)) return -1;
 		if (!fr_cond_assert(rhs && rhs->vb_strvalue)) return -1;
 		slen = regex_compile(request, &rreg, rhs->vb_strvalue, rhs->datum.length,
-				     map->rhs->tmpl_iflag, map->rhs->tmpl_mflag, true, true);
+				     &map->rhs->tmpl_regex_flags, true, true);
 		if (slen <= 0) {
-			REMARKER(rhs->vb_strvalue, -slen, fr_strerror());
+			REMARKER(rhs->vb_strvalue, -slen, "%s", fr_strerror());
 			EVAL_DEBUG("FAIL %d", __LINE__);
 
 			return -1;
@@ -282,7 +280,7 @@ static int cond_cmp_values(REQUEST *request, fr_cond_t const *c, fr_value_box_t 
 		VALUE_PAIR *vp;
 
 		EVAL_DEBUG("CMP WITH PAIRCOMPARE");
-		rad_assert(map->lhs->type == TMPL_TYPE_ATTR);
+		rad_assert(tmpl_is_attr(map->lhs));
 
 		MEM(vp = fr_pair_afrom_da(request, map->lhs->tmpl_da));
 		vp->op = c->data.map->op;
@@ -388,8 +386,8 @@ static int cond_normalise_and_cmp(REQUEST *request, fr_cond_t const *c, fr_value
 do {\
 	if ((cast_type != FR_TYPE_INVALID) && _s && (_s ->type != FR_TYPE_INVALID) && (cast_type != _s->type)) {\
 		EVAL_DEBUG("CASTING " #_s " FROM %s TO %s",\
-			   fr_int2str(fr_value_box_type_names, _s->type, "<INVALID>"),\
-			   fr_int2str(fr_value_box_type_names, cast_type, "<INVALID>"));\
+			   fr_int2str(fr_value_box_type_table, _s->type, "<INVALID>"),\
+			   fr_int2str(fr_value_box_type_table, cast_type, "<INVALID>"));\
 		if (fr_value_box_cast(request, &_s ## _cast, cast_type, cast, _s) < 0) {\
 			RPEDEBUG("Failed casting " #_s " operand");\
 			rcode = -1;\
@@ -417,7 +415,7 @@ do {\
 	if (map->op == T_OP_REG_EQ) {
 		cast_type = FR_TYPE_STRING;
 
-		if (map->rhs->type == TMPL_TYPE_XLAT_STRUCT) escape = regex_escape;
+		if (tmpl_is_xlat_struct(map->rhs)) escape = regex_escape;
 	}
 	else
 #endif
@@ -429,13 +427,13 @@ do {\
 	 */
 	if (c->pass2_fixup == PASS2_PAIRCOMPARE) {
 		rad_assert(!c->cast);
-		rad_assert(map->lhs->type == TMPL_TYPE_ATTR);
-		rad_assert((map->rhs->type != TMPL_TYPE_ATTR) || !paircmp_find(map->rhs->tmpl_da)); /* expensive assert */
+		rad_assert(tmpl_is_attr(map->lhs));
+		rad_assert(!tmpl_is_attr(map->rhs) || !paircmp_find(map->rhs->tmpl_da)); /* expensive assert */
 
 		cast = map->lhs->tmpl_da;
 
 		EVAL_DEBUG("NORMALISATION TYPE %s (PAIRCMP TYPE)",
-			   fr_int2str(fr_value_box_type_names, cast->type, "<INVALID>"));
+			   fr_int2str(fr_value_box_type_table, cast->type, "<INVALID>"));
 	/*
 	 *	Otherwise we use the explicit cast, or implicit
 	 *	cast (from an attribute reference).
@@ -445,23 +443,23 @@ do {\
 	} else if (c->cast) {
 		cast = c->cast;
 		EVAL_DEBUG("NORMALISATION TYPE %s (EXPLICIT CAST)",
-			   fr_int2str(fr_value_box_type_names, cast->type, "<INVALID>"));
-	} else if (map->lhs->type == TMPL_TYPE_ATTR) {
+			   fr_int2str(fr_value_box_type_table, cast->type, "<INVALID>"));
+	} else if (tmpl_is_attr(map->lhs)) {
 		cast = map->lhs->tmpl_da;
 		EVAL_DEBUG("NORMALISATION TYPE %s (IMPLICIT FROM LHS REF)",
-			   fr_int2str(fr_value_box_type_names, cast->type, "<INVALID>"));
-	} else if (map->rhs->type == TMPL_TYPE_ATTR) {
+			   fr_int2str(fr_value_box_type_table, cast->type, "<INVALID>"));
+	} else if (tmpl_is_attr(map->rhs)) {
 		cast = map->rhs->tmpl_da;
 		EVAL_DEBUG("NORMALISATION TYPE %s (IMPLICIT FROM RHS REF)",
-			   fr_int2str(fr_value_box_type_names, cast->type, "<INVALID>"));
-	} else if (map->lhs->type == TMPL_TYPE_DATA) {
+			   fr_int2str(fr_value_box_type_table, cast->type, "<INVALID>"));
+	} else if (tmpl_is_data(map->lhs)) {
 		cast_type = map->lhs->tmpl_value_type;
 		EVAL_DEBUG("NORMALISATION TYPE %s (IMPLICIT FROM LHS DATA)",
-			   fr_int2str(fr_value_box_type_names, cast_type, "<INVALID>"));
-	} else if (map->rhs->type == TMPL_TYPE_DATA) {
+			   fr_int2str(fr_value_box_type_table, cast_type, "<INVALID>"));
+	} else if (tmpl_is_data(map->rhs)) {
 		cast_type = map->rhs->tmpl_value_type;
 		EVAL_DEBUG("NORMALISATION TYPE %s (IMPLICIT FROM RHS DATA)",
-			   fr_int2str(fr_value_box_type_names, cast_type, "<INVALID>"));
+			   fr_int2str(fr_value_box_type_table, cast_type, "<INVALID>"));
 	}
 
 	if (cast) cast_type = cast->type;
@@ -513,7 +511,7 @@ do {\
 
 		memset(&data, 0, sizeof(data));
 
-		if (map->rhs->type != TMPL_TYPE_UNPARSED) {
+		if (!tmpl_is_unparsed(map->rhs)) {
 			char *p;
 
 			ret = tmpl_aexpand(request, &p, request, map->rhs, escape, NULL);
@@ -540,7 +538,7 @@ do {\
 		CAST(rhs);
 
 		rcode = cond_cmp_values(request, c, lhs, rhs);
-		if (map->rhs->type != TMPL_TYPE_UNPARSED) talloc_free(data.datum.ptr);
+		if (!tmpl_is_unparsed(map->rhs)) talloc_free(data.datum.ptr);
 
 		break;
 	}
@@ -643,7 +641,7 @@ int cond_eval_map(REQUEST *request, UNUSED int modreturn, UNUSED int depth, fr_c
 		ssize_t ret;
 		fr_value_box_t data;
 
-		if (map->lhs->type != TMPL_TYPE_UNPARSED) {
+		if (!tmpl_is_unparsed(map->lhs)) {
 			ret = tmpl_aexpand(request, &p, request, map->lhs, NULL, NULL);
 			if (ret < 0) {
 				EVAL_DEBUG("FAIL [%i]", __LINE__);

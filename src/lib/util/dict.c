@@ -24,13 +24,9 @@ RCSID("$Id$")
 
 #include "dict.h"
 
-#ifdef WITH_DHCP
-#  include <freeradius-devel/dhcpv4/dhcpv4.h>
-#endif
 #include <freeradius-devel/radius/defs.h>
-#include <freeradius-devel/radius/radius.h>
-#include <freeradius-devel/protocol/radius/rfc2865.h>
 #include <freeradius-devel/util/conf.h>
+#include <freeradius-devel/util/dl.h>
 #include <freeradius-devel/util/hash.h>
 #include <freeradius-devel/util/misc.h>
 #include <freeradius-devel/util/proto.h>
@@ -94,8 +90,6 @@ struct fr_dict {
 
 	bool			autoloaded;		//!< manual vs autoload
 
-	dict_enum_fixup_t	*enum_fixup;
-
 	fr_hash_table_t		*vendors_by_name;	//!< Lookup vendor by name.
 	fr_hash_table_t		*vendors_by_num;	//!< Lookup vendor by PEN.
 
@@ -109,11 +103,7 @@ struct fr_dict {
 	fr_dict_attr_t		*root;			//!< Root attribute of this dictionary.
 
 	TALLOC_CTX		*pool;			//!< Talloc memory pool to reduce allocs.
-	TALLOC_CTX		*fixup_pool;		//!< Temporary pool for fixups, reduces holes
 							///< in the dictionary.
-
-	fr_dict_attr_t const	*last_attr;		//!< Cache of last attribute to speed up
-							///< value processing.
 };
 
 /** Map data types to min / max data sizes
@@ -146,8 +136,7 @@ size_t const dict_attr_sizes[FR_TYPE_MAX + 1][2] = {
 	[FR_TYPE_TLV]		= {2, ~0},
 	[FR_TYPE_STRUCT]	= {1, ~0},
 
-	[FR_TYPE_EXTENDED]	= {2, ~0},
-	[FR_TYPE_LONG_EXTENDED]	= {3, ~0},
+	[FR_TYPE_EXTENDED]	= {1, ~0},
 
 	[FR_TYPE_VSA]		= {4, ~0},
 	[FR_TYPE_EVS]		= {6, ~0},
@@ -183,10 +172,18 @@ bool const fr_dict_non_data_types[FR_TYPE_MAX + 1] = {
 	[FR_TYPE_TLV] = true,
 	[FR_TYPE_STRUCT] = true,
 	[FR_TYPE_EXTENDED] = true,
-	[FR_TYPE_LONG_EXTENDED] = true,
 	[FR_TYPE_VSA] = true,
 	[FR_TYPE_EVS] = true,
 	[FR_TYPE_VENDOR] = true
+};
+
+static FR_NAME_NUMBER const date_precision_table[] = {
+	{ "seconds",		FR_TIME_RES_SEC },
+	{ "milliseconds",	FR_TIME_RES_MSEC },
+	{ "microseconds",	FR_TIME_RES_USEC },
+	{ "nanoseconds",	FR_TIME_RES_NSEC },
+
+	{ NULL,			0 }
 };
 
 /*
@@ -197,14 +194,21 @@ bool const fr_dict_non_data_types[FR_TYPE_MAX + 1] = {
 #define FNV_MAGIC_INIT (0x811c9dc5)
 #define FNV_MAGIC_PRIME (0x01000193)
 
-#ifdef __clang_analyzer__
-#  define INTERNAL_IF_NULL(_dict) do {\
-	if (!_dict) _dict = fr_dict_internal; \
-	if (!_dict) return NULL; \
-} while (0)
-#else
-#  define INTERNAL_IF_NULL(_dict) if (!_dict) _dict = fr_dict_internal
-#endif
+/** Set the internal dictionary if none was provided
+ *
+ * @param _dict		Dict pointer to check/set.
+ * @param _ret		Value to return if no dictionaries are available.
+ */
+#define INTERNAL_IF_NULL(_dict, _ret) \
+	do { \
+		if (!(_dict)) { \
+			_dict = fr_dict_internal; \
+			if (unlikely(!(_dict))) { \
+				fr_strerror_printf("No dictionaries available for attribute resolution"); \
+				return (_ret); \
+			} \
+		} \
+	} while (0)
 
 /** Empty callback for hash table initialization
  *
@@ -456,37 +460,11 @@ static int dict_enum_value_cmp(void const *one, void const *two)
 static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent,
 				   char const *name, int *attr, fr_type_t type, fr_dict_attr_flags_t *flags)
 {
-	size_t			name_len;
 	fr_dict_attr_t const	*v;
 
-	if (!fr_cond_assert(parent)) return NULL;
+	if (!fr_cond_assert(parent)) return false;
 
-	name_len = strlen(name);
-	if (name_len > FR_DICT_ATTR_MAX_NAME_LEN) {
-		fr_strerror_printf("Attribute name too long");
-	error:
-		fr_strerror_printf_push("Definition for '%s' is invalid", name);
-		return false;
-	}
-
-	if (fr_dict_valid_name(name, -1) < 0) return NULL;
-
-	/*
-	 *	type_size is used to limit the maximum attribute number, so it's checked first.
-	 */
-	if (flags->type_size) {
-		if ((type != FR_TYPE_TLV) && (type != FR_TYPE_VENDOR)) {
-			fr_strerror_printf("The 'format=' flag can only be used with attributes of type 'tlv'");
-			goto error;
-		}
-
-		if ((flags->type_size != 1) &&
-		    (flags->type_size != 2) &&
-		    (flags->type_size != 4)) {
-			fr_strerror_printf("The 'format=' flag can only be used with attributes of type size 1,2 or 4");
-			goto error;
-		}
-	}
+	if (fr_dict_valid_name(name, -1) <= 0) return false;
 
 	/******************** sanity check attribute number ********************/
 
@@ -494,13 +472,13 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 		static unsigned int max_attr = UINT8_MAX + 1;
 
 		if (*attr == -1) {
-			if (fr_dict_attr_by_name(dict, name)) return 0; /* exists, don't add it again */
+			if (fr_dict_attr_by_name(dict, name)) return false; /* exists, don't add it again */
 			*attr = ++max_attr;
 			flags->internal = 1;
 
 		} else if (*attr <= 0) {
 			fr_strerror_printf("ATTRIBUTE number %i is invalid, must be greater than zero", *attr);
-			goto error;
+			return false;
 
 		} else if ((unsigned int) *attr > max_attr) {
 			max_attr = *attr;
@@ -522,7 +500,24 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 	 */
 	if (*attr < 0) {
 		fr_strerror_printf("ATTRIBUTE number %i is invalid, must be greater than zero", *attr);
-		goto error;
+		return false;
+	}
+
+	/*
+	 *	type_size is used to limit the maximum attribute number, so it's checked first.
+	 */
+	if (flags->type_size) {
+		if ((type != FR_TYPE_TLV) && (type != FR_TYPE_VENDOR)) {
+			fr_strerror_printf("The 'format=' flag can only be used with attributes of type 'tlv'");
+			return false;
+		}
+
+		if ((flags->type_size != 1) &&
+		    (flags->type_size != 2) &&
+		    (flags->type_size != 4)) {
+			fr_strerror_printf("The 'format=' flag can only be used with attributes of type size 1,2 or 4");
+			return false;
+		}
 	}
 
 	/*
@@ -532,15 +527,14 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 	 *	the appropriate flags set for attributes in this
 	 *	space.
 	 */
-	if ((*attr > UINT8_MAX) && !flags->internal &&
-	    !((strncmp("VMPS", name, 4) == 0) || (strncmp("VQP", name, 3) == 0))) {	/* Fixme */
+	if ((*attr > UINT8_MAX) && !flags->internal) {
 		for (v = parent; v != NULL; v = v->parent) {
 			if ((v->type == FR_TYPE_TLV) || (v->type == FR_TYPE_VENDOR)) {
 				if ((v->flags.type_size < 4) &&
 				    (*attr >= (1 << (8 * v->flags.type_size)))) {
 					fr_strerror_printf("Attributes must have value between 1..%u",
 							   (1 << (8 * v->flags.type_size)) - 1);
-					goto error;
+					return false;
 				}
 				break;
 			}
@@ -555,12 +549,12 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 	if (flags->virtual) {
 		if (!parent->flags.is_root) {
 			fr_strerror_printf("The 'virtual' flag can only be used for normal attributes");
-			goto error;
+			return false;
 		}
 
 		if (*attr <= (1 << (8 * parent->flags.type_size))) {
 			fr_strerror_printf("The 'virtual' flag can only be used for non-protocol attributes");
-			goto error;
+			return false;
 		}
 	}
 
@@ -571,24 +565,24 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 		if ((type != FR_TYPE_UINT32) && (type != FR_TYPE_STRING)) {
 			fr_strerror_printf("The 'has_tag' flag can only be used for attributes of type 'integer' "
 					   "or 'string'");
-			goto error;
+			return false;
 		}
 
 		if (!(parent->flags.is_root ||
 		      ((parent->type == FR_TYPE_VENDOR) &&
 		       (parent->parent && parent->parent->type == FR_TYPE_VSA)))) {
 			fr_strerror_printf("The 'has_tag' flag can only be used with RFC and VSA attributes");
-			goto error;
+			return false;
 		}
 
 		if (flags->array || flags->has_value || flags->concat || flags->virtual || flags->length) {
 			fr_strerror_printf("The 'has_tag' flag cannot be used with any other flag");
-			goto error;
+			return false;
 		}
 
 		if (flags->encrypt && (flags->encrypt != FLAG_ENCRYPT_TUNNEL_PASSWORD)) {
 			fr_strerror_printf("The 'has_tag' flag can only be used with 'encrypt=2'");
-			goto error;
+			return false;
 		}
 	}
 
@@ -598,18 +592,18 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 	if (flags->concat) {
 		if (type != FR_TYPE_OCTETS) {
 			fr_strerror_printf("The 'concat' flag can only be used for attributes of type 'octets'");
-			goto error;
+			return false;
 		}
 
 		if (!parent->flags.is_root) {
 			fr_strerror_printf("The 'concat' flag can only be used with RFC attributes");
-			goto error;
+			return false;
 		}
 
 		if (flags->array || flags->internal || flags->has_value || flags->virtual ||
 		    flags->encrypt || flags->length) {
 			fr_strerror_printf("The 'concat' flag cannot be used any other flag");
-			goto error;
+			return false;
 		}
 	}
 
@@ -619,7 +613,7 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 	if (flags->length) {
 		if (flags->has_value || flags->virtual) {
 			fr_strerror_printf("The 'octets[...]' syntax cannot be used any other flag");
-			goto error;
+			return false;
 		}
 
 		if (flags->length > 253) {
@@ -632,36 +626,23 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 			    (flags->length != 2) &&
 			    (flags->length != 4)) {
 				fr_strerror_printf("The 'length' flag can only be used with attributes of TLV lengths of 1,2 or 4");
-				goto error;
+				return false;
 			}
 		} else if (type != FR_TYPE_OCTETS) {
 			fr_strerror_printf("The 'length' flag can only be set for attributes of type 'octets' or 'struct'");
-			goto error;
+			return false;
 		}
 	}
 
 	/*
-	 *	DHCP options allow for packing multiple values into one option.
-	 *
-	 *	We allow it for DHCP and FreeDHCP dictionaries.  Not anywhere else.
+	 *	Allow arrays anywhere.
 	 */
 	if (flags->array) {
-		for (v = parent; v != NULL; v = v->parent) {
-			if (v->type != FR_TYPE_VENDOR) continue;
-
-			if ((v->attr != 34673) && /* freedhcp */
-			    (v->attr != DHCP_MAGIC_VENDOR)) {
-				fr_strerror_printf("The 'array' flag can only be used with DHCP options");
-				goto error;
-			}
-			break;
-		}
-
 		switch (type) {
 		default:
 			fr_strerror_printf("The 'array' flag cannot be used with attributes of type '%s'",
-					   fr_int2str(fr_value_box_type_names, type, "<UNKNOWN>"));
-			goto error;
+					   fr_int2str(fr_value_box_type_table, type, "<UNKNOWN>"));
+			return false;
 
 		case FR_TYPE_IPV4_ADDR:
 		case FR_TYPE_IPV6_ADDR:
@@ -676,7 +657,7 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 
 		if (flags->internal || flags->has_value || flags->encrypt || flags->virtual) {
 			fr_strerror_printf("The 'array' flag cannot be used any other flag");
-			goto error;
+			return false;
 		}
 	}
 
@@ -688,12 +669,12 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 		if (type != FR_TYPE_UINT32) {
 			fr_strerror_printf("The 'has_value' flag can only be used with attributes "
 					   "of type 'integer'");
-			goto error;
+			return false;
 		}
 
 		if (flags->encrypt || flags->virtual) {
 			fr_strerror_printf("The 'has_value' flag cannot be used with any other flag");
-			goto error;
+			return false;
 		}
 	}
 
@@ -710,19 +691,19 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 			if (type != FR_TYPE_OCTETS) {
 				fr_strerror_printf("The 'encrypt=1' flag can only be used with "
 						   "attributes of type 'string'");
-				goto error;
+				return false;
 			}
 
 			if (flags->length == 0) {
 				fr_strerror_printf("The 'encrypt=1' flag MUST be used with an explicit length for "
 						   "'octets' data types");
-				goto error;
+				return false;
 			}
 		}
 
 		if (flags->encrypt > FLAG_ENCRYPT_OTHER) {
 			fr_strerror_printf("The 'encrypt' flag can only be 0..4");
-			goto error;
+			return false;
 		}
 
 		/*
@@ -735,12 +716,11 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 			for (v = parent; v != NULL; v = v->parent) {
 				switch (v->type) {
 				case FR_TYPE_EXTENDED:
-				case FR_TYPE_LONG_EXTENDED:
 				case FR_TYPE_EVS:
 					fr_strerror_printf("The 'encrypt=%d' flag cannot be used with attributes "
 							   "of type '%s'", flags->encrypt,
-							   fr_int2str(fr_value_box_type_names, type, "<UNKNOWN>"));
-					goto error;
+							   fr_int2str(fr_value_box_type_table, type, "<UNKNOWN>"));
+					return false;
 
 				default:
 					break;
@@ -753,8 +733,8 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 		default:
 		encrypt_fail:
 			fr_strerror_printf("The 'encrypt' flag cannot be used with attributes of type '%s'",
-					   fr_int2str(fr_value_box_type_names, type, "<UNKNOWN>"));
-			goto error;
+					   fr_int2str(fr_value_box_type_table, type, "<UNKNOWN>"));
+			return false;
 
 		case FR_TYPE_TLV:
 		case FR_TYPE_IPV4_ADDR:
@@ -777,12 +757,11 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 	 *	These types may only be parented from the root of the dictionary
 	 */
 	case FR_TYPE_EXTENDED:
-	case FR_TYPE_LONG_EXTENDED:
 //	case FR_TYPE_VSA:
 		if (!parent->flags.is_root) {
 			fr_strerror_printf("Attributes of type '%s' can only be used in the RFC space",
-					   fr_int2str(fr_value_box_type_names, type, "?Unknown?"));
-			goto error;
+					   fr_int2str(fr_value_box_type_table, type, "?Unknown?"));
+			return false;
 		}
 		break;
 
@@ -790,10 +769,10 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 	 *	EVS may only occur under extended and long extended.
 	 */
 	case FR_TYPE_EVS:
-		if ((parent->type != FR_TYPE_EXTENDED) && (parent->type != FR_TYPE_LONG_EXTENDED)) {
+		if (parent->type != FR_TYPE_EXTENDED) {
 			fr_strerror_printf("Attributes of type 'evs' MUST have a parent of type 'extended', "
-					   "instead of '%s'", fr_int2str(fr_value_box_type_names, parent->type, "?Unknown?"));
-			goto error;
+					   "instead of '%s'", fr_int2str(fr_value_box_type_table, parent->type, "?Unknown?"));
+			return false;
 		}
 		break;
 
@@ -801,8 +780,8 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 		if ((parent->type != FR_TYPE_VSA) && (parent->type != FR_TYPE_EVS)) {
 			fr_strerror_printf("Attributes of type 'vendor' MUST have a parent of type 'vsa' or "
 					   "'evs', instead of '%s'",
-					   fr_int2str(fr_value_box_type_names, parent->type, "?Unknown?"));
-			goto error;
+					   fr_int2str(fr_value_box_type_table, parent->type, "?Unknown?"));
+			return false;
 		}
 
 		if (parent->type == FR_TYPE_VSA) {
@@ -837,8 +816,8 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 		 */
 		if (!v) {
 			fr_strerror_printf("Attributes of type '%s' require a parent attribute",
-					   fr_int2str(fr_value_box_type_names, type, "?Unknown?"));
-			goto error;
+					   fr_int2str(fr_value_box_type_table, type, "?Unknown?"));
+			return false;
 		}
 
 		/*
@@ -861,18 +840,27 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 
 		if (!v) {
 			fr_strerror_printf("Attributes of type '%s' can only be used in VSA dictionaries",
-					   fr_int2str(fr_value_box_type_names, type, "?Unknown?"));
-			goto error;
+					   fr_int2str(fr_value_box_type_table, type, "?Unknown?"));
+			return false;
 		}
 		break;
 
 	case FR_TYPE_INVALID:
-	case FR_TYPE_TIMEVAL:
+	case FR_TYPE_TIME_DELTA:
 	case FR_TYPE_FLOAT64:
 	case FR_TYPE_COMBO_IP_PREFIX:
 		fr_strerror_printf("Attributes of type '%s' cannot be used in dictionaries",
-				   fr_int2str(fr_value_box_type_names, type, "?Unknown?"));
-		goto error;
+				   fr_int2str(fr_value_box_type_table, type, "?Unknown?"));
+		return false;
+
+	case FR_TYPE_DATE:
+		if (flags->type_size > FR_TIME_RES_NSEC) {
+			fr_strerror_printf("Invalid precision '%d' for attribute of type 'date'",
+					   flags->type_size);
+			return false;
+		}
+		break;
+
 
 	default:
 		break;
@@ -922,32 +910,22 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 		if (!parent->flags.is_root || (*attr < 241)) {
 			fr_strerror_printf("Attributes of type 'extended' MUST be "
 					   "RFC attributes with value >= 241.");
-			goto error;
+			return false;
 		}
-		flags->length = 0;
-		break;
-
-	case FR_TYPE_LONG_EXTENDED:
-		if (!parent->flags.is_root || (*attr < 241)) {
-			fr_strerror_printf("Attributes of type 'long-extended' MUST "
-					   "be RFC attributes with value >= 241.");
-			goto error;
-		}
-
 		flags->length = 0;
 		break;
 
 	case FR_TYPE_EVS:
 		if (*attr != FR_VENDOR_SPECIFIC) {
 			fr_strerror_printf("Attributes of type 'evs' MUST have attribute code 26, got %i", *attr);
-			goto error;
+			return false;
 		}
 
 		flags->length = 0;
 		break;
 
 		/*
-		 *	The length is calculated from th children, not
+		 *	The length is calculated from the children, not
 		 *	input as the flags.
 		 */
 	case FR_TYPE_STRUCT:
@@ -955,12 +933,12 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 
 		if (flags->encrypt != FLAG_ENCRYPT_NONE) {
 			fr_strerror_printf("Attributes of type 'struct' MUST NOT be encrypted.");
-			goto error;
+			return false;
 		}
 
 		if (flags->internal || flags->has_tag || flags->array || flags->concat || flags->virtual) {
 			fr_strerror_printf("Invalid flag for attribute of type 'struct'");
-			goto error;
+			return false;
 		}
 		break;
 
@@ -979,12 +957,12 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 	if (parent->type == FR_TYPE_STRUCT) {
 		if (flags->encrypt != FLAG_ENCRYPT_NONE) {
 			fr_strerror_printf("Attributes inside a 'struct' MUST NOT be encrypted.");
-			goto error;
+			return false;
 		}
 
 		if (flags->internal || flags->has_tag || flags->array || flags->concat || flags->virtual) {
 			fr_strerror_printf("Invalid flag for attribute inside a 'struct'");
-			goto error;
+			return false;
 		}
 
 		if (*attr > 1) {
@@ -992,13 +970,14 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 
 			sibling = fr_dict_attr_child_by_num(parent, (*attr) - 1);
 			if (!sibling) {
-				fr_strerror_printf("Children of 'struct' type attributes MUST be numbered consecutively.");
-				goto error;
+				fr_strerror_printf("Child %s of 'struct' type attribute %s MUST be numbered consecutively %u.",
+					name, parent->name, *attr);
+				return false;
 			}
 
 			if (dict_attr_sizes[sibling->type][1] == ~(size_t) 0) {
 				fr_strerror_printf("Only the last child of a 'struct' attribute can have variable length");
-				goto error;
+				return false;
 			}
 
 		} else {
@@ -1009,7 +988,7 @@ static bool dict_attr_fields_valid(fr_dict_t *dict, fr_dict_attr_t const *parent
 			 */
 			if ((type != FR_TYPE_STRUCT) && (flags->length == 0)) {
 				fr_strerror_printf("Children of 'struct' type attributes MUST have fixed length.");
-				goto error;
+				return false;
 			}
 		}
 	}
@@ -1167,7 +1146,7 @@ static fr_dict_attr_t *dict_attr_ref_alloc(fr_dict_t *dict, fr_dict_attr_t const
 	}
 
 	ref_n = talloc_zero(dict->pool, fr_dict_attr_ref_t);
-	ref_n->tlv.name = talloc_typed_strdup(ref, name);
+	ref_n->tlv.name = talloc_typed_strdup(ref_n, name);
 	if (!ref_n->tlv.name) {
 		talloc_free(ref_n);
 		fr_strerror_printf("Out of memory");
@@ -1238,9 +1217,10 @@ static int dict_protocol_add(fr_dict_t *dict)
  */
 static int dict_vendor_add(fr_dict_t *dict, char const *name, unsigned int num)
 {
-	INTERNAL_IF_NULL(dict);
 	size_t			len;
 	fr_dict_vendor_t	*vendor;
+
+	INTERNAL_IF_NULL(dict, -1);
 
 	len = strlen(name);
 	if (len >= FR_DICT_VENDOR_MAX_NAME_LEN) {
@@ -1518,7 +1498,7 @@ static int dict_attr_ref_add(fr_dict_t *dict, fr_dict_attr_t const *parent,
 	fr_dict_attr_flags_t	our_flags = *flags;
 
 	/*
-	 *	Check it's valid
+	 *	Check that the definition is valid.
 	 */
 	if (!dict_attr_fields_valid(dict, parent, name, &attr, type, &our_flags)) return -1;
 
@@ -1540,7 +1520,7 @@ static int dict_attr_ref_add(fr_dict_t *dict, fr_dict_attr_t const *parent,
 	 */
 	if (!ref->flags.is_root && (ref->type != FR_TYPE_TLV)) {
 		fr_strerror_printf("Referenced attribute \"%s\" must be of type '%s' not a 'tlv'", ref->name,
-				   fr_int2str(fr_value_box_type_names, ref->type, "<INVALID>"));
+				   fr_int2str(fr_value_box_type_table, ref->type, "<INVALID>"));
 		return -1;
 	}
 
@@ -1549,7 +1529,7 @@ static int dict_attr_ref_add(fr_dict_t *dict, fr_dict_attr_t const *parent,
 	 */
 	if (type != FR_TYPE_TLV) {
 		fr_strerror_printf("Reference attribute must be of type 'tlv', not type '%s'",
-				   fr_int2str(fr_value_box_type_names, type, "<INVALID>"));
+				   fr_int2str(fr_value_box_type_table, type, "<INVALID>"));
 		return -1;
 	}
 
@@ -1597,7 +1577,7 @@ int fr_dict_attr_add(fr_dict_t *dict, fr_dict_attr_t const *parent,
 	fr_dict_attr_flags_t	our_flags = *flags;
 
 	/*
-	 *	Check it's valid
+	 *	Check that the definition is valid.
 	 */
 	if (!dict_attr_fields_valid(dict, parent, name, &attr, type, &our_flags)) return -1;
 
@@ -1628,8 +1608,8 @@ int fr_dict_attr_add(fr_dict_t *dict, fr_dict_attr_t const *parent,
 		if (old->type != type) {
 			fr_strerror_printf_push("Cannot add duplicate name %s with different type (old %s, new %s)",
 						name,
-						fr_int2str(fr_value_box_type_names, old->type, "?Unknown?"),
-						fr_int2str(fr_value_box_type_names, type, "?Unknown?"));
+						fr_int2str(fr_value_box_type_table, old->type, "?Unknown?"),
+						fr_int2str(fr_value_box_type_table, type, "?Unknown?"));
 			return -1;
 		}
 
@@ -1712,27 +1692,29 @@ int fr_dict_enum_add_alias(fr_dict_attr_t const *da, char const *alias,
 
 	enumv = talloc_zero(dict->pool, fr_dict_enum_t);
 	if (!enumv) {
+	oom:
 		fr_strerror_printf("%s: Out of memory", __FUNCTION__);
 		return -1;
 	}
 	enumv->alias = talloc_typed_strdup(enumv, alias);
 	enumv->alias_len = strlen(alias);
 	enum_value = fr_value_box_alloc(enumv, da->type, NULL, false);
+	if (!enum_value) goto oom;
 
 	if (da->type != value->type) {
 		if (!coerce) {
 			fr_strerror_printf("%s: Type mismatch between attribute (%s) and enum (%s)",
 					   __FUNCTION__,
-					   fr_int2str(fr_value_box_type_names, da->type, "<INVALID>"),
-					   fr_int2str(fr_value_box_type_names, value->type, "<INVALID>"));
+					   fr_int2str(fr_value_box_type_table, da->type, "<INVALID>"),
+					   fr_int2str(fr_value_box_type_table, value->type, "<INVALID>"));
 			return -1;
 		}
 
 		if (fr_value_box_cast(enumv, enum_value, da->type, NULL, value) < 0) {
 			fr_strerror_printf_push("%s: Failed coercing enum type (%s) to attribute type (%s)",
 						__FUNCTION__,
-					   	fr_int2str(fr_value_box_type_names, value->type, "<INVALID>"),
-					   	fr_int2str(fr_value_box_type_names, da->type, "<INVALID>"));
+					   	fr_int2str(fr_value_box_type_table, value->type, "<INVALID>"),
+					   	fr_int2str(fr_value_box_type_table, da->type, "<INVALID>"));
 
 			return -1;
 		}
@@ -1853,7 +1835,7 @@ int fr_dict_enum_add_alias_next(fr_dict_attr_t const *da, char const *alias)
 
 	default:
 		fr_strerror_printf("Attribute is wrong type for auto-numbering, expected numeric type, got %s",
-				   fr_int2str(fr_value_box_type_names, da->type, "?Unknown?"));
+				   fr_int2str(fr_value_box_type_table, da->type, "?Unknown?"));
 		return -1;
 	}
 
@@ -1888,24 +1870,38 @@ int fr_dict_enum_add_alias_next(fr_dict_attr_t const *da, char const *alias)
  */
 fr_dict_attr_t *fr_dict_unknown_acopy(TALLOC_CTX *ctx, fr_dict_attr_t const *da)
 {
-	fr_dict_attr_t *n, *new_parent = NULL;
+	fr_dict_attr_t *n;
 	fr_dict_attr_t const *parent;
 
+	/*
+	 *	Allocate an attribute.
+	 */
+	n = dict_attr_alloc_name(ctx, da->name);
+	if (!n) return NULL;
+
+	/*
+	 *	We want to have parent / child relationships, AND to
+	 *	copy all unknown parents, AND to free the unknown
+	 *	parents when this 'da' is freed.  We therefore talloc
+	 *	the parent from the 'da'.
+	 */
 	if (da->parent->flags.is_unknown) {
-		new_parent = fr_dict_unknown_acopy(ctx, da->parent);
-		parent = new_parent;
+		parent = fr_dict_unknown_acopy(n, da->parent);
+		if (!parent) {
+			talloc_free(n);
+			return NULL;
+		}
+
 	} else {
 		parent = da->parent;
 	}
 
-	n = dict_attr_alloc(ctx, parent, da->name, da->attr, da->type, &da->flags);
-	n->parent = parent;
-	n->depth = da->depth;
-
 	/*
-	 *	Inverted tallloc hierarchy.
+	 *	Initialize the rest of the fields.
 	 */
-	if (new_parent) talloc_steal(n, parent);
+	dict_attr_init(n, parent, da->attr, da->type, &da->flags);
+
+	DA_VERIFY(n);
 
 	return n;
 }
@@ -2090,7 +2086,7 @@ int fr_dict_unknown_vendor_afrom_num(TALLOC_CTX *ctx, fr_dict_attr_t **out,
 
 	default:
 		fr_strerror_printf("Unknown vendors can only be parented by 'vsa' or 'evs' "
-				   "attributes, not '%s'", fr_int2str(fr_value_box_type_names, parent->type, "?Unknown?"));
+				   "attributes, not '%s'", fr_int2str(fr_value_box_type_table, parent->type, "?Unknown?"));
 		return -1;
 	}
 }
@@ -2154,6 +2150,7 @@ fr_dict_attr_t const *fr_dict_unknown_afrom_fields(TALLOC_CTX *ctx, fr_dict_attr
 	}
 
 	n = dict_attr_alloc(ctx, parent, NULL, attr, FR_TYPE_OCTETS, &flags);
+	if (!n) return NULL;
 
 	/*
 	 *	The config files may reference the unknown by name.
@@ -2245,9 +2242,11 @@ ssize_t fr_dict_unknown_afrom_oid_str(TALLOC_CTX *ctx, fr_dict_attr_t **out,
 {
 	char const		*p = oid_str, *end = oid_str + strlen(oid_str);
 	fr_dict_attr_t const	*our_parent = parent;
-	TALLOC_CTX		*top_ctx = NULL, *our_ctx = ctx;
-
-	fr_dict_attr_t		*n = NULL;
+	fr_dict_attr_t		*n = NULL, *our_da;
+	fr_dict_attr_flags_t	flags = {
+		.is_unknown = true,
+		.is_raw = true,
+	};
 
 	if (!fr_cond_assert(parent)) {
 		fr_strerror_printf("%s: Invalid argument - parent was NULL", __FUNCTION__);
@@ -2256,10 +2255,10 @@ ssize_t fr_dict_unknown_afrom_oid_str(TALLOC_CTX *ctx, fr_dict_attr_t **out,
 
 	*out = NULL;
 
-	if (fr_dict_valid_name(oid_str, -1) < 0) return -1;
+	if (fr_dict_valid_oid_str(oid_str, -1) < 0) return -1;
 
 	/*
-	 *	All unknown attributes are of the form "Attr-#-#-#-#"
+	 *	All unknown attributes are of the form "Attr-#.#.#.#"
 	 */
 	if (strncasecmp(p, "Attr-", 5) != 0) {
 		fr_strerror_printf("Unknown attribute '%s'", oid_str);
@@ -2267,13 +2266,31 @@ ssize_t fr_dict_unknown_afrom_oid_str(TALLOC_CTX *ctx, fr_dict_attr_t **out,
 	}
 	p += 5;
 
+	/*
+	 *	Allocate the final attribute first, so that any
+	 *	unknown parents can be freed when this da is freed.
+	 *
+	 *      See fr_dict_unknown_acopy() for more details.
+	 *
+	 *	Note also that we copy the input name, even if it is
+	 *	not normalized.
+	 *
+	 *	While the name of this attribute is "Attr-#.#.#", one
+	 *	or more of the leading components may, in fact, be
+	 *	known.
+	 */
+	n = dict_attr_alloc_name(ctx, oid_str);
+
+	/*
+	 *	While the name of this attribu
+	 */
 	do {
 		unsigned int		num;
 		fr_dict_attr_t const	*da = NULL;
 
 		if (fr_dict_oid_component(&num, &p) < 0) {
 		error:
-			talloc_free(top_ctx);
+			talloc_free(n);
 			return -(p - oid_str);
 		}
 
@@ -2293,23 +2310,21 @@ ssize_t fr_dict_unknown_afrom_oid_str(TALLOC_CTX *ctx, fr_dict_attr_t **out,
 					if (!fr_cond_assert(!da || (da->type == FR_TYPE_VENDOR))) goto error;
 
 					if (!da) {
-						if (fr_dict_unknown_vendor_afrom_num(our_ctx, &n,
+						if (fr_dict_unknown_vendor_afrom_num(n, &our_da,
 										     our_parent, num) < 0) {
 							goto error;
 						}
-						da = n;
+						da = our_da;
 					}
 					break;
 
 				case FR_TYPE_TLV:
 				case FR_TYPE_EXTENDED:
-				case FR_TYPE_LONG_EXTENDED:
 				is_root:
-					if (dict_unknown_attr_afrom_num(our_ctx, &n, our_parent, num) < 0) {
+					if (dict_unknown_attr_afrom_num(n, &our_da, our_parent, num) < 0) {
 						goto error;
 					}
-
-					da = n;
+					da = our_da;
 					break;
 
 				/*
@@ -2320,47 +2335,27 @@ ssize_t fr_dict_unknown_afrom_oid_str(TALLOC_CTX *ctx, fr_dict_attr_t **out,
 					fr_strerror_printf("Parent OID component (%s) in \"%.*s\" specified a "
 							   "non-structural type (%s)", our_parent->name,
 							   (int)(p - oid_str), oid_str,
-							   fr_int2str(fr_value_box_type_names,
+							   fr_int2str(fr_value_box_type_table,
 							   	      our_parent->type, "<INVALID>"));
 					goto error;
 				}
 			}
 			our_parent = da;
-
-			if (n && n->flags.is_unknown) {
-				if (top_ctx == NULL) top_ctx = n;	/* Track first unknown */
-				our_ctx = n;
-			}
-
-
 			break;
 
 		/*
 		 *	Leaf attribute
 		 */
 		case '\0':
-			if (dict_unknown_attr_afrom_num(our_ctx, &n, our_parent, num) < 0) goto error;
+			dict_attr_init(n, our_parent, num, FR_TYPE_OCTETS, &flags);
 			break;
 		}
 		p++;
 	} while (p < end);
 
-	if (!n) return 0;
-
 	/*
-	 *	Invert the talloc hierarchy, so that if the unknown
-	 *	attribute is freed, any unknown parents are also freed.
+	 *	@todo - if we really care about normalization, re-print the name here, normalized.
 	 */
-	talloc_steal(ctx, n);
-	for (our_parent = n->parent, our_ctx = n;
-	     our_parent && our_parent->flags.is_unknown;
-	     our_parent = our_parent->parent) {
-		fr_dict_attr_t *tmp;
-
-		memcpy(&tmp, &our_parent, sizeof(tmp));			/* const issues *sigh* */
-
-		our_ctx = talloc_steal(our_ctx, tmp);
-	}
 
 	DA_VERIFY(n);
 
@@ -2431,7 +2426,7 @@ ssize_t fr_dict_unknown_afrom_oid_substr(TALLOC_CTX *ctx, fr_dict_attr_t **out,
  */
 fr_dict_attr_t const *fr_dict_attr_known(fr_dict_t *dict, fr_dict_attr_t const *da)
 {
-	INTERNAL_IF_NULL(dict);
+	INTERNAL_IF_NULL(dict, NULL);
 
 	if (!da->flags.is_unknown) return da;	/* It's known */
 
@@ -2448,7 +2443,7 @@ fr_dict_attr_t const *fr_dict_attr_known(fr_dict_t *dict, fr_dict_attr_t const *
 	return NULL;
 }
 
-ssize_t fr_dict_snprint_flags(char *out, size_t outlen, fr_dict_attr_flags_t const *flags)
+ssize_t fr_dict_snprint_flags(char *out, size_t outlen, fr_type_t type, fr_dict_attr_flags_t const *flags)
 {
 	char *p = out, *end = p + outlen;
 	size_t len;
@@ -2473,7 +2468,6 @@ do { \
 	FLAG_SET(has_value);
 	FLAG_SET(concat);
 	FLAG_SET(virtual);
-	FLAG_SET(named);
 
 	if (flags->encrypt) {
 		p += snprintf(p, end - p, "encrypt=%i,", flags->encrypt);
@@ -2482,6 +2476,16 @@ do { \
 
 	if (flags->length) {
 		p += snprintf(p, end - p, "length=%i,", flags->length);
+		if (p >= end) return -1;
+	}
+
+	/*
+	 *	Print out the date precision.
+	 */
+	if (type == FR_TYPE_DATE) {
+		char const *precision = fr_int2str(date_precision_table, flags->type_size, "?");
+
+		p += strlcpy(p, precision, end - p);
 		if (p >= end) return -1;
 	}
 
@@ -2502,7 +2506,7 @@ void fr_dict_print(fr_dict_attr_t const *da, int depth)
 	unsigned int i;
 	char const *name;
 
-	fr_dict_snprint_flags(buff, sizeof(buff), &da->flags);
+	fr_dict_snprint_flags(buff, sizeof(buff), da->type, &da->flags);
 
 	switch (da->type) {
 	case FR_TYPE_VSA:
@@ -2525,12 +2529,12 @@ void fr_dict_print(fr_dict_attr_t const *da, int depth)
 		name = "VENDOR";
 		break;
 
-	case FR_TYPE_LONG_EXTENDED:
-		name = "LONG EXTENDED";
-		break;
-
 	case FR_TYPE_STRUCT:
 		name = "STRUCT";
+		break;
+
+	case FR_TYPE_GROUP:
+		name = "GROUP";
 		break;
 
 	default:
@@ -2541,7 +2545,7 @@ void fr_dict_print(fr_dict_attr_t const *da, int depth)
 	printf("%u%.*s%s \"%s\" vendor: %x (%u), num: %x (%u), type: %s, flags: %s\n", da->depth, depth,
 	       "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t", name, da->name,
 	       fr_dict_vendor_num_by_da(da), fr_dict_vendor_num_by_da(da), da->attr, da->attr,
-	       fr_int2str(fr_value_box_type_names, da->type, "?Unknown?"), buff);
+	       fr_int2str(fr_value_box_type_table, da->type, "?Unknown?"), buff);
 
 	if (da->children) for (i = 0; i < talloc_array_length(da->children); i++) {
 		if (da->children[i]) {
@@ -2710,8 +2714,7 @@ ssize_t fr_dict_attr_by_oid(fr_dict_t *dict, fr_dict_attr_t const **parent, unsi
 	unsigned int		num = 0;
 	ssize_t			slen;
 
-	if (!fr_cond_assert(parent)) return 0;
-	INTERNAL_IF_NULL(dict);
+	if (!*parent) return -1;
 
 	/*
 	 *	It's a partial OID.  Grab it, and skip to the next bit.
@@ -3027,8 +3030,9 @@ fr_dict_vendor_t const *fr_dict_vendor_by_name(fr_dict_t const *dict, char const
 {
 	fr_dict_vendor_t	*found;
 
+	INTERNAL_IF_NULL(dict, NULL);
+
 	if (!name) return 0;
-	INTERNAL_IF_NULL(dict);
 
 	found = fr_hash_table_finddata(dict->vendors_by_name, &(fr_dict_vendor_t) { .name = name });
 	if (!found) return 0;
@@ -3047,7 +3051,7 @@ fr_dict_vendor_t const *fr_dict_vendor_by_name(fr_dict_t const *dict, char const
  */
 fr_dict_vendor_t const *fr_dict_vendor_by_num(fr_dict_t const *dict, uint32_t vendor_pen)
 {
-	INTERNAL_IF_NULL(dict);
+	INTERNAL_IF_NULL(dict, NULL);
 
 	return fr_hash_table_finddata(dict->vendors_by_num, &(fr_dict_vendor_t) { .pen = vendor_pen });
 }
@@ -3097,9 +3101,9 @@ fr_dict_attr_t const *fr_dict_vendor_attr_by_num(fr_dict_attr_t const *vendor_ro
 
 	default:
 		fr_strerror_printf("Wrong type for vendor root, expected '%s' or '%s' got '%s'",
-				   fr_int2str(fr_value_box_type_names, FR_TYPE_VSA, "<INVALID>"),
-				   fr_int2str(fr_value_box_type_names, FR_TYPE_EVS, "<INVALID>"),
-				   fr_int2str(fr_value_box_type_names, vendor_root->type, "<INVALID>"));
+				   fr_int2str(fr_value_box_type_table, FR_TYPE_VSA, "<INVALID>"),
+				   fr_int2str(fr_value_box_type_table, FR_TYPE_EVS, "<INVALID>"),
+				   fr_int2str(fr_value_box_type_table, vendor_root->type, "<INVALID>"));
 		return NULL;
 	}
 
@@ -3111,8 +3115,8 @@ fr_dict_attr_t const *fr_dict_vendor_attr_by_num(fr_dict_attr_t const *vendor_ro
 
 	if (vendor->type != FR_TYPE_VENDOR) {
 		fr_strerror_printf("Wrong type for vendor, expected '%s' got '%s'",
-				   fr_int2str(fr_value_box_type_names, vendor->type, "<INVALID>"),
-				   fr_int2str(fr_value_box_type_names, FR_TYPE_VENDOR, "<INVALID>"));
+				   fr_int2str(fr_value_box_type_table, vendor->type, "<INVALID>"),
+				   fr_int2str(fr_value_box_type_table, FR_TYPE_VENDOR, "<INVALID>"));
 		return NULL;
 	}
 
@@ -3152,14 +3156,15 @@ ssize_t fr_dict_attr_by_name_substr(fr_dict_attr_err_t *err, fr_dict_attr_t cons
 	size_t			len;
 	char			buffer[FR_DICT_ATTR_MAX_NAME_LEN + 1];
 
+	*out = NULL;
+
+	INTERNAL_IF_NULL(dict, 0);
+
 	if (!*name) {
 		fr_strerror_printf("Zero length attribute name");
 		if (err) *err = FR_DICT_ATTR_PARSE_ERROR;
 		return 0;
 	}
-	INTERNAL_IF_NULL(dict);
-
-	if (err) *err = FR_DICT_ATTR_OK;
 
 	/*
 	 *	Advance p until we get something that's not part of
@@ -3185,6 +3190,7 @@ ssize_t fr_dict_attr_by_name_substr(fr_dict_attr_err_t *err, fr_dict_attr_t cons
 	}
 
 	*out = da;
+	if (err) *err = FR_DICT_ATTR_OK;
 
 	return p - name;
 }
@@ -3202,8 +3208,9 @@ ssize_t fr_dict_attr_by_name_substr(fr_dict_attr_err_t *err, fr_dict_attr_t cons
  */
 fr_dict_attr_t const *fr_dict_attr_by_name(fr_dict_t const *dict, char const *name)
 {
+	INTERNAL_IF_NULL(dict, NULL);
+
 	if (!name) return NULL;
-	INTERNAL_IF_NULL(dict);
 
 	return fr_hash_table_finddata(dict->attributes_by_name, &(fr_dict_attr_t) { .name = name });
 }
@@ -3234,9 +3241,9 @@ ssize_t fr_dict_attr_by_qualified_name_substr(fr_dict_attr_err_t *err, fr_dict_a
 	bool			internal = false;
 	fr_hash_iter_t  	iter;
 
-	INTERNAL_IF_NULL(dict_def);
+	*out = NULL;
 
-	if (err) *err = FR_DICT_ATTR_OK;
+	INTERNAL_IF_NULL(dict_def, -1);
 
 	/*
 	 *	Figure out if we should use the default dictionary
@@ -3338,6 +3345,8 @@ again:
 		return 0;
 	}
 
+	if (err) *err = FR_DICT_ATTR_OK;
+
 	return p - name;
 }
 
@@ -3353,7 +3362,7 @@ fr_dict_attr_err_t fr_dict_attr_by_qualified_name(fr_dict_attr_t const **out, fr
 						  char const *attr, bool fallback)
 {
 	ssize_t			slen;
-	fr_dict_attr_err_t	err = FR_DICT_ATTR_OK;
+	fr_dict_attr_err_t	err = FR_DICT_ATTR_PARSE_ERROR;
 
 	slen = fr_dict_attr_by_qualified_name_substr(&err, out, dict_def, attr, fallback);
 	if (slen <= 0) return err;
@@ -3667,6 +3676,15 @@ typedef struct {
 	int			block_tlv_depth;	//!< Nested TLV block index we're inserting into.
 
 	fr_dict_attr_t const	*parent;		//!< Current parent attribute (root/vendor/tlv).
+
+	fr_dict_attr_t const	*value_attr;		//!< Cache of last attribute to speed up
+							///< value processing.
+	fr_dict_attr_t const	*previous_attr;		//!< for ".82" instead of "1.2.3.82".
+
+	int			member_num;		//!< for attributes of type 'struct'
+
+	TALLOC_CTX		*fixup_pool;		//!< Temporary pool for fixups, reduces holes
+	dict_enum_fixup_t	*enum_fixup;
 } dict_from_file_ctx_t;
 
 /** Set a new root dictionary attribute
@@ -3746,9 +3764,6 @@ static fr_dict_t *dict_alloc(TALLOC_CTX *ctx)
 	 */
 	dict->pool = talloc_pool(dict, DICT_POOL_SIZE);
 	if (!dict->pool) goto error;
-
-	dict->fixup_pool = talloc_pool(dict, DICT_FIXUP_POOL_SIZE);
-	if (!dict->fixup_pool) goto error;
 
 	/*
 	 *	Create the table of vendor by name.   There MAY NOT
@@ -3866,24 +3881,177 @@ static fr_dict_attr_t const *dict_resolve_reference(fr_dict_t *dict, char const 
 	return da;
 }
 
+
+static int dict_process_type_field(char const *name, fr_type_t *type_p, fr_dict_attr_flags_t *flags)
+{
+	char *p;
+	int type;
+
+	/*
+	 *	Some types can have fixed length
+	 */
+	p = strchr(name, '[');
+	if (p) *p = '\0';
+
+	/*
+	 *	find the type of the attribute.
+	 */
+	type = fr_str2int(fr_value_box_type_table, name, -1);
+	if (type < 0) {
+		fr_strerror_printf("Unknown data type '%s'", name);
+		return -1;
+	}
+
+	if (p) {
+		char *q;
+		unsigned int length;
+
+		if (type != FR_TYPE_OCTETS) {
+			fr_strerror_printf("Only 'octets' types can have a 'length' parameter");
+			return -1;
+		}
+
+		q = strchr(p + 1, ']');
+		if (!q) {
+			fr_strerror_printf("Invalid format for '%s[...]'", name);
+			return -1;
+		}
+
+		*q = '\0';
+
+		if (!dict_read_sscanf_i(&length, p + 1)) {
+			fr_strerror_printf("Invalid length for '%s[...]'", name);
+			return -1;
+		}
+
+		if ((length == 0) || (length > 253)) {
+			fr_strerror_printf("Invalid length for '%s[...]'", name);
+			return -1;
+		}
+
+		flags->length = length;
+	}
+
+	*type_p = type;
+	return 0;
+}
+
+
+static int dict_process_flag_field(dict_from_file_ctx_t *ctx, char *name, fr_type_t type, fr_dict_attr_t const **ref_p, fr_dict_attr_flags_t *flags)
+{
+	char *p, *q, *v;
+	fr_dict_attr_t const *ref = NULL;
+
+	p = name;
+	do {
+		char key[64], value[256];
+
+		q = strchr(p, ',');
+		if (!q) q = p + strlen(p);
+
+		/*
+		 *	Nothing after the trailing comma
+		 */
+		if (p == q) break;
+
+		if ((size_t)(q - p) > sizeof(key)) {
+			fr_strerror_printf("ATTRIBUTE option key too long");
+			return -1;
+		}
+
+		/*
+		 *	Copy key and value
+		 */
+		if (!(v = memchr(p, '=', q - p)) || (v == q)) {
+			value[0] = '\0';
+			strlcpy(key, p, (q - p) + 1);
+		} else {
+			strlcpy(key, p, (v - p) + 1);
+			strlcpy(value, v + 1, q - v);
+		}
+
+		/*
+		 *	Boolean flag, means this is a tagged
+		 *	attribute.
+		 */
+		if (strcmp(key, "has_tag") == 0) {
+			flags->has_tag = 1;
+
+			/*
+			 *	Encryption method.
+			 */
+		} else if (strcmp(key, "encrypt") == 0) {
+			char *qq;
+
+			flags->encrypt = strtol(value, &qq, 0);
+			if (*qq) {
+				fr_strerror_printf("Invalid encrypt value \"%s\"", value);
+				return -1;
+			}
+
+			/*
+			 *	Marks the attribute up as internal.
+			 *	This means it can use numbers outside of the allowed
+			 *	protocol range, and also means it will not be included
+			 *	in replies or proxy requests.
+			 */
+		} else if (strcmp(key, "internal") == 0) {
+			flags->internal = 1;
+
+		} else if (strcmp(key, "array") == 0) {
+			flags->array = 1;
+
+		} else if (strcmp(key, "concat") == 0) {
+			flags->concat = 1;
+
+		} else if (strcmp(key, "virtual") == 0) {
+			flags->virtual = 1;
+
+		} else if (strcmp(key, "long") == 0) {
+			flags->extra = 1;
+
+		} else if (ref_p && (strcmp(key, "reference") == 0)) {
+			ref = dict_resolve_reference(ctx->dict, value);
+			if (!ref) return -1;
+			flags->is_reference = 1;
+
+			*ref_p = ref;
+
+		} else if (type == FR_TYPE_DATE) {
+			int precision;
+
+			precision = fr_str2int(date_precision_table, key, -1);
+			if (precision < 0) {
+				fr_strerror_printf("Unknown date precision '%s'", key);
+				return -1;
+			}
+			flags->type_size = precision;
+
+		} else {
+			fr_strerror_printf("Unknown option '%s'", key);
+			return -1;
+		}
+		p = q;
+	} while (*p++);
+
+	return 0;
+}
+
+
 /*
  *	Process the ATTRIBUTE command
  */
-static int dict_read_process_attribute(fr_dict_t *dict, fr_dict_attr_t const *parent,
-			     	       fr_dict_vendor_t const *block_vendor, char **argv, int argc,
-				       fr_dict_attr_flags_t *base_flags, fr_dict_attr_t const **previous)
+static int dict_read_process_attribute(dict_from_file_ctx_t *ctx, char **argv, int argc,
+				       fr_dict_attr_flags_t *base_flags)
 {
-	bool			oid = false;
 	bool			set_previous = true;
 
-	fr_dict_vendor_t const	*vendor;
 	unsigned int		attr;
 
-	int			type;
-	unsigned int		length;
+	fr_type_t      		type;
 	fr_dict_attr_flags_t	flags;
 	fr_dict_attr_t const	*ref = NULL;
-	char			*p;
+	fr_dict_attr_t const	*parent = ctx->parent;
 
 	if ((argc < 3) || (argc > 4)) {
 		fr_strerror_printf("Invalid ATTRIBUTE syntax");
@@ -3917,15 +4085,14 @@ static int dict_read_process_attribute(fr_dict_t *dict, fr_dict_attr_t const *pa
 		 *	previously defined attribute, which then must exist.
 		 */
 	} else if (argv[1][0] == '.') {
-		if (!previous || !*previous) {
+		if (!ctx->previous_attr) {
 			fr_strerror_printf("Unknown parent for partial OID");
 			return -1;
 		}
 
-		parent = *previous;
+		parent = ctx->previous_attr;
 		set_previous = false;
 		goto get_by_oid;
-
 
 		/*
 		 *	Got an OID string.  Every attribute should exist other
@@ -3935,161 +4102,27 @@ static int dict_read_process_attribute(fr_dict_t *dict, fr_dict_attr_t const *pa
 		ssize_t slen;
 
 get_by_oid:
-		oid = true;
-
-		slen = fr_dict_attr_by_oid(dict, &parent, &attr, argv[1]);
+		slen = fr_dict_attr_by_oid(ctx->dict, &parent, &attr, argv[1]);
 		if (slen <= 0) return -1;
 
 		if (!fr_cond_assert(parent)) return -1;	/* Should have provided us with a parent */
 	}
 
 	/*
-	 *	Some types can have fixed length
+	 *	Members of a 'struct' MUST use MEMBER, not ATTRIBUTE.
 	 */
-	p = strchr(argv[2], '[');
-	if (p) *p = '\0';
-
-	/*
-	 *	find the type of the attribute.
-	 */
-	type = fr_str2int(fr_value_box_type_names, argv[2], -1);
-	if (type < 0) {
-		fr_strerror_printf("Unknown data type '%s'", argv[2]);
+	if (parent->type == FR_TYPE_STRUCT) {
+		fr_strerror_printf("Member %s of ATTRIBUTE %s type 'struct' MUST use \"MEMBER\" keyword",
+				   argv[0], parent->name);
 		return -1;
 	}
 
-	if (p) {
-		char *q;
-
-		if (type != FR_TYPE_OCTETS) {
-			fr_strerror_printf("Only 'octets' types can have a 'length' parameter");
-			return -1;
-		}
-
-		q = strchr(p + 1, ']');
-		if (!q) {
-			fr_strerror_printf("Invalid format for '%s[...]'", argv[2]);
-			return -1;
-		}
-
-		*q = '\0';
-
-		if (!dict_read_sscanf_i(&length, p + 1)) {
-			fr_strerror_printf("Invalid length for '%s[...]'", argv[2]);
-			return -1;
-		}
-
-		if ((length == 0) || (length > 253)) {
-			fr_strerror_printf("Invalid length for '%s[...]'", argv[2]);
-			return -1;
-		}
-
-		flags.length = length;
-	}
+	if (dict_process_type_field(argv[2], &type, &flags) < 0) return -1;
 
 	/*
 	 *	Parse options.
 	 */
-	if (argc >= 4) {
-		char *q, *v;
-
-		p = argv[3];
-		do {
-			char key[64], value[256];
-
-			q = strchr(p, ',');
-			if (!q) q = p + strlen(p);
-
-			/*
-			 *	Nothing after the trailing comma
-			 */
-			if (p == q) break;
-
-			if ((size_t)(q - p) > sizeof(key)) {
-				fr_strerror_printf("ATTRIBUTE option key too long");
-				return -1;
-			}
-
-			/*
-			 *	Copy key and value
-			 */
-			if (!(v = memchr(p, '=', q - p)) || (v == q)) {
-				value[0] = '\0';
-				strlcpy(key, p, (q - p) + 1);
-			} else {
-				strlcpy(key, p, (v - p) + 1);
-				strlcpy(value, v + 1, q - v);
-			}
-
-			/*
-			 *	Boolean flag, means this is a tagged
-			 *	attribute.
-			 */
-			if (strcmp(key, "has_tag") == 0) {
-				flags.has_tag = 1;
-
-			/*
-			 *	Encryption method.
-			 */
-			} else if (strcmp(key, "encrypt") == 0) {
-				char *qq;
-
-				flags.encrypt = strtol(value, &qq, 0);
-				if (*qq) {
-					fr_strerror_printf("Invalid encrypt value \"%s\"", value);
-					return -1;
-				}
-
-			/*
-			 *	Marks the attribute up as internal.
-			 *	This means it can use numbers outside of the allowed
-			 *	protocol range, and also means it will not be included
-			 *	in replies or proxy requests.
-			 */
-			} else if (strcmp(key, "internal") == 0) {
-				flags.internal = 1;
-
-			} else if (strcmp(key, "array") == 0) {
-				flags.array = 1;
-
-			} else if (strcmp(key, "concat") == 0) {
-				flags.concat = 1;
-
-			} else if (strcmp(key, "virtual") == 0) {
-				flags.virtual = 1;
-
-			} else if (strcmp(key, "reference") == 0) {
-				ref = dict_resolve_reference(dict, value);
-				if (!ref) return -1;
-				flags.is_reference = 1;
-
-			/*
-			 *	The only thing is the vendor name, and it's a known name:
-			 *	allow it.
-			 */
-			} else if ((argv[3] == p) && (*q == '\0')) {
-				if (oid) {
-					fr_strerror_printf("ATTRIBUTE cannot use a 'vendor' flag");
-					return -1;
-				}
-
-				if (block_vendor) {
-					fr_strerror_printf("Vendor flag inside of 'BEGIN-VENDOR' is not allowed");
-					return -1;
-				}
-
-				vendor = fr_dict_vendor_by_name(dict, key);
-				if (!vendor) goto unknown;
-				break;
-
-			} else {
-			unknown:
-				fr_strerror_printf("Unknown option '%s'", key);
-				return -1;
-			}
-			p = q;
-		} while (*p++);
-	}
+	if ((argc >= 4) && (dict_process_flag_field(ctx, argv[3], type, &ref, &flags) < 0)) return -1;
 
 #ifdef WITH_DICTIONARY_WARNINGS
 	/*
@@ -4103,75 +4136,102 @@ get_by_oid:
 	}
 #endif
 
+#ifdef __clang_analyzer__
+	if (!ctx->dict) return -1;
+#endif
+
 	/*
 	 *	Add in a normal attribute
 	 */
 	if (!ref) {
-		if (fr_dict_attr_add(dict, parent, argv[0], attr, type, &flags) < 0) return -1;
+		if (fr_dict_attr_add(ctx->dict, parent, argv[0], attr, type, &flags) < 0) return -1;
 	/*
 	 *	Add in a special reference attribute
 	 */
 	} else {
-		if (dict_attr_ref_add(dict, parent, argv[0], attr, type, &flags, ref) < 0) return -1;
+		if (dict_attr_ref_add(ctx->dict, parent, argv[0], attr, type, &flags, ref) < 0) return -1;
 	}
 
 	/*
 	 *	If we need to set the previous attribute, we have to
-	 *	look it up by number.
+	 *	look it up by number.  This lets us set the
+	 *	*canonical* previous attribute, and not any potential
+	 *	duplicate which was just added.
 	 */
-	if (set_previous && previous) *previous = fr_dict_attr_child_by_num(parent, attr);
+	if (set_previous || (type == FR_TYPE_STRUCT)) ctx->previous_attr = fr_dict_attr_child_by_num(parent, attr);
 
 	return 0;
 }
+
 
 /*
- *	Process the ATTRIBUTE command, where it only has a name.
+ *	Process the MEMBER command
  */
-static int dict_read_process_named_attribute(fr_dict_t *dict, fr_dict_attr_t const *parent,
-					     char **argv, int argc,
-					     fr_dict_attr_flags_t const *base_flags)
+static int dict_read_process_member(dict_from_file_ctx_t *ctx, char **argv, int argc,
+				       fr_dict_attr_flags_t *base_flags)
 {
-	int type;
-	unsigned int attr;
-	uint32_t hash;
-	char *p, normalized[512];
+	fr_type_t      		type;
+	fr_dict_attr_flags_t	flags;
 
-	if (argc != 2) {
-		fr_strerror_printf("Invalid ATTRIBUTE syntax");
+	if ((argc < 2) || (argc > 3)) {
+		fr_strerror_printf("Invalid MEMBER syntax");
+		return -1;
+	}
+
+	if (!ctx->previous_attr) {
+		fr_strerror_printf("MEMBER can only be used immediately after an ATTRIBUTE definition");
+		return -1;
+	}
+
+	if (ctx->previous_attr->type != FR_TYPE_STRUCT) {
+		fr_strerror_printf("MEMBER can only be used for ATTRIBUTEs of type 'struct', not %s", ctx->previous_attr->name);
 		return -1;
 	}
 
 	/*
-	 *	find the type of the attribute.
+	 *	Dictionaries need to have real names, not shitty ones.
 	 */
-	type = fr_str2int(fr_value_box_type_names, argv[1], -1);
-	if (type < 0) {
-		fr_strerror_printf("Unknown data type '%s'", argv[1]);
+	if (strncmp(argv[0], "Attr-", 5) == 0) {
+		fr_strerror_printf("Invalid MEMBER name");
 		return -1;
 	}
 
-	strlcpy(normalized, argv[0], sizeof(normalized));
-	for (p = normalized; *p != '\0'; p++) {
-		if (isupper((int) *p)) {
-			*p = tolower((int) *p);
-		}
-	}
+	memcpy(&flags, base_flags, sizeof(flags));
 
-	hash = fr_hash_string(normalized);
-	attr = hash;
+	if (dict_process_type_field(argv[1], &type, &flags) < 0) return -1;
 
 	/*
-	 *	Add it in.
+	 *	Parse options.
 	 */
-	if (fr_dict_attr_add(dict, parent, argv[0], attr, type, base_flags) < 0) return -1;
+	if ((argc >= 3) && (dict_process_flag_field(ctx, argv[2], type, NULL, &flags) < 0)) return -1;
+
+#ifdef __clang_analyzer__
+	if (!ctx->dict) return -1;
+#endif
+
+	/*
+	 *	Add in a normal attribute, and DON'T set ctx->previous_attr.
+	 */
+	if (fr_dict_attr_add(ctx->dict, ctx->previous_attr, argv[0], ++ctx->member_num, type, &flags) < 0) return -1;
+
+	/*
+	 *	A 'struct' can have a MEMBER of type 'tlv', but ONLY
+	 *	as the last entry in the 'struct'.  If we see that,
+	 *	set the previous attribute to the TLV we just added.
+	 *	This allows the children of the TLV to be parsed as
+	 *	partial OIDs, so we don't need to know the full path
+	 *	to them.
+	 */
+	if (type == FR_TYPE_TLV) ctx->previous_attr = fr_dict_attr_child_by_num(ctx->previous_attr, ctx->member_num);
 
 	return 0;
 }
+
 
 /** Process a value alias
  *
  */
-static int dict_read_process_value(fr_dict_t *dict, char **argv, int argc)
+static int dict_read_process_value(dict_from_file_ctx_t *ctx, char **argv, int argc)
 {
 	fr_dict_attr_t const		*da;
 	fr_value_box_t			value;
@@ -4184,14 +4244,12 @@ static int dict_read_process_value(fr_dict_t *dict, char **argv, int argc)
 	/*
 	 *	Most VALUEs are bunched together by ATTRIBUTE.  We can
 	 *	save a lot of lookups on dictionary initialization by
-	 *	caching the last attribute.
+	 *	caching the last attribute for a VALUE.
 	 */
-	if (dict->last_attr && (strcasecmp(argv[0], dict->last_attr->name) == 0)) {
-		da = dict->last_attr;
-	} else {
-		da = fr_dict_attr_by_name(dict, argv[0]);
-		dict->last_attr = da;
+	if (!ctx->value_attr || (strcasecmp(argv[0], ctx->value_attr->name) != 0)) {
+		ctx->value_attr = fr_dict_attr_by_name(ctx->dict, argv[0]);
 	}
+	da = ctx->value_attr;
 
 	/*
 	 *	Remember which attribute is associated with this
@@ -4202,9 +4260,9 @@ static int dict_read_process_value(fr_dict_t *dict, char **argv, int argc)
 	if (!da) {
 		dict_enum_fixup_t *fixup;
 
-		if (!fr_cond_assert_msg(dict->fixup_pool, "fixup pool context invalid")) return -1;
+		if (!fr_cond_assert_msg(ctx->fixup_pool, "fixup pool context invalid")) return -1;
 
-		fixup = talloc_zero(dict->fixup_pool, dict_enum_fixup_t);
+		fixup = talloc_zero(ctx->fixup_pool, dict_enum_fixup_t);
 		if (!fixup) {
 		oom:
 			talloc_free(fixup);
@@ -4221,10 +4279,27 @@ static int dict_read_process_value(fr_dict_t *dict, char **argv, int argc)
 		/*
 		 *	Insert to the head of the list.
 		 */
-		fixup->next = dict->enum_fixup;
-		dict->enum_fixup = fixup;
+		fixup->next = ctx->enum_fixup;
+		ctx->enum_fixup = fixup;
 
 		return 0;
+	}
+
+	/*
+	 *	Only a few data types can have VALUEs defined.
+	 */
+	switch (da->type) {
+	case FR_TYPE_ABINARY:
+	case FR_TYPE_GROUP:
+	case FR_TYPE_STRUCTURAL:
+	case FR_TYPE_INVALID:
+	case FR_TYPE_MAX:
+		fr_strerror_printf_push("Cannot define VALUE for ATTRIBUTE \"%s\" of data type \"%s\"", da->name,
+					fr_int2str(fr_value_box_type_table, da->type, "<INVALID>"));
+		return -1;
+
+	default:
+		break;
 	}
 
 	{
@@ -4271,6 +4346,7 @@ static int dict_read_process_flags(UNUSED fr_dict_t *dict, char **argv, int argc
 	fr_strerror_printf("Invalid FLAGS syntax");
 	return -1;
 }
+
 
 static int dict_read_parse_format(char const *format, unsigned int *pvalue, int *ptype, int *plength,
 				  bool *pcontinuation)
@@ -4360,6 +4436,11 @@ static int dict_read_process_protocol(char **argv, int argc)
 		return -1;
 	}
 
+	if (value == 0) {
+		fr_strerror_printf("Invalid value '%u' following PROTOCOL", value);
+		return -1;
+	}
+
 	/*
 	 *	Look for a format statement.  This may specify the
 	 *	type length of the protocol's types.
@@ -4381,7 +4462,36 @@ static int dict_read_process_protocol(char **argv, int argc)
 		}
 	}
 
-	dict = fr_dict_by_protocol_num(value);
+	/*
+	 *	Cross check name / number.
+	 */
+	dict = fr_dict_by_protocol_name(argv[0]);
+	if (dict) {
+#ifdef __clang_analyzer__
+		if (!dict->root) return -1;
+#endif
+
+		if (dict->root->attr != value) {
+			fr_strerror_printf("Conflicting numbers %u vs %u for PROTOCOL \"%s\"",
+					   dict->root->attr, value, dict->root->name);
+			return -1;
+		}
+
+	} else if ((dict = fr_dict_by_protocol_num(value)) != NULL) {
+#ifdef __clang_analyzer__
+		if (!dict->root || !dict->root->name || !argv[0]) return -1;
+#endif
+
+		if (strcasecmp(dict->root->name, argv[0]) != 0) {
+			fr_strerror_printf("Conflicting names \"%s\" vs \"%s\" for PROTOCOL %u",
+					   dict->root->name, argv[0], dict->root->attr);
+			return -1;
+		}
+	}
+
+	/*
+	 *	And check types no matter what.
+	 */
 	if (dict) {
 		if (dict->root->flags.type_size != type_size) {
 			fr_strerror_printf("Conflicting flags for PROTOCOL \"%s\"", dict->root->name);
@@ -4426,30 +4536,18 @@ static int dict_read_process_vendor(fr_dict_t *dict, char **argv, int argc)
 		return -1;
 	}
 
-	/* Create a new VENDOR entry for the list */
-	if (dict_vendor_add(dict, argv[0], value) < 0) return -1;
-
 	/*
 	 *	Look for a format statement.  Allow it to over-ride the hard-coded formats below.
 	 */
 	if (argc == 3) {
 		if (dict_read_parse_format(argv[2], &value, &type, &length, &continuation) < 0) return -1;
 
-	} else if (value == RADIUS_VENDORPEC_USR) { /* catch dictionary screw-ups */
-		type = 4;
-		length = 0;
-
-	} else if (value == RADIUS_VENDORPEC_LUCENT) {
-		type = 2;
-		length = 1;
-
-	} else if (value == RADIUS_VENDORPEC_STARENT) {
-		type = 2;
-		length = 2;
-
 	} else {
 		type = length = 1;
 	}
+
+	/* Create a new VENDOR entry for the list */
+	if (dict_vendor_add(dict, argv[0], value) < 0) return -1;
 
 	dv = fr_dict_vendor_by_num(dict, value);
 	if (!dv) {
@@ -4466,23 +4564,23 @@ static int dict_read_process_vendor(fr_dict_t *dict, char **argv, int argc)
 	return 0;
 }
 
-static int fr_dict_finalise(fr_dict_t *dict)
+static int fr_dict_finalise(dict_from_file_ctx_t *ctx)
 {
 	/*
 	 *	Resolve any VALUE aliases (enums) that were defined
 	 *	before the attributes they reference.
 	 */
-	if (dict->enum_fixup) {
+	if (ctx->enum_fixup) {
 		fr_dict_attr_t const *da;
 		dict_enum_fixup_t *this, *next;
 
-		for (this = dict->enum_fixup; this != NULL; this = next) {
+		for (this = ctx->enum_fixup; this != NULL; this = next) {
 			fr_value_box_t	value;
 			fr_type_t	type;
 			int		ret;
 
 			next = this->next;
-			da = fr_dict_attr_by_name(dict, this->attribute);
+			da = fr_dict_attr_by_name(ctx->dict, this->attribute);
 			if (!da) {
 				fr_strerror_printf("No ATTRIBUTE '%s' defined for VALUE '%s'",
 						   this->attribute, this->alias);
@@ -4505,10 +4603,10 @@ static int fr_dict_finalise(fr_dict_t *dict)
 			/*
 			 *	Just so we don't lose track of things.
 			 */
-			dict->enum_fixup = next;
+			ctx->enum_fixup = next;
 		}
 	}
-	TALLOC_FREE(dict->fixup_pool);
+	TALLOC_FREE(ctx->fixup_pool);
 
 	/*
 	 *	Walk over all of the hash tables to ensure they're
@@ -4516,11 +4614,14 @@ static int fr_dict_finalise(fr_dict_t *dict)
 	 *	lookups, and we don't want multi-threaded re-ordering
 	 *	of the table entries.  That would be bad.
 	 */
-	fr_hash_table_walk(dict->vendors_by_name, hash_null_callback, NULL);
-	fr_hash_table_walk(dict->vendors_by_num, hash_null_callback, NULL);
+	fr_hash_table_walk(ctx->dict->vendors_by_name, hash_null_callback, NULL);
+	fr_hash_table_walk(ctx->dict->vendors_by_num, hash_null_callback, NULL);
 
-	fr_hash_table_walk(dict->values_by_da, hash_null_callback, NULL);
-	fr_hash_table_walk(dict->values_by_alias, hash_null_callback, NULL);
+	fr_hash_table_walk(ctx->dict->values_by_da, hash_null_callback, NULL);
+	fr_hash_table_walk(ctx->dict->values_by_alias, hash_null_callback, NULL);
+
+	ctx->value_attr = NULL;
+	ctx->previous_attr = NULL;
 
 	return 0;
 }
@@ -4552,7 +4653,7 @@ static int _dict_from_file(dict_from_file_ctx_t *ctx,
 	struct stat		statbuf;
 	char			*argv[MAX_ARGV];
 	int			argc;
-	fr_dict_attr_t const	*da, *previous = NULL;
+	fr_dict_attr_t const	*da;
 
 	/*
 	 *	Base flags are only set for the current file
@@ -4683,31 +4784,32 @@ static int _dict_from_file(dict_from_file_ctx_t *ctx,
 		}
 
 		/*
-		 *	Process VALUE lines.
-		 */
-		if (strcasecmp(argv[0], "VALUE") == 0) {
-			if (dict_read_process_value(ctx->dict, argv + 1, argc - 1) == -1) goto error;
-			continue;
-		}
-
-		/*
 		 *	Perhaps this is an attribute.
 		 */
 		if (strcasecmp(argv[0], "ATTRIBUTE") == 0) {
-			if (!base_flags.named) {
-				if (dict_read_process_attribute(ctx->dict, ctx->parent, ctx->block_vendor,
-								argv + 1, argc - 1,
-								&base_flags, &previous) == -1) goto error;
-			} else {
-				if (dict_read_process_named_attribute(ctx->dict, ctx->parent,
-								      argv + 1, argc - 1,
-								      &base_flags) == -1) goto error;
-			}
+			if (dict_read_process_attribute(ctx,
+							argv + 1, argc - 1,
+							&base_flags) == -1) goto error;
+
+			/*
+			 *	When we see a new ATTRIBUTE, it means
+			 *	that we're done the MEMBER definitions
+			 *	of a 'struct'.
+			 */
+			ctx->member_num = 0;
 			continue;
 		}
 
 		/*
 		 *	Process VALUE lines.
+		 */
+		if (strcasecmp(argv[0], "VALUE") == 0) {
+			if (dict_read_process_value(ctx, argv + 1, argc - 1) == -1) goto error;
+			continue;
+		}
+
+		/*
+		 *	Process FLAGS lines.
 		 */
 		if (strcasecmp(argv[0], "FLAGS") == 0) {
 			if (dict_read_process_flags(ctx->dict, argv + 1, argc - 1, &base_flags) == -1) goto error;
@@ -4715,31 +4817,46 @@ static int _dict_from_file(dict_from_file_ctx_t *ctx,
 		}
 
 		/*
+		 *	Perhaps this is a MEMBER of a struct
+		 *
+		 *	@todo - create child ctx, so that we can have
+		 *	nested structs.
+		 */
+		if (strcasecmp(argv[0], "MEMBER") == 0) {
+			if (dict_read_process_member(ctx,
+						     argv + 1, argc - 1,
+						     &base_flags) == -1) goto error;
+			continue;
+		}
+
+		/*
 		 *	See if we need to import another dictionary.
 		 */
-		if (strcasecmp(argv[0], "$INCLUDE") == 0) {
+		if (strncasecmp(argv[0], "$INCLUDE", 8) == 0) {
+			int rcode;
 			dict_from_file_ctx_t nctx = *ctx;
 
 			/*
-			 *	Included files operate on a copy of the context
+			 *	Allow "$INCLUDE" or "$INCLUDE-", but
+			 *	not anything else.
 			 */
-			if (_dict_from_file(&nctx, dir, argv[1], fn, line) < 0) {
-				fr_strerror_printf_push("from $INCLUDE at %s[%d]", fn, line);
-				fclose(fp);
-				return -1;
-			}
-			continue;
-		} /* $INCLUDE */
+			if ((argv[0][8] != '\0') && ((argv[0][8] != '-') || (argv[0][9] != '\0'))) goto invalid_keyword;
 
-		/*
-		 *	Optionally include a dictionary
-		 */
-		if (strcasecmp(argv[0], "$INCLUDE-") == 0) {
-			int rcode = _dict_from_file(ctx, dir, argv[1], fn, line);
+			/*
+			 *	Included files operate on a copy of the context.
+			 *
+			 *	This copy means that they inherit the
+			 *	current context, including parents,
+			 *	TLVs, etc.  But if the included file
+			 *	leaves a "dangling" TLV or "last
+			 *	attribute", then it won't affect the
+			 *	parent.
+			 */
 
-			if (rcode == -2) {
+			rcode = _dict_from_file(&nctx, dir, argv[1], fn, line);
+			if ((rcode == -2) && (argv[0][8] == '-')) {
 				fr_strerror_printf(NULL); /* delete all errors */
-				continue;
+				rcode = 0;
 			}
 
 			if (rcode < 0) {
@@ -4747,8 +4864,22 @@ static int _dict_from_file(dict_from_file_ctx_t *ctx,
 				fclose(fp);
 				return -1;
 			}
+
+			/*
+			 *	Fixups are added to the head of the
+			 *	list, so copy the new head over to the
+			 *	parent.
+			 */
+			ctx->enum_fixup = nctx.enum_fixup;
 			continue;
-		} /* $INCLUDE- */
+		} /* $INCLUDE */
+
+		/*
+		 *	Reset the previous attribute when we see
+		 *	VENDOR or PROTOCOL or BEGIN/END-VENDOR, etc.
+		 */
+		ctx->value_attr = NULL;
+		ctx->previous_attr = NULL;
 
 		/*
 		 *	Process VENDOR lines.
@@ -4801,11 +4932,21 @@ static int _dict_from_file(dict_from_file_ctx_t *ctx,
 
 			/*
 			 *	Add a temporary fixup pool
+			 *
+			 *	@todo - make a nested ctx?
 			 */
-			if (!found->fixup_pool) found->fixup_pool = talloc_pool(found, DICT_FIXUP_POOL_SIZE);
+			if (!ctx->fixup_pool) ctx->fixup_pool = talloc_pool(NULL, DICT_FIXUP_POOL_SIZE);
 
 			ctx->dict = found;
 			ctx->parent = ctx->dict->root;
+
+			// check if there's a linked library for the
+			// protocol.  The values can be unknown (we
+			// try to load one), or non-existent, or
+			// known.  For the last two, we don't try to
+			// load anything.
+
+			//
 
 			continue;
 		}
@@ -4837,11 +4978,15 @@ static int _dict_from_file(dict_from_file_ctx_t *ctx,
 			 *	Applies fixups to any attributes added to
 			 *	the protocol dictionary.
 			 */
-			if (fr_dict_finalise(ctx->dict) < 0) goto error;
+			if (fr_dict_finalise(ctx) < 0) goto error;
 
-			ctx->dict = ctx->old_dict;	/* Switch back to the old dictionary */
+			/*
+			 *	Switch back to old values.
+			 *
+			 *	@todo - just create a stack of contests, so we don't need "old_foo"
+			 */
+			ctx->dict = ctx->old_dict;
 			ctx->parent = ctx->dict->root;
-
 			continue;
 		}
 
@@ -4870,7 +5015,7 @@ static int _dict_from_file(dict_from_file_ctx_t *ctx,
 			if (da->type != FR_TYPE_TLV) {
 				fr_strerror_printf_push("Attribute '%s' should be a 'tlv', but is a '%s'",
 							argv[1],
-							fr_int2str(fr_value_box_type_names, da->type, "?Unknown?"));
+							fr_int2str(fr_value_box_type_table, da->type, "?Unknown?"));
 				goto error;
 			}
 
@@ -4960,7 +5105,7 @@ static int _dict_from_file(dict_from_file_ctx_t *ctx,
 				if (da->type != FR_TYPE_EVS) {
 					fr_strerror_printf_push("Invalid format for BEGIN-VENDOR.  "
 								"Attribute '%s' should be 'evs' but is '%s'", p,
-								fr_int2str(fr_value_box_type_names, da->type, "?Unknown?"));
+								fr_int2str(fr_value_box_type_table, da->type, "?Unknown?"));
 					goto error;
 				}
 
@@ -5022,7 +5167,10 @@ static int _dict_from_file(dict_from_file_ctx_t *ctx,
 				memcpy(&mutable, &vsa_da, sizeof(mutable));
 				new = dict_attr_alloc(mutable, ctx->parent, argv[1],
 						      vendor->pen, FR_TYPE_VENDOR, &flags);
-				dict_attr_child_add(mutable, new);
+				if (dict_attr_child_add(mutable, new) < 0) {
+					talloc_free(new);
+					goto error;
+				}
 
 				vendor_da = new;
 			}
@@ -5058,6 +5206,7 @@ static int _dict_from_file(dict_from_file_ctx_t *ctx,
 		/*
 		 *	Any other string: We don't recognize it.
 		 */
+	invalid_keyword:
 		fr_strerror_printf_push("Invalid keyword '%s'", argv[0]);
 		goto error;
 	}
@@ -5069,8 +5218,28 @@ static int dict_from_file(fr_dict_t *dict,
 			  char const *dir_name, char const *filename,
 			  char const *src_file, int src_line)
 {
-	return _dict_from_file(&(dict_from_file_ctx_t) { .dict = dict, .parent = dict->root },
-			       dir_name, filename, src_file, src_line);
+	int rcode;
+	dict_from_file_ctx_t ctx;
+
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.dict = dict;
+	ctx.parent = dict->root;
+
+	rcode = _dict_from_file(&ctx,
+				dir_name, filename, src_file, src_line);
+	if (rcode < 0) {
+		// free up the various fixups
+		return rcode;
+	}
+
+	/*
+	 *	Applies  to any attributes added to the *internal*
+	 *	dictionary.
+	 *
+	 *	Fixups should have been applied already to any protocol
+	 *	dictionaries.
+	 */
+	return fr_dict_finalise(&ctx);
 }
 
 /** (Re-)Initialize the special internal dictionary
@@ -5134,13 +5303,10 @@ int fr_dict_internal_afrom_file(fr_dict_t **out, char const *dict_subdir)
 	 *	fr_dict_attr_add(), because we know what we're doing, and
 	 *	that function does too many checks.
 	 */
-	for (p = fr_value_box_type_names; p->name; p++) {
+	for (p = fr_value_box_type_table; p->name; p++) {
 		fr_dict_attr_t *n;
 
-		/*
-		 *	Reduce holes in the main pool by using the fixup pool
-		 */
-		type_name = talloc_typed_asprintf(dict->fixup_pool, "Tmp-Cast-%s", p->name);
+		type_name = talloc_typed_asprintf(NULL, "Tmp-Cast-%s", p->name);
 
 		n = dict_attr_alloc(dict->pool, dict->root, type_name,
 				    FR_CAST_BASE + p->number, p->number, &flags);
@@ -5165,11 +5331,6 @@ int fr_dict_internal_afrom_file(fr_dict_t **out, char const *dict_subdir)
 
 	if (dict_path && dict_from_file(dict, dict_path, FR_DICTIONARY_FILE, NULL, 0) < 0) goto error;
 
-	/*
-	 *	Applies fixups to any attributes
-	 */
-	if (fr_dict_finalise(dict) < 0) goto error;
-
 	talloc_free(dict_path);
 
 	*out = dict;
@@ -5180,22 +5341,19 @@ int fr_dict_internal_afrom_file(fr_dict_t **out, char const *dict_subdir)
 
 /** (Re)-initialize a protocol dictionary
  *
- * Initialize the directory, then fix the attr member of all attributes.
- *
- * First dictionary initialised will be set as the default internal dictionary.
+ * Initialize the directory, then fix the attr number of all attributes.
  *
  * @param[out] out		Where to write a pointer to the new dictionary.  Will free existing
  *				dictionary if files have changed and *out is not NULL.
  * @param[in] proto_name	that we're loading the dictionary for.
+ * @param[in] proto_dir		Explicitly set where to hunt for the dictionary files.  May be NULL.
  * @return
  *	- 0 on success.
  *	- -1 on failure.
  */
-int fr_dict_protocol_afrom_file(fr_dict_t **out, char const *proto_name)
+int fr_dict_protocol_afrom_file(fr_dict_t **out, char const *proto_name, char const *proto_dir)
 {
-	char		*dir;
-	char		*proto_dir;
-	char		*p;
+	char		*dict_dir = NULL;
 	fr_dict_t	*dict;
 
 	if (unlikely(!protocol_by_name || !protocol_by_num)) {
@@ -5219,12 +5377,11 @@ int fr_dict_protocol_afrom_file(fr_dict_t **out, char const *proto_name)
 		return 0;
 	}
 
-	/*
-	 *	Replace [_-] with '/'
-	 */
-	proto_dir = talloc_strdup(dict_ctx, proto_name);
-	for (p = proto_dir; *p; p++) if ((*p == '_') || (*p == '-')) *p = FR_DIR_SEP;
-	dir = talloc_asprintf(proto_dir, "%s%c%s", default_dict_dir, FR_DIR_SEP, proto_dir);
+	if (!proto_dir) {
+		dict_dir = talloc_asprintf(NULL, "%s%c%s", default_dict_dir, FR_DIR_SEP, proto_name);
+	} else {
+		dict_dir = talloc_asprintf(NULL, "%s%c%s", default_dict_dir, FR_DIR_SEP, proto_dir);
+	}
 
 	/*
 	 *	Start in the context of the internal dictionary,
@@ -5235,9 +5392,9 @@ int fr_dict_protocol_afrom_file(fr_dict_t **out, char const *proto_name)
 	 *	for multiple protocols, which'll probably be useful
 	 *	at some point.
 	 */
-	if (dict_from_file(fr_dict_internal, dir, FR_DICTIONARY_FILE, NULL, 0) < 0) {
+	if (dict_from_file(fr_dict_internal, dict_dir, FR_DICTIONARY_FILE, NULL, 0) < 0) {
 	error:
-		talloc_free(proto_dir);
+		talloc_free(dict_dir);
 		return -1;
 	}
 
@@ -5246,19 +5403,11 @@ int fr_dict_protocol_afrom_file(fr_dict_t **out, char const *proto_name)
 	 */
 	dict = fr_dict_by_protocol_name(proto_name);
 	if (!dict) {
-		fr_strerror_printf("Dictionary \"%s\" missing \"BEGIN-PROTOCOL %s\" declaration", dir, proto_name);
+		fr_strerror_printf("Dictionary \"%s\" missing \"BEGIN-PROTOCOL %s\" declaration", dict_dir, proto_name);
 		goto error;
 	}
-	/*
-	 *	Applies fixup to any attributes added to the *internal*
-	 *	dictionary.
-	 *
-	 *	Fixups should have been applied already to any protocol
-	 *	dictionaries.
-	 */
-	if (fr_dict_finalise(dict) < 0) goto error;
 
-	talloc_free(proto_dir);
+	talloc_free(dict_dir);
 
 	/*
 	 *	If we're autoloading a previously defined dictionary,
@@ -5279,13 +5428,16 @@ int fr_dict_protocol_afrom_file(fr_dict_t **out, char const *proto_name)
  * @param[in] dict	Existing dictionary.
  * @param[in] dir	dictionary is located in.
  * @param[in] filename	of the dictionary.
+ * @return
+ *	- 0 on success.
+ *      - -1 on failure.
  */
 int fr_dict_read(fr_dict_t *dict, char const *dir, char const *filename)
 {
-	INTERNAL_IF_NULL(dict);
+	INTERNAL_IF_NULL(dict, -1);
 
 	if (!dict->attributes_by_name) {
-		fr_strerror_printf("%s: Must call fr_dict_from_file() before fr_dict_read()", __FUNCTION__);
+		fr_strerror_printf("%s: Must call fr_dict_internal_afrom_file() before fr_dict_read()", __FUNCTION__);
 		return -1;
 	}
 
@@ -5340,8 +5492,8 @@ int fr_dict_attr_autoload(fr_dict_attr_autoload_t const *to_load)
 
 		if (da->type != p->type) {
 			fr_strerror_printf("Attribute \"%s\" should be type %s, but defined as type %s", da->name,
-					   fr_int2str(fr_value_box_type_names, p->type, "?Unknown?"),
-					   fr_int2str(fr_value_box_type_names, da->type, "?Unknown?"));
+					   fr_int2str(fr_value_box_type_table, p->type, "?Unknown?"),
+					   fr_int2str(fr_value_box_type_table, da->type, "?Unknown?"));
 			return -1;
 		}
 
@@ -5376,7 +5528,7 @@ int fr_dict_autoload(fr_dict_autoload_t const *to_load)
 		if (strcmp(p->proto, "freeradius") == 0) {
 			if (fr_dict_internal_afrom_file(&dict, p->proto) < 0) return -1;
 		} else {
-			if (fr_dict_protocol_afrom_file(&dict, p->proto) < 0) return -1;
+			if (fr_dict_protocol_afrom_file(&dict, p->proto, p->base_dir) < 0) return -1;
 		}
 
 		*(p->out) = dict;
@@ -5402,6 +5554,49 @@ void fr_dict_autofree(fr_dict_autoload_t const *to_free)
 	}
 }
 
+/** Callback to automatically load dictionaries required by modules
+ *
+ * @param[in] module	being loaded.
+ * @param[in] symbol	An array of fr_dict_autoload_t to load.
+ * @param[in] user_ctx	unused.
+ * @return
+ *	- 0 on success.
+ *	- -1 on failure.
+ */
+int fr_dl_dict_autoload(UNUSED dl_t const *module, void *symbol, UNUSED void *user_ctx)
+{
+	if (fr_dict_autoload((fr_dict_autoload_t const *)symbol) < 0) return -1;
+
+	return 0;
+}
+
+/** Callback to automatically free a dictionary when the module is unloaded
+ *
+ * @param[in] module	being loaded.
+ * @param[in] symbol	An array of fr_dict_autoload_t to load.
+ * @param[in] user_ctx	unused.
+ */
+void fr_dl_dict_autofree(UNUSED dl_t const *module, UNUSED void *symbol, UNUSED void *user_ctx)
+{
+//	fr_dict_autofree(((fr_dict_autoload_t *)symbol));
+}
+
+/** Callback to automatically resolve attributes and check the types are correct
+ *
+ * @param[in] module	being loaded.
+ * @param[in] symbol	An array of fr_dict_autoload_t to load.
+ * @param[in] user_ctx	unused.
+ * @return
+ *	- 0 on success.
+ *	- -1 on failure.
+ */
+int fr_dl_dict_attr_autoload(UNUSED dl_t const *module, void *symbol, UNUSED void *user_ctx)
+{
+	if (fr_dict_attr_autoload((fr_dict_attr_autoload_t *)symbol) < 0) return -1;
+
+	return 0;
+}
+
 static void _fr_dict_dump(fr_dict_attr_t const *da, unsigned int lvl)
 {
 	unsigned int		i;
@@ -5409,10 +5604,10 @@ static void _fr_dict_dump(fr_dict_attr_t const *da, unsigned int lvl)
 	fr_dict_attr_t const	*p;
 	char			flags[256];
 
-	fr_dict_snprint_flags(flags, sizeof(flags), &da->flags);
+	fr_dict_snprint_flags(flags, sizeof(flags), da->type, &da->flags);
 
 	printf("[%02i] 0x%016" PRIxPTR "%*s %s(%u) %s %s\n", lvl, (unsigned long)da, lvl * 2, " ",
-	       da->name, da->attr, fr_int2str(fr_value_box_type_names, da->type, "<INVALID>"), flags);
+	       da->name, da->attr, fr_int2str(fr_value_box_type_table, da->type, "<INVALID>"), flags);
 
 	len = talloc_array_length(da->children);
 	for (i = 0; i < len; i++) {
@@ -5435,26 +5630,26 @@ int fr_dict_parse_str(fr_dict_t *dict, char *buf, fr_dict_attr_t const *parent, 
 	int	argc;
 	char	*argv[MAX_ARGV];
 	int	ret;
-
 	fr_dict_attr_flags_t base_flags;
+	dict_from_file_ctx_t ctx;
 
-	INTERNAL_IF_NULL(dict);
+	INTERNAL_IF_NULL(dict, -1);
 
 	argc = fr_dict_str_to_argv(buf, argv, MAX_ARGV);
 	if (argc == 0) return 0;
 
-	if (!fr_cond_assert_msg(!dict->fixup_pool && !dict->enum_fixup,
-				"dict not finalised from previous processing")) return -1;
 
-	dict->fixup_pool = talloc_pool(dict, DICT_FIXUP_POOL_SIZE);
-	if (!dict->fixup_pool) return -1;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.dict = dict;
+
+	ctx.fixup_pool = talloc_pool(NULL, DICT_FIXUP_POOL_SIZE);
+	if (!ctx.fixup_pool) return -1;
 
 	if (strcasecmp(argv[0], "VALUE") == 0) {
 		if (argc < 4) {
 			fr_strerror_printf("VALUE needs at least 4 arguments, got %i", argc);
 		error:
-			TALLOC_FREE(dict->fixup_pool);
-			dict->enum_fixup = NULL;
+			TALLOC_FREE(ctx.fixup_pool);
 			return -1;
 		}
 
@@ -5463,17 +5658,19 @@ int fr_dict_parse_str(fr_dict_t *dict, char *buf, fr_dict_attr_t const *parent, 
 					   argv[1], dict->root->name);
 			goto error;
 		}
-		ret = dict_read_process_value(dict, argv + 1, argc - 1);
+		ret = dict_read_process_value(&ctx, argv + 1, argc - 1);
 		if (ret < 0) goto error;
 
 	} else if (strcasecmp(argv[0], "ATTRIBUTE") == 0) {
-		if (!parent) parent = fr_dict_root(dict);
+		ctx.parent = parent;
+		if (!ctx.parent) ctx.parent = fr_dict_root(dict);
 
 		memset(&base_flags, 0, sizeof(base_flags));
 
-		ret = dict_read_process_attribute(dict, parent,
-						  fr_dict_vendor_by_num(dict, vendor_pen),
-						  argv + 1, argc - 1, &base_flags, NULL);
+		if (vendor_pen) ctx.block_vendor = fr_dict_vendor_by_num(dict, vendor_pen);
+
+		ret = dict_read_process_attribute(&ctx,
+						  argv + 1, argc - 1, &base_flags);
 		if (ret < 0) goto error;
 	} else if (strcasecmp(argv[0], "VENDOR") == 0) {
 		ret = dict_read_process_vendor(dict, argv + 1, argc - 1);
@@ -5483,7 +5680,7 @@ int fr_dict_parse_str(fr_dict_t *dict, char *buf, fr_dict_attr_t const *parent, 
 		goto error;
 	}
 
-	fr_dict_finalise(dict);
+	fr_dict_finalise(&ctx);
 
 	return 0;
 }
@@ -5530,6 +5727,12 @@ ssize_t fr_dict_valid_name(char const *name, ssize_t len)
 	char const *p = name, *end;
 
 	if (len < 0) len = strlen(name);
+
+	if (len > FR_DICT_ATTR_MAX_NAME_LEN) {
+		fr_strerror_printf("Attribute name is too long");
+		return -1;
+	}
+
 	end = p + len;
 
 	do {
@@ -5542,7 +5745,27 @@ ssize_t fr_dict_valid_name(char const *name, ssize_t len)
 		p++;
 	} while (p < end);
 
-	return 0;
+	return len;
+}
+
+ssize_t fr_dict_valid_oid_str(char const *name, ssize_t len)
+{
+	char const *p = name, *end;
+
+	if (len < 0) len = strlen(name);
+	end = p + len;
+
+	do {
+		if (!fr_dict_attr_allowed_chars[(uint8_t)*p] && (*p != '.')) {
+			fr_strerror_printf("Invalid character '%pV' in oid string \"%pV\"",
+					   fr_box_strvalue_len(p, 1), fr_box_strvalue_len(name, len));
+
+			return -(p - name);
+		}
+		p++;
+	} while (p < end);
+
+	return len;
 }
 
 void fr_dict_verify(char const *file, int line, fr_dict_attr_t const *da)
